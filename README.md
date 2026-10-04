@@ -180,6 +180,9 @@ The first transcription downloads the Whisper model (~1.6 GB) into `data`. Back 
 `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build`. Without a GPU, Whisper runs on the
 CPU, which is much slower; on a small server consider `TRANSCRIBE_PROVIDER=elevenlabs` or `openai`.
 
+**Tunisian Derja Whisper models** (`tunisian-large-v3`, `arabic-dialectal-turbo`) are converted once on first
+use, which needs torch: build with `INSTALL_CONVERT=true docker compose up -d --build` (adds ~1 GB).
+
 ## Command line
 
 ```powershell

@@ -18,11 +18,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# chromium + Noto fonts: PDF export with proper Arabic text. nodejs/npm: the Claude Code CLI (CLAUDE_BACKEND=subscription).
+# chromium + Noto fonts: PDF export with proper Arabic text. curl: installs the Claude Code CLI below.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates chromium fonts-noto-core nodejs npm \
- && npm install -g @anthropic-ai/claude-code \
- && npm cache clean --force \
+ && apt-get install -y --no-install-recommends ca-certificates curl chromium fonts-noto-core \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -37,12 +35,17 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/u
 RUN useradd --create-home --uid 1000 app \
  && mkdir -p /app/data /app/reports /home/app/.claude \
  && chown -R app:app /app /home/app
+USER app
+
+# Claude Code CLI for CLAUDE_BACKEND=subscription: standalone build, installed for the app user.
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH=/home/app/.local/bin:$PATH
+
 COPY --chown=app:app .env.example ./
 COPY --chown=app:app context ./context
 COPY --chown=app:app call_analyzer ./call_analyzer
 COPY --chown=app:app --from=frontend /src/call_analyzer/web/static ./call_analyzer/web/static
 
-USER app
 EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz')"
