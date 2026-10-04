@@ -140,24 +140,38 @@ Accounts created before roles existed stay admins.
 
 ## Hosting with Docker
 
-On the server (Linux with Docker and Docker Compose):
+Settings come from environment variables (see `.env.example` for the full list). Anything changed later on
+the **Settings** page is saved to `/app/data/.env` inside the data volume and takes precedence over the
+environment variables.
+
+### Coolify
+
+1. New resource → your Git repository → build pack **Docker Compose** (file: `docker-compose.yml`).
+2. **Environment variables**: at least `ADMIN_USERNAME`, `ADMIN_PASSWORD` (8+ characters), `PUBLIC_URL=https://your.domain`,
+   `COOKIE_SECURE=true`, plus the GoVoice and Claude settings.
+3. **Domains**: set the `app` service's domain to `https://your.domain:8765` (Coolify routes it to port 8765 and
+   handles HTTPS). You can delete the `ports:` lines from `docker-compose.yml` if port 8765 is taken on the server.
+4. Deploy, then sign in with `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
+
+### Plain Docker
+
+On a Linux server with Docker and Docker Compose:
 
 ```bash
 git clone <this repo> call-analyzer && cd call-analyzer
-cp .env.example .env && sudo chown 1000:1000 .env   # the container runs as uid 1000 and saves Settings here
-nano .env      # GoVoice cookie, Claude settings, ADMIN_USERNAME / ADMIN_PASSWORD, PUBLIC_URL, COOKIE_SECURE
+cp .env.example .env && nano .env   # GoVoice cookie, Claude settings, ADMIN_USERNAME / ADMIN_PASSWORD, PUBLIC_URL
 docker compose up -d --build
 ```
 
 The app is on port 8765 (change with `APP_PORT=80 docker compose up -d`). Sign in with `ADMIN_USERNAME` /
-`ADMIN_PASSWORD` (the account is created on first start; you can then clear `ADMIN_PASSWORD` from `.env`).
+`ADMIN_PASSWORD` (the account is created on first start).
 Add agents on the **Users** page, or with `docker compose exec app python -m call_analyzer user add <name> --role agent --agents 102`.
 
 **HTTPS** (recommended on the internet): point a domain at the server, open ports 80 and 443, set
 `PUBLIC_URL=https://your.domain` and `COOKIE_SECURE=true` in `.env`, then:
 
 ```bash
-DOMAIN=your.domain docker compose --profile https up -d
+DOMAIN=your.domain docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
 ```
 
 Caddy gets a Let's Encrypt certificate automatically. Close port 8765 in the firewall so the app is only
@@ -172,7 +186,7 @@ reachable through HTTPS.
 - `ANALYSIS_BACKEND=auto` tries Claude first and switches to Cursor when the Claude CLI is missing or
   the session limit is hit.
 
-**Data** lives in Docker volumes: `data` (database, audio, Whisper models), `reports`, `context` (business.md).
+**Data** lives in Docker volumes: `data` (database, audio, Whisper models, saved settings), `reports`, `context` (business.md).
 The first transcription downloads the Whisper model (~1.6 GB) into `data`. Back up with e.g.
 `docker compose cp app:/app/data ./backup-data`.
 

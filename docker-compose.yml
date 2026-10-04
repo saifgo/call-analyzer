@@ -9,33 +9,21 @@ services:
     init: true  # reaps the claude/chromium processes started by pipeline jobs and PDF export
     ports:
       - "${APP_PORT:-8765}:8765"
+    # Settings come from these environment variables (set them in Coolify, or in a .env file next to this one
+    # for plain `docker compose`). Anything saved on the Settings page goes to data/.env and takes precedence.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ENV_FILE: /app/data/.env
     volumes:
-      # Settings: edited from the Settings page, so it's mounted read-write. Create it before the first start.
-      - ./.env:/app/.env
-      - data:/app/data            # calls.db, audio, Whisper models
+      - data:/app/data            # calls.db, audio, Whisper models, settings saved from the UI
       - reports:/app/reports
       - context:/app/context      # business.md
       - claude:/home/app/.claude  # Claude Code login, if you log in inside the container instead of using a token
-
-  # HTTPS with an automatic Let's Encrypt certificate: set DOMAIN, then
-  #   docker compose --profile https up -d
-  # Point the domain's DNS at this server and open ports 80 and 443 first.
-  caddy:
-    image: caddy:2
-    profiles: ["https"]
-    restart: unless-stopped
-    command: caddy reverse-proxy --from ${DOMAIN:-localhost} --to app:8765
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - caddy:/data
-    depends_on:
-      - app
 
 volumes:
   data:
   reports:
   context:
   claude:
-  caddy:

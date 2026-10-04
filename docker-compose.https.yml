@@ -1,0 +1,18 @@
+# HTTPS with an automatic Let's Encrypt certificate, for a plain Docker server (not needed on Coolify, which has
+# its own proxy). Point the domain's DNS at this server, open ports 80 and 443, then:
+#   DOMAIN=calls.example.com docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${DOMAIN:?set DOMAIN} --to app:8765
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy:/data
+    depends_on:
+      - app
+
+volumes:
+  caddy:

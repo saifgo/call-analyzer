@@ -10,9 +10,8 @@ from dotenv import dotenv_values
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .config import ROOT, settings
+from .config import ENV_PATH, settings
 
-ENV_PATH = ROOT / ".env"
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
 # Exit code of CLI commands when GoVoice rejects the session, so the UI can offer to log in again.
@@ -30,7 +29,8 @@ _env_lock = threading.Lock()
 
 def current_cookie() -> str:
     """GOVOICE_COOKIE as saved right now (settings is read once at start; the cookie can change while running)."""
-    return (dotenv_values(ENV_PATH).get("GOVOICE_COOKIE") or "").strip()
+    saved = dotenv_values(ENV_PATH).get("GOVOICE_COOKIE") if ENV_PATH.is_file() else None
+    return (saved or settings.govoice_cookie).strip()
 
 
 def save_cookie(cookie: str) -> None:
@@ -42,6 +42,7 @@ def save_cookie(cookie: str) -> None:
             text = re.sub(r"(?m)^GOVOICE_COOKIE=.*$", lambda _: line, text)
         else:
             text = text.rstrip("\n") + f"\n{line}\n"
+        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
         ENV_PATH.write_text(text, encoding="utf-8")
 
 

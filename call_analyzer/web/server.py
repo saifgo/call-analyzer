@@ -20,13 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import auth, db
-from ..config import ROOT, settings
+from ..config import ENV_PATH, ROOT, settings
 from . import govoice_login
 from .export import audio_data_uri, render_call_page, render_report_page
 
 # Built from frontend/ (npm run build); see frontend/README.md.
 STATIC = Path(__file__).parent / "static"
-ENV_PATH = ROOT / ".env"
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
 SECRET_KEYS = {"GOVOICE_COOKIE", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "OPENAI_API_KEY",
                "CLAUDE_CODE_OAUTH_TOKEN", "CURSOR_API_KEY", "ADMIN_PASSWORD"}
@@ -322,7 +321,8 @@ def _env_schema() -> list[dict]:
 @app.get("/api/settings")
 def get_settings():
     values = _parse_env(ENV_PATH)
-    return [{**f, "value": values.get(f["key"], "")} for f in _env_schema()]
+    # Values not in the file may come from the environment (e.g. Coolify/Docker environment variables).
+    return [{**f, "value": values.get(f["key"], os.environ.get(f["key"], ""))} for f in _env_schema()]
 
 
 @app.get("/api/whisper-models")
@@ -335,7 +335,9 @@ def whisper_models():
 
 @app.put("/api/settings")
 def put_settings(updates: dict[str, str]):
-    current = _parse_env(ENV_PATH)
+    # Start from the environment so values set outside the file (Coolify/Docker) aren't saved as empty.
+    current = {f["key"]: os.environ.get(f["key"], "") for f in _env_schema()}
+    current.update(_parse_env(ENV_PATH))
     current.update({k: v.replace("\n", " ").strip() for k, v in updates.items()})
     # Rewrite .env following .env.example's layout and comments; keep unknown keys at the end.
     lines, known = [], set()
@@ -350,6 +352,7 @@ def put_settings(updates: dict[str, str]):
     extra = [f"{k}={v}" for k, v in current.items() if k not in known]
     if extra:
         lines += ["", "# --- Other ---", *extra]
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"ok": True}
 

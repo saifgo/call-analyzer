@@ -6,10 +6,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
+# The settings file. Docker/Coolify set ENV_FILE=/app/data/.env so it lives in the data volume; the other
+# settings can then also come from the platform's environment variables until they're saved in Settings.
+ENV_PATH = Path(os.getenv("ENV_FILE") or ROOT / ".env")
 # override=True: .env is the source of truth. Pipeline jobs launched by the UI inherit the server's
 # environment, which still holds the values from when the server started; without override, edits
 # saved in Settings would be ignored.
-load_dotenv(ROOT / ".env", override=True)
+load_dotenv(ENV_PATH, override=True)
 
 
 def _bool(name: str, default: bool) -> bool:
