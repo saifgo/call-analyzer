@@ -195,7 +195,9 @@ The first transcription downloads the Whisper model (~1.6 GB) into `data`. Back 
 CPU, which is much slower; on a small server consider `TRANSCRIBE_PROVIDER=elevenlabs` or `openai`.
 
 **Tunisian Derja Whisper models** (`tunisian-large-v3`, `arabic-dialectal-turbo`) are converted once on first
-use, which needs torch: build with `INSTALL_CONVERT=true docker compose up -d --build` (adds ~1 GB).
+use, which needs torch: build with `INSTALL_CONVERT=true docker compose up -d --build` (adds ~1 GB). On Coolify,
+add the environment variable `INSTALL_CONVERT=true` as a build variable and redeploy. Converting
+`tunisian-large-v3` needs about 6–8 GB of free RAM.
 
 ## Command line
 

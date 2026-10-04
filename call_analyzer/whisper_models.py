@@ -57,9 +57,11 @@ def install(name: str, log=print) -> Path:
         import torch  # noqa: F401  (needed by the converter)
         import transformers  # noqa: F401
     except ImportError as exc:
+        how = ("set the environment variable INSTALL_CONVERT=true (as a build variable) and redeploy"
+               if Path("/.dockerenv").exists() else "run `pip install -r requirements-convert.txt`")
         raise RuntimeError(
-            f"Whisper model '{name}' must be converted once, which needs torch and transformers: run "
-            f"`pip install -r requirements-convert.txt`, or pick another WHISPER_MODEL ({exc})") from exc
+            f"Whisper model '{name}' must be converted once, which needs torch and transformers: {how}, "
+            f"or pick another WHISPER_MODEL ({exc})") from exc
 
     from huggingface_hub import constants
     constants.HF_HUB_DISABLE_XET = True  # Hugging Face's Xet transfer can stall on some networks; plain HTTPS doesn't
