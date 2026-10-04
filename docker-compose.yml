@@ -1,0 +1,41 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        INSTALL_CONVERT: ${INSTALL_CONVERT:-false}
+    image: call-analyzer
+    restart: unless-stopped
+    init: true  # reaps the claude/chromium processes started by pipeline jobs and PDF export
+    ports:
+      - "${APP_PORT:-8765}:8765"
+    volumes:
+      # Settings: edited from the Settings page, so it's mounted read-write. Create it before the first start.
+      - ./.env:/app/.env
+      - data:/app/data            # calls.db, audio, Whisper models
+      - reports:/app/reports
+      - context:/app/context      # business.md
+      - claude:/home/app/.claude  # Claude Code login, if you log in inside the container instead of using a token
+
+  # HTTPS with an automatic Let's Encrypt certificate: set DOMAIN, then
+  #   docker compose --profile https up -d
+  # Point the domain's DNS at this server and open ports 80 and 443 first.
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${DOMAIN:-localhost} --to app:8765
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy:/data
+    depends_on:
+      - app
+
+volumes:
+  data:
+  reports:
+  context:
+  claude:
+  caddy:

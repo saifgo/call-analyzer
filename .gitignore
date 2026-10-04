@@ -1,0 +1,7 @@
+.venv/
+.env
+data/
+reports/
+__pycache__/
+*.stackdump
+frontend/node_modules/

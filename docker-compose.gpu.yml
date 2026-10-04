@@ -1,0 +1,14 @@
+# Whisper on an NVIDIA GPU. Needs the NVIDIA Container Toolkit on the server. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+services:
+  app:
+    build:
+      args:
+        INSTALL_GPU: "true"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,12 @@
+requests>=2.32
+pydantic>=2.9
+python-dotenv>=1.0
+markdown>=3.5
+fastapi>=0.115
+uvicorn[standard]>=0.30
+faster-whisper>=1.2
+av<16  # faster-whisper 1.2 is not compatible with PyAV 16+
+# Only needed for CLAUDE_BACKEND=api
+anthropic>=1.11
+# Only needed for ANALYSIS_BACKEND=cursor or auto
+cursor-sdk>=1.0.35

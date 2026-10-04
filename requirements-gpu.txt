@@ -1,0 +1,3 @@
+# GPU acceleration for Whisper on NVIDIA cards (optional; CPU is used if these are missing)
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10
