@@ -80,6 +80,12 @@ Opens http://127.0.0.1:8765 in your browser and asks you to sign in:
 - **Reports**: read the coaching reports, or generate new ones.
 - **Business context**: edit `context/business.md`.
 - **Settings**: edit every `.env` value (cookie, models, backends) and run a setup check.
+  Turn on **Ongoing mode** (`AUTO_PROCESS`) and, while the UI runs, it fetches new calls from GoVoice every
+  `AUTO_PROCESS_MINUTES` (5) and downloads, transcribes and analyzes them. Runs show up on the Pipeline page.
+- **CRM tab** (call drawer, next to Feedback and Transcript): looks up the customer's number in your
+  [Twenty CRM](https://twenty.com) and lists the matching contacts with their opportunities. Set `CRM_BASE_URL`
+  and `CRM_API_KEY` (Twenty: Settings > APIs & Webhooks) in Settings. Numbers are matched on their last 8 digits,
+  so `+21694721843` and `94721843` find the same contact (the CRM must store the number without spaces).
 
 The interface is built with React and [coss ui](https://coss.com/ui), with light and dark themes; its source is in
 `frontend/` (see `frontend/README.md` to change it).

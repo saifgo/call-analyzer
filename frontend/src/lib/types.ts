@@ -75,6 +75,8 @@ export type JobHistoryItem = { label: string; started_at: string; finished_at: s
 export type JobState = {
   running: boolean;
   label: string;
+  /** Started by ongoing mode (AUTO_PROCESS) rather than from the UI. */
+  auto: boolean;
   started_at: string | null;
   finished_at: string | null;
   exit_code: number | null;
@@ -124,3 +126,50 @@ export type Account = {
 
 /** An agent extension seen in calls, and the accounts linked to it. */
 export type AgentInfo = { agent: string; calls: number; accounts: string[] };
+
+export type CrmOpportunity = {
+  id: string;
+  name: string;
+  /** Twenty stage value, e.g. "IN_TALK" or "ACTIVE". */
+  stage: string | null;
+  amount: number | null;
+  currency: string | null;
+  close_date: string | null;
+  company: string | null;
+  owner: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  url: string;
+};
+
+export type CrmPerson = {
+  id: string;
+  name: string;
+  email: string | null;
+  phones: string[];
+  job_title: string | null;
+  city: string | null;
+  company: string | null;
+  created_at: string | null;
+  last_contact_at: string | null;
+  url: string;
+  opportunities: CrmOpportunity[];
+};
+
+/** `searched` is false when the number is too short to look up (an internal extension). */
+export type CrmLookup = { configured: boolean; number: string; searched: boolean; people: CrmPerson[] };
+
+/** A note a person wrote about a call. `score` is their own 1-10 score, to compare with the AI's. */
+export type HumanFeedback = {
+  id: number;
+  call_id: string;
+  author: string;
+  author_name: string;
+  body: string;
+  score: number | null;
+  created_at: string;
+  updated_at: string;
+  call: Pick<CallSummary, "id" | "customer" | "agent" | "type" | "date_call" | "duration" | "score">;
+};
+
+export type FeedbackList = { total: number; feedback: HumanFeedback[]; authors: string[] };

@@ -1,6 +1,7 @@
 import {
   CheckIcon,
   CircleAlertIcon,
+  BriefcaseIcon,
   ClockIcon,
   CopyIcon,
   DownloadIcon,
@@ -9,14 +10,29 @@ import {
   FileTextIcon,
   LightbulbIcon,
   Link2Icon,
+  MailIcon,
+  MapPinIcon,
+  MessageSquareTextIcon,
   MicIcon,
   PencilLineIcon,
+  PhoneIcon,
   ShareIcon,
   SparklesIcon,
+  Trash2Icon,
+  UserRoundIcon,
   WorkflowIcon,
 } from "lucide-react";
 import * as React from "react";
 import { OutcomeBadge, ScoreBadge, scoreVariant, StatusBadge } from "@/components/call-badges";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +49,7 @@ import {
 } from "@/components/ui/dialog";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Menu, MenuItem, MenuLinkItem, MenuPopup, MenuSeparator, MenuTrigger } from "@/components/ui/menu";
 import { Meter, MeterIndicator, MeterLabel, MeterTrack } from "@/components/ui/meter";
 import { Separator } from "@/components/ui/separator";
@@ -43,10 +60,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
 import { Bidi, textDir } from "@/lib/bidi";
-import { fmtDateTime, fmtDuration, fmtRelative, humanize } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtDuration, fmtRelative, humanize, numberFmt } from "@/lib/format";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
 import { useMe } from "@/lib/me";
-import type { Analysis, CallDetail, Share } from "@/lib/types";
+import type { Analysis, CallDetail, CrmLookup, CrmOpportunity, CrmPerson, HumanFeedback, Share } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const SCORE_NAMES: Record<string, string> = {
@@ -426,12 +443,382 @@ function ShareDialog({ callId, open, onOpenChange }: { callId: string; open: boo
   );
 }
 
-function CallBody({ callId, onChanged }: { callId: string; onChanged: () => void }) {
+const STAGE_VARIANT: Record<string, "success" | "info" | "warning" | "error" | "secondary"> = {
+  ACCEPTED: "success",
+  ACCOUNT_MADE: "success",
+  ACTIVE: "success",
+  ATTEMPTED: "warning",
+  IN_TALK: "info",
+  INSTALLING: "success",
+  REJECTED: "error",
+  WAITING_REPLY: "info",
+};
+
+function CrmField({ icon: Icon, children }: { icon: typeof MailIcon; children: React.ReactNode }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <Icon aria-hidden="true" className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
+
+function CrmOpportunityRow({ o }: { o: CrmOpportunity }) {
+  const amount = o.amount !== null ? `${numberFmt.format(o.amount)}${o.currency ? ` ${o.currency}` : ""}` : null;
+  return (
+    <li className="flex flex-col gap-1.5 rounded-lg border bg-muted/40 px-3 py-2.5 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <a className="inline-flex items-center gap-1.5 font-medium hover:underline" href={o.url} rel="noreferrer" target="_blank">
+          {o.name}
+          <ExternalLinkIcon aria-hidden="true" className="size-3 text-muted-foreground" />
+        </a>
+        {o.stage && <Badge variant={STAGE_VARIANT[o.stage] ?? "secondary"}>{humanize(o.stage)}</Badge>}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-muted-foreground text-xs">
+        {amount && <span className="tabular-nums">{amount}</span>}
+        {o.owner && <span>Owner: {o.owner}</span>}
+        {o.company && <span>{o.company}</span>}
+        {o.close_date && <span>Close date: {fmtDate(o.close_date)}</span>}
+        {o.created_at && <span>Created {fmtDate(o.created_at)}</span>}
+      </div>
+    </li>
+  );
+}
+
+function CrmPersonCard({ person }: { person: CrmPerson }) {
+  return (
+    <Card className="rounded-xl">
+      <CardPanel className="flex flex-col gap-4 p-4">
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <a
+              className="inline-flex items-center gap-1.5 font-heading font-semibold hover:underline"
+              href={person.url}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {person.name}
+              <ExternalLinkIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
+            </a>
+            {person.job_title && <Badge variant="secondary">{person.job_title}</Badge>}
+          </div>
+          <div className="flex flex-col gap-1 text-muted-foreground text-sm">
+            {person.phones.length > 0 && (
+              <CrmField icon={PhoneIcon}>
+                <span className="tabular-nums">{person.phones.join(" · ")}</span>
+              </CrmField>
+            )}
+            {person.email && <CrmField icon={MailIcon}>{person.email}</CrmField>}
+            {person.company && <CrmField icon={BriefcaseIcon}>{person.company}</CrmField>}
+            {person.city && <CrmField icon={MapPinIcon}>{person.city}</CrmField>}
+          </div>
+          <p className="text-muted-foreground text-xs">
+            {person.created_at && `In the CRM since ${fmtDate(person.created_at)}`}
+            {person.last_contact_at && ` · Last contact ${fmtRelative(person.last_contact_at)}`}
+          </p>
+        </div>
+        <Separator />
+        <div className="flex flex-col gap-2">
+          <h4 className="font-medium text-sm">
+            Opportunities
+            <span className="ms-1.5 font-normal text-muted-foreground tabular-nums">{person.opportunities.length}</span>
+          </h4>
+          {person.opportunities.length ? (
+            <ul className="flex flex-col gap-2">
+              {person.opportunities.map((o) => (
+                <CrmOpportunityRow key={o.id} o={o} />
+              ))}
+            </ul>
+          ) : (
+            <p className="text-muted-foreground text-sm">No opportunities for this contact.</p>
+          )}
+        </div>
+      </CardPanel>
+    </Card>
+  );
+}
+
+function CrmTab({ call, isAdmin }: { call: CallDetail; isAdmin: boolean }) {
+  const { data, error, loading } = useApi<CrmLookup>(`/api/calls/${encodeURIComponent(call.id)}/crm`);
+
+  if (error) {
+    return (
+      <Alert variant="error">
+        <CircleAlertIcon aria-hidden="true" />
+        <AlertTitle>Couldn’t load the CRM</AlertTitle>
+        <AlertDescription>{error.message}</AlertDescription>
+      </Alert>
+    );
+  }
+  if (!data || loading) {
+    return (
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-6 w-48" />
+        <Skeleton className="h-40 w-full rounded-xl" />
+      </div>
+    );
+  }
+
+  const empty = (title: string, description: string) => (
+    <Empty className="md:py-12">
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <UserRoundIcon />
+        </EmptyMedia>
+        <EmptyTitle>{title}</EmptyTitle>
+        <EmptyDescription>{description}</EmptyDescription>
+      </EmptyHeader>
+    </Empty>
+  );
+  if (!data.configured) {
+    return empty(
+      "CRM not connected",
+      isAdmin ? "Add CRM_API_KEY in Settings to see the customer’s CRM details here." : "The CRM isn’t connected yet.",
+    );
+  }
+  if (!data.searched) {
+    return empty("No customer number", "This call has no customer phone number to look up in the CRM.");
+  }
+  if (!data.people.length) {
+    return empty("Not in the CRM", `No contact with the number ${data.number} was found in the CRM.`);
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-muted-foreground text-sm">
+        {data.people.length === 1 ? "1 contact" : `${data.people.length} contacts`} in the CRM with the number{" "}
+        <span className="tabular-nums">{data.number}</span>.
+      </p>
+      {data.people.map((p) => (
+        <CrmPersonCard key={p.id} person={p} />
+      ))}
+    </div>
+  );
+}
+
+const SCORE_ITEMS = [
+  { label: "No score", value: "none" },
+  ...Array.from({ length: 10 }, (_, i) => ({ label: `${i + 1} / 10`, value: String(i + 1) })),
+];
+
+/** Text + optional score; used to add feedback and to edit it. */
+function FeedbackForm({
+  initial,
+  submitLabel,
+  onSubmit,
+  onCancel,
+}: {
+  initial?: { body: string; score: number | null };
+  submitLabel: string;
+  onSubmit: (value: { body: string; score: number | null }) => Promise<void>;
+  onCancel?: () => void;
+}) {
+  const [body, setBody] = React.useState(initial?.body ?? "");
+  const [score, setScore] = React.useState(initial?.score ? String(initial.score) : "none");
+  const [busy, setBusy] = React.useState(false);
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await onSubmit({ body, score: score === "none" ? null : Number(score) });
+      if (!initial) {
+        setBody("");
+        setScore("none");
+      }
+    } catch (err) {
+      toastManager.add({ description: (err as Error).message, title: "Couldn't save feedback", type: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Textarea
+        aria-label="Feedback"
+        className="min-h-24 leading-relaxed"
+        dir={textDir(body)}
+        onChange={(e) => setBody(e.target.value)}
+        placeholder="What went well, what to improve, what the customer said…"
+        value={body}
+      />
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Select items={SCORE_ITEMS} onValueChange={(v) => setScore(v as string)} value={score}>
+          <SelectTrigger aria-label="Your score" className="me-auto w-auto">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            {SCORE_ITEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+        {onCancel && (
+          <Button onClick={onCancel} variant="ghost">
+            Cancel
+          </Button>
+        )}
+        <Button disabled={!body.trim()} loading={busy} onClick={submit}>
+          {submitLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function FeedbackEntry({
+  item,
+  canEdit,
+  onChanged,
+}: {
+  item: HumanFeedback;
+  canEdit: boolean;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const edited = item.updated_at !== item.created_at;
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await api(`/api/feedback/${item.id}`, { method: "DELETE" });
+      toastManager.add({ title: "Feedback deleted", type: "success" });
+      onChanged();
+    } catch (err) {
+      toastManager.add({ description: (err as Error).message, title: "Couldn't delete", type: "error" });
+    } finally {
+      setBusy(false);
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <Card className="rounded-xl">
+      <CardPanel className="flex flex-col gap-3 p-4">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground text-xs">
+          <span className="font-medium text-foreground text-sm">{item.author_name}</span>
+          <span title={fmtDateTime(item.created_at)}>{fmtRelative(item.created_at)}</span>
+          {edited && <span title={fmtDateTime(item.updated_at)}>· edited</span>}
+          {item.score !== null && (
+            <Badge className="ms-auto tabular-nums" variant="outline">
+              Score {item.score}/10
+            </Badge>
+          )}
+        </div>
+        {editing ? (
+          <FeedbackForm
+            initial={item}
+            onCancel={() => setEditing(false)}
+            onSubmit={async (value) => {
+              await api(`/api/feedback/${item.id}`, { body: value, method: "PUT" });
+              setEditing(false);
+              onChanged();
+            }}
+            submitLabel="Save"
+          />
+        ) : (
+          <>
+            <Bidi className="whitespace-pre-wrap text-sm leading-relaxed" text={item.body} />
+            {canEdit && (
+              <div className="flex justify-end gap-1">
+                <Button onClick={() => setEditing(true)} size="xs" variant="ghost">
+                  <PencilLineIcon aria-hidden="true" />
+                  Edit
+                </Button>
+                <Button onClick={() => setDeleting(true)} size="xs" variant="ghost">
+                  <Trash2Icon aria-hidden="true" />
+                  Delete
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+        <AlertDialog onOpenChange={setDeleting} open={deleting}>
+          <AlertDialogPopup>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this feedback?</AlertDialogTitle>
+              <AlertDialogDescription>It is removed from the call and from the Human feedback page.</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogClose render={<Button variant="ghost" />}>Cancel</AlertDialogClose>
+              <Button loading={busy} onClick={remove} variant="destructive">
+                Delete
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
+      </CardPanel>
+    </Card>
+  );
+}
+
+/** Notes people wrote about this call. Admins add, edit and delete; agents just read. */
+function HumanFeedbackTab({
+  callId,
+  isAdmin,
+  items,
+  onChanged,
+}: {
+  callId: string;
+  isAdmin: boolean;
+  items: HumanFeedback[] | undefined;
+  onChanged: () => void;
+}) {
+  if (!items) return <Skeleton className="h-32 w-full rounded-xl" />;
+  return (
+    <div className="flex flex-col gap-5">
+      {isAdmin && (
+        <FeedbackForm
+          onSubmit={async (value) => {
+            await api(`/api/calls/${encodeURIComponent(callId)}/feedback`, { body: value, method: "POST" });
+            toastManager.add({ title: "Feedback added", type: "success" });
+            onChanged();
+          }}
+          submitLabel="Add feedback"
+        />
+      )}
+      {items.length ? (
+        <div className="flex flex-col gap-3">
+          {items.map((item) => (
+            <FeedbackEntry canEdit={isAdmin} item={item} key={item.id} onChanged={onChanged} />
+          ))}
+        </div>
+      ) : (
+        <Empty className="md:py-10">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <MessageSquareTextIcon />
+            </EmptyMedia>
+            <EmptyTitle>No human feedback yet</EmptyTitle>
+            <EmptyDescription>
+              {isAdmin ? "Write the first note about this call above." : "Nobody has reviewed this call yet."}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
+    </div>
+  );
+}
+
+function CallBody({
+  callId,
+  onChanged,
+  initialTab,
+}: {
+  callId: string;
+  onChanged: () => void;
+  initialTab?: string;
+}) {
   const job = useJob();
   const { isAdmin } = useMe();
   const { data: call, error, reload } = useApi<CallDetail>(`/api/calls/${encodeURIComponent(callId)}`);
   useOnJobFinished(reload);
-  const [tab, setTab] = React.useState<string>("feedback");
+  const { data: human, reload: reloadHuman } = useApi<HumanFeedback[]>(`/api/calls/${encodeURIComponent(callId)}/feedback`);
+  const [tab, setTab] = React.useState<string>(initialTab ?? "feedback");
   const [shareOpen, setShareOpen] = React.useState(false);
   const running = !!job.state?.running;
 
@@ -576,6 +963,15 @@ function CallBody({ callId, onChanged }: { callId: string; onChanged: () => void
           <TabsList className="w-full sm:w-auto" variant="underline">
             <TabsTab value="feedback">Feedback</TabsTab>
             <TabsTab value="transcript">Transcript</TabsTab>
+            <TabsTab value="human">
+              Human feedback
+              {!!human?.length && (
+                <Badge className="ms-1.5 tabular-nums" size="sm" variant="secondary">
+                  {human.length}
+                </Badge>
+              )}
+            </TabsTab>
+            <TabsTab value="crm">CRM</TabsTab>
           </TabsList>
           <TabsPanel className="pt-5" value="feedback">
             {call.analysis ? (
@@ -610,6 +1006,20 @@ function CallBody({ callId, onChanged }: { callId: string; onChanged: () => void
           <TabsPanel className="pt-5" value="transcript">
             {isAdmin ? <TranscriptEditor call={call} onSaved={refresh} /> : <TranscriptView call={call} />}
           </TabsPanel>
+          <TabsPanel className="pt-5" value="human">
+            <HumanFeedbackTab
+              callId={call.id}
+              isAdmin={isAdmin}
+              items={human}
+              onChanged={() => {
+                reloadHuman();
+                onChanged();
+              }}
+            />
+          </TabsPanel>
+          <TabsPanel className="pt-5" value="crm">
+            <CrmTab call={call} isAdmin={isAdmin} />
+          </TabsPanel>
         </Tabs>
       </SheetPanel>
       {isAdmin && <ShareDialog callId={call.id} onOpenChange={setShareOpen} open={shareOpen} />}
@@ -621,10 +1031,13 @@ export function CallSheet({
   callId,
   onClose,
   onChanged,
+  initialTab,
 }: {
   callId: string | null;
   onClose: () => void;
   onChanged: () => void;
+  /** Tab opened first: "feedback" (AI, default), "transcript", "human" or "crm". */
+  initialTab?: string;
 }): React.ReactElement {
   // Keep showing the last call while the sheet animates closed.
   const [shownId, setShownId] = React.useState(callId);
@@ -635,7 +1048,7 @@ export function CallSheet({
   return (
     <Sheet onOpenChange={(open) => !open && onClose()} open={!!callId}>
       <SheetPopup className="max-w-3xl" side="right" variant="inset">
-        {shownId && <CallBody callId={shownId} key={shownId} onChanged={onChanged} />}
+        {shownId && <CallBody callId={shownId} initialTab={initialTab} key={shownId} onChanged={onChanged} />}
       </SheetPopup>
     </Sheet>
   );

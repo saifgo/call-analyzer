@@ -84,7 +84,7 @@ function WhisperModelNote({ name, saved, onInstall }: { name: string; saved: boo
     </div>
   );
 }
-const BOOLEAN_KEYS = new Set(["GOVOICE_VERIFY_SSL", "SHARE_ON_LAN", "COOKIE_SECURE"]);
+const BOOLEAN_KEYS = new Set(["GOVOICE_VERIFY_SSL", "AUTO_PROCESS", "SHARE_ON_LAN", "COOKIE_SECURE"]);
 
 function SecretInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
   const [shown, setShown] = React.useState(false);

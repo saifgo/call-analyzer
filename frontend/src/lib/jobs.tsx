@@ -110,6 +110,11 @@ export function JobProvider({
           return;
         }
         const ok = next.exit_code === 0;
+        // Ongoing mode runs every few minutes: only speak up when something went wrong.
+        if (ok && next.auto) {
+          timer.current = window.setTimeout(poll, 4000);
+          return;
+        }
         toastManager.add({
           title: ok ? "Job finished" : next.exit_code === -1 ? "Job stopped" : "Job failed",
           description: next.label,

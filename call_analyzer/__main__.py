@@ -24,6 +24,18 @@ def _filters(args) -> dict:
 def cmd_sync(args):
     from .govoice import GoVoiceClient
     conn = db.connect()
+    if args.new_only:
+        # Newest first: stop at the first page that holds no new recordings instead of fetching them all.
+        fetched = new = page_new = 0
+        for i, record in enumerate(GoVoiceClient().iter_recordings(perpage=100, stop_before=args.since), 1):
+            added = db.upsert_recordings(conn, [record])
+            fetched, new, page_new = fetched + 1, new + added, page_new + added
+            if i % 100 == 0:
+                if not page_new:
+                    break
+                page_new = 0
+        print(f"Fetched {fetched} recordings from GoVoice, {new} new.")
+        return
     records = list(GoVoiceClient().iter_recordings(perpage=100, stop_before=args.since))
     new = db.upsert_recordings(conn, records)
     print(f"Fetched {len(records)} recordings from GoVoice, {new} new.")
@@ -353,6 +365,8 @@ def main():
         p.add_argument("--workers", type=int, default=4, help="Parallel transcriptions/analyses (default 4)")
         p.add_argument("--redo", action="store_true", help="transcribe/analyze: redo calls that are already done")
         p.add_argument("--team-only", action="store_true", help="report: only the team report")
+        p.add_argument("--new-only", action="store_true",
+                       help="sync: stop at the first page of recordings that are all known already")
 
     add("sync", cmd_sync, "Fetch the recordings list from GoVoice into the local DB")
     add("download", cmd_download, "Download mp3 files")

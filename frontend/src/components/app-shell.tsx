@@ -5,6 +5,7 @@ import {
   KeyRoundIcon,
   LayoutDashboardIcon,
   LogOutIcon,
+  MessageSquareTextIcon,
   MonitorIcon,
   MoonIcon,
   PhoneIcon,
@@ -74,6 +75,7 @@ const NAV = [
     items: [
       { icon: LayoutDashboardIcon, label: "Dashboard", page: "dashboard" },
       { icon: PhoneIcon, label: "Calls", page: "calls" },
+      { icon: MessageSquareTextIcon, label: "Human feedback", page: "feedback" },
       { icon: FileTextIcon, label: "Reports", page: "reports" },
     ],
     label: "Coaching",

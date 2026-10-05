@@ -9,6 +9,7 @@ import { useRoute } from "@/lib/router";
 import { BusinessPage } from "@/pages/business";
 import { CallsPage } from "@/pages/calls";
 import { DashboardPage } from "@/pages/dashboard";
+import { FeedbackPage } from "@/pages/feedback";
 import { LoginPage } from "@/pages/login";
 import { PipelinePage } from "@/pages/pipeline";
 import { ReportsPage } from "@/pages/reports";
@@ -16,7 +17,7 @@ import { SettingsPage } from "@/pages/settings";
 import { UsersPage } from "@/pages/users";
 
 /** Pages agent accounts can open; the others fall back to the dashboard (the server refuses them anyway). */
-const AGENT_PAGES = new Set(["dashboard", "calls", "reports"]);
+const AGENT_PAGES = new Set(["dashboard", "calls", "feedback", "reports"]);
 
 function Pages() {
   const route = useRoute();
@@ -26,6 +27,9 @@ function Pages() {
   switch (isAdmin || AGENT_PAGES.has(route.page) ? route.page : "dashboard") {
     case "calls":
       page = <CallsPage route={route} />;
+      break;
+    case "feedback":
+      page = <FeedbackPage route={route} />;
       break;
     case "pipeline":
       page = <PipelinePage />;

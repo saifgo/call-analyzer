@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS report_shares (
     report_name TEXT NOT NULL UNIQUE,
     created_at  TEXT NOT NULL
 );
+-- Notes people write about a call (several per call). Independent of the AI analysis, so re-analyzing keeps them.
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_id     TEXT NOT NULL,
+    author      TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    score       INTEGER,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_call ON feedback(call_id);
 CREATE TABLE IF NOT EXISTS users (
     username       TEXT PRIMARY KEY,
     password_hash  TEXT NOT NULL,

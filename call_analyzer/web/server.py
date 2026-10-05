@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import auth, db
+from .. import auth, crm, db
 from ..config import ENV_PATH, ROOT, settings
 from . import govoice_login
 from .export import audio_data_uri, render_call_page, render_report_page
@@ -28,7 +28,7 @@ from .export import audio_data_uri, render_call_page, render_report_page
 STATIC = Path(__file__).parent / "static"
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
 SECRET_KEYS = {"GOVOICE_COOKIE", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "OPENAI_API_KEY",
-               "CLAUDE_CODE_OAUTH_TOKEN", "CURSOR_API_KEY", "ADMIN_PASSWORD"}
+               "CLAUDE_CODE_OAUTH_TOKEN", "CURSOR_API_KEY", "ADMIN_PASSWORD", "CRM_API_KEY"}
 
 
 @asynccontextmanager
@@ -38,6 +38,7 @@ async def lifespan(app):
         print("No user accounts yet. Create one with:  python -m call_analyzer user add <name>")
     stop = threading.Event()
     threading.Thread(target=govoice_login.keepalive_loop, args=(stop,), daemon=True).start()
+    threading.Thread(target=auto_process_loop, args=(stop,), daemon=True).start()
     yield
     stop.set()
 
@@ -81,7 +82,8 @@ AGENT_ALLOWED = [(method, re.compile(pattern)) for method, pattern in [
     ("GET", r"/api/stats"),
     ("GET", r"/api/calls"),
     ("GET", r"/api/calls/[^/]+"),
-    ("GET", r"/api/calls/[^/]+/(audio|export\.pdf|export\.html)"),
+    ("GET", r"/api/calls/[^/]+/(audio|crm|feedback|export\.pdf|export\.html)"),
+    ("GET", r"/api/feedback"),
     ("GET", r"/api/reports"),
     ("GET", r"/api/reports/[^/]+"),
     ("GET", r"/api/reports/[^/]+/export\.pdf"),
@@ -420,7 +422,8 @@ def _summary(row) -> dict:
 
 
 @app.get("/api/calls")
-def list_calls(request: Request, agent: str = "", status: str = "", q: str = "", since: str = "", until: str = "",
+def list_calls(request: Request, agent: str = "", status: str = "", outcome: str = "", q: str = "",
+               since: str = "", until: str = "",
                min_duration: int = 0, sort: str = "-date", limit: int = 200, offset: int = 0):
     scope, scope_args = _scope_sql(request)
     clauses, args = [scope], list(scope_args)
@@ -429,6 +432,9 @@ def list_calls(request: Request, agent: str = "", status: str = "", q: str = "",
         args.append(agent)
     if status in STATUS_SQL:
         clauses.append(STATUS_SQL[status])
+    if outcome:
+        clauses.append("json_extract(analysis, '$.outcome') = ?")
+        args.append(outcome)
     if q:
         clauses.append("(customer LIKE ? OR id = ? OR transcript LIKE ?)")
         args += [f"%{q}%", q, f"%{q}%"]
@@ -480,6 +486,16 @@ def get_call(call_id: str, request: Request):
     }
 
 
+@app.get("/api/calls/{call_id}/crm")
+def get_call_crm(call_id: str, request: Request):
+    """The customer's contacts and opportunities in the CRM, found by the number that was called."""
+    row = _get_row(call_id, request)
+    try:
+        return crm.lookup(row["customer"] or "")
+    except crm.CrmError as exc:
+        raise HTTPException(502, str(exc))
+
+
 EDITED_SEP = " · "
 
 
@@ -503,6 +519,105 @@ def get_audio(call_id: str, request: Request):
     if not row["audio_path"] or not Path(row["audio_path"]).exists():
         raise HTTPException(404, "Audio not downloaded yet")
     return FileResponse(row["audio_path"], media_type="audio/mpeg")
+
+
+# --- Human feedback ---------------------------------------------------------------------------
+# Anyone who can see a call can read its feedback; only admins write it (see AGENT_ALLOWED).
+
+class FeedbackBody(BaseModel):
+    body: str
+    score: int | None = None  # the reviewer's own 1-10 score, to compare with the AI's
+
+
+FEEDBACK_SELECT = """
+    SELECT f.id, f.call_id, f.author, u.display_name AS author_name, f.body, f.score, f.created_at, f.updated_at,
+           c.customer, c.agent, c.type, c.date_call, c.duration,
+           json_extract(c.analysis, '$.overall_score') AS ai_score
+    FROM feedback f JOIN calls c ON c.id = f.call_id LEFT JOIN users u ON u.username = f.author"""
+
+
+def _feedback_item(row) -> dict:
+    return {
+        "id": row["id"], "call_id": row["call_id"], "author": row["author"],
+        "author_name": row["author_name"] or row["author"], "body": row["body"], "score": row["score"],
+        "created_at": row["created_at"], "updated_at": row["updated_at"],
+        "call": {"id": row["call_id"], "customer": row["customer"], "agent": row["agent"], "type": row["type"],
+                 "date_call": row["date_call"], "duration": row["duration"], "score": row["ai_score"]},
+    }
+
+
+def _clean_feedback(body: FeedbackBody) -> tuple[str, int | None]:
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(400, "Write some feedback first")
+    if body.score is not None and not 1 <= body.score <= 10:
+        raise HTTPException(400, "The score must be between 1 and 10")
+    return text, body.score
+
+
+@app.get("/api/feedback")
+def list_feedback(request: Request, q: str = "", author: str = "", limit: int = 200, offset: int = 0):
+    """All human feedback with the call each one is about, newest first."""
+    scope, scope_args = _scope_sql(request, "c.agent")
+    clauses, args = [scope], list(scope_args)
+    if author:
+        clauses.append("f.author = ?")
+        args.append(author)
+    if q:
+        clauses.append("(f.body LIKE ? OR c.customer LIKE ? OR c.id = ?)")
+        args += [f"%{q}%", f"%{q}%", q]
+    where = " AND ".join(clauses)
+    conn = db.connect()
+    total = conn.execute(f"SELECT COUNT(*) FROM feedback f JOIN calls c ON c.id = f.call_id WHERE {where}",
+                         args).fetchone()[0]
+    rows = conn.execute(f"{FEEDBACK_SELECT} WHERE {where} ORDER BY f.created_at DESC, f.id DESC LIMIT ? OFFSET ?",
+                        [*args, limit, offset]).fetchall()
+    authors = [r[0] for r in conn.execute(
+        "SELECT DISTINCT f.author FROM feedback f JOIN calls c ON c.id = f.call_id "
+        f"WHERE {scope} ORDER BY f.author", scope_args)]
+    return {"total": total, "feedback": [_feedback_item(r) for r in rows], "authors": authors}
+
+
+@app.get("/api/calls/{call_id}/feedback")
+def get_call_feedback(call_id: str, request: Request):
+    _get_row(call_id, request)
+    rows = db.connect().execute(f"{FEEDBACK_SELECT} WHERE f.call_id = ? ORDER BY f.created_at DESC, f.id DESC",
+                                (call_id,)).fetchall()
+    return [_feedback_item(r) for r in rows]
+
+
+@app.post("/api/calls/{call_id}/feedback")
+def add_feedback(call_id: str, body: FeedbackBody, request: Request):
+    _get_row(call_id)
+    text, score = _clean_feedback(body)
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = db.connect()
+    cur = conn.execute("INSERT INTO feedback (call_id, author, body, score, created_at, updated_at) "
+                       "VALUES (?, ?, ?, ?, ?, ?)", (call_id, request.state.user, text, score, now, now))
+    conn.commit()
+    return _feedback_item(conn.execute(f"{FEEDBACK_SELECT} WHERE f.id = ?", (cur.lastrowid,)).fetchone())
+
+
+@app.put("/api/feedback/{feedback_id}")
+def update_feedback(feedback_id: int, body: FeedbackBody):
+    text, score = _clean_feedback(body)
+    conn = db.connect()
+    cur = conn.execute("UPDATE feedback SET body = ?, score = ?, updated_at = ? WHERE id = ?",
+                       (text, score, datetime.now().isoformat(timespec="seconds"), feedback_id))
+    conn.commit()
+    if not cur.rowcount:
+        raise HTTPException(404, "Feedback not found")
+    return _feedback_item(conn.execute(f"{FEEDBACK_SELECT} WHERE f.id = ?", (feedback_id,)).fetchone())
+
+
+@app.delete("/api/feedback/{feedback_id}")
+def delete_feedback(feedback_id: int):
+    conn = db.connect()
+    cur = conn.execute("DELETE FROM feedback WHERE id = ?", (feedback_id,))
+    conn.commit()
+    if not cur.rowcount:
+        raise HTTPException(404, "Feedback not found")
+    return {"ok": True}
 
 
 @app.get("/api/stats")
@@ -651,7 +766,7 @@ def export_report_pdf(name: str, request: Request):
 COMMANDS = {"check", "sync", "download", "transcribe", "analyze", "report", "run", "install-model"}
 ARG_FLAGS = {"since": "--since", "until": "--until", "agent": "--agent", "min_duration": "--min-duration",
              "limit": "--limit", "ids": "--ids", "workers": "--workers"}
-BOOL_FLAGS = {"redo": "--redo", "team_only": "--team-only"}
+BOOL_FLAGS = {"redo": "--redo", "team_only": "--team-only", "new_only": "--new-only"}
 
 
 class JobRequest(BaseModel):
@@ -669,13 +784,14 @@ class JobRunner:
         self.finished_at = None
         self.exit_code = None
         self.stopped = False
+        self.auto = False  # started by ongoing mode rather than by someone in the UI
         self.history: list[dict] = []
 
     @property
     def running(self) -> bool:
         return self.finished_at is None and self.started_at is not None
 
-    def start(self, commands: list[str], args: dict):
+    def start(self, commands: list[str], args: dict, auto: bool = False):
         with self.lock:
             if self.running:
                 raise HTTPException(409, "A job is already running")
@@ -685,8 +801,9 @@ class JobRunner:
                     cli_args += [ARG_FLAGS[name], str(value)]
                 elif name in BOOL_FLAGS and value:
                     cli_args.append(BOOL_FLAGS[name])
-            self.lines, self.exit_code, self.stopped = [], None, False
-            self.label = " → ".join(commands) + (f"  ({' '.join(cli_args)})" if cli_args else "")
+            self.lines, self.exit_code, self.stopped, self.auto = [], None, False, auto
+            self.label = ("Ongoing mode: " if auto else "") + " → ".join(commands) + (
+                f"  ({' '.join(cli_args)})" if cli_args else "")
             self.started_at, self.finished_at = datetime.now().isoformat(timespec="seconds"), None
             threading.Thread(target=self._run, args=(commands, cli_args), daemon=True).start()
 
@@ -724,12 +841,50 @@ class JobRunner:
                 os.killpg(self.process.pid, signal.SIGTERM)
 
     def state(self, since: int = 0) -> dict:
-        return {"running": self.running, "label": self.label, "started_at": self.started_at,
+        return {"running": self.running, "label": self.label, "auto": self.auto, "started_at": self.started_at,
                 "finished_at": self.finished_at, "exit_code": self.exit_code,
                 "offset": len(self.lines), "lines": self.lines[since:], "history": self.history}
 
 
 jobs = JobRunner()
+
+# Ongoing mode: fetch and process new calls every AUTO_PROCESS_MINUTES. No report step, since every run
+# would write a new set of report files.
+AUTO_COMMANDS = ["sync", "download", "transcribe", "analyze"]
+
+
+def _auto_settings() -> tuple[bool, int]:
+    """AUTO_PROCESS / AUTO_PROCESS_MINUTES as saved right now, so toggling them needs no restart."""
+    saved = _parse_env(ENV_PATH)
+
+    def get(key: str) -> str:
+        return (saved.get(key) or os.environ.get(key, "")).strip()
+
+    try:
+        minutes = max(1, int(get("AUTO_PROCESS_MINUTES") or 5))
+    except ValueError:
+        minutes = 5
+    return get("AUTO_PROCESS").lower() in ("1", "true", "yes", "on"), minutes
+
+
+def auto_process_loop(stop: threading.Event):
+    last_run = 0.0
+    while not stop.wait(15):
+        enabled, minutes = _auto_settings()
+        if not enabled:
+            last_run = 0.0  # run right away when it's turned on again
+            continue
+        # A job already running (manual or the previous run) delays this one until it's done.
+        if time.time() - last_run < minutes * 60 or jobs.running:
+            continue
+        last_run = time.time()
+        # Skip while GoVoice isn't logged in; the header already asks to log in.
+        if govoice_login.check_connection()["connected"] is False:
+            continue
+        try:
+            jobs.start(AUTO_COMMANDS, {"new_only": True}, auto=True)
+        except HTTPException:  # someone started a job in the meantime
+            pass
 
 
 @app.post("/api/jobs")

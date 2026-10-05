@@ -4,7 +4,10 @@ import {
   CalendarIcon,
   ChevronsUpDownIcon,
   FileAudioIcon,
+  InfoIcon,
   MicIcon,
+  ThumbsDownIcon,
+  ThumbsUpIcon,
   SearchIcon,
   SparklesIcon,
   WorkflowIcon,
@@ -21,21 +24,32 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Pagination, PaginationContent, PaginationItem, PaginationNext, PaginationPrevious } from "@/components/ui/pagination";
-import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { fmtDate, fmtDateTime, fmtDuration, fmtRelative, fmtTime, isoDay, numberFmt, parseDate } from "@/lib/format";
+import {
+  fmtDate,
+  fmtDateTime,
+  fmtDuration,
+  fmtRelative,
+  fmtTime,
+  humanize,
+  isoDay,
+  numberFmt,
+  parseDate,
+} from "@/lib/format";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
 import { useMe } from "@/lib/me";
 import { href, navigate, type Route } from "@/lib/router";
-import type { CallList } from "@/lib/types";
+import type { CallDetail, CallList } from "@/lib/types";
 import { CallSheet } from "./call-detail";
 
 const PAGE_SIZE = 50;
-const FILTER_KEYS = ["q", "agent", "status", "since", "until", "min"] as const;
+const FILTER_KEYS = ["q", "agent", "status", "outcome", "since", "until", "min"] as const;
 // Everything kept in the URL: the filters plus the table sort ("duration", "-duration", …).
 const QUERY_KEYS = [...FILTER_KEYS, "sort"] as const;
 type Filters = Record<(typeof QUERY_KEYS)[number], string>;
@@ -90,6 +104,14 @@ const STATUS_ITEMS = [
   { label: "Errors", value: "error" },
 ];
 
+// Same values as CallAnalysis.outcome in analyze.py.
+const OUTCOME_ITEMS = [
+  { label: "Any outcome", value: "all" },
+  ...["sale", "appointment_or_next_step", "callback_requested", "not_interested", "no_decision", "not_applicable"].map(
+    (value) => ({ label: humanize(value), value }),
+  ),
+];
+
 const LENGTH_ITEMS = [
   { label: "Any length", value: "all" },
   { label: "30 s or more", value: "30" },
@@ -133,6 +155,64 @@ function DateRangeFilter({ since, until, onChange }: { since: string; until: str
   );
 }
 
+function HighlightList({ items, icon: Icon, className }: { items: string[]; icon: typeof ThumbsUpIcon; className: string }) {
+  if (!items.length) return <p className="text-muted-foreground text-sm">None noted.</p>;
+  return (
+    <ul className="flex flex-col gap-1.5">
+      {items.map((item, i) => (
+        <li className="flex gap-2 text-sm" key={i}>
+          <Icon aria-hidden="true" className={cn("mt-0.5 size-3.5 shrink-0", className)} />
+          <span>{item}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Three positives and three negatives from the call's analysis, fetched when the popover opens.
+function CallHighlights({ callId }: { callId: string }) {
+  const [open, setOpen] = React.useState(false);
+  const { data: call, error } = useApi<CallDetail>(open ? `/api/calls/${encodeURIComponent(callId)}` : null);
+  const a = call?.analysis;
+  const positives = a?.strengths.slice(0, 3) ?? [];
+  // Mistakes first, topped up with missed opportunities.
+  const negatives = a ? [...a.mistakes.map((m) => m.problem), ...a.missed_opportunities].slice(0, 3) : [];
+
+  return (
+    <Popover onOpenChange={setOpen} open={open}>
+      <PopoverTrigger
+        aria-label={`Positives and negatives for call ${callId}`}
+        onClick={(e) => e.stopPropagation()}
+        render={<Button size="icon-xs" variant="ghost" />}
+      >
+        <InfoIcon aria-hidden="true" />
+      </PopoverTrigger>
+      <PopoverPopup align="end" className="w-80" onClick={(e) => e.stopPropagation()}>
+        {error ? (
+          <p className="text-destructive-foreground text-sm">{error.message}</p>
+        ) : !call ? (
+          <div className="flex justify-center py-4">
+            <Spinner />
+          </div>
+        ) : !a ? (
+          <p className="text-muted-foreground text-sm">This call hasn't been analyzed yet.</p>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <PopoverTitle className="text-sm">Positives</PopoverTitle>
+              <HighlightList className="text-success-foreground" icon={ThumbsUpIcon} items={positives} />
+            </div>
+            <div className="flex flex-col gap-2">
+              <PopoverTitle className="text-sm">Negatives</PopoverTitle>
+              <HighlightList className="text-destructive-foreground" icon={ThumbsDownIcon} items={negatives} />
+            </div>
+          </div>
+        )}
+      </PopoverPopup>
+    </Popover>
+  );
+}
+
 export function CallsPage({ route }: { route: Route }): React.ReactElement {
   const job = useJob();
   // Agent accounts get a read-only list: no selection or bulk processing.
@@ -161,6 +241,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
   if (filters.q) params.set("q", filters.q);
   if (filters.agent) params.set("agent", filters.agent);
   if (filters.status) params.set("status", filters.status);
+  if (filters.outcome) params.set("outcome", filters.outcome);
   if (filters.since) params.set("since", filters.since);
   if (filters.until) params.set("until", filters.until);
   if (filters.min) params.set("min_duration", filters.min);
@@ -201,7 +282,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const pageHref = (p: number) => href("calls", null, { ...filters, page: p > 1 ? String(p) : "" });
   const running = !!job.state?.running;
-  const columns = isAdmin ? 10 : 9;
+  const columns = isAdmin ? 11 : 10;
 
   return (
     <>
@@ -255,6 +336,22 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
           </SelectTrigger>
           <SelectPopup>
             {STATUS_ITEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+        <Select
+          items={OUTCOME_ITEMS}
+          onValueChange={(v) => setQuery({ outcome: v === "all" ? "" : (v as string) })}
+          value={filters.outcome || "all"}
+        >
+          <SelectTrigger aria-label="Outcome" className="w-auto">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            {OUTCOME_ITEMS.map((item) => (
               <SelectItem key={item.value} value={item.value}>
                 {item.label}
               </SelectItem>
@@ -355,6 +452,9 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
               <SortableHead className="max-xl:hidden" column="updated" onSort={(s) => setQuery({ sort: s })} sort={sort}>
                 Updated
               </SortableHead>
+              <TableHead className="w-10">
+                <span className="sr-only">Details</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -401,6 +501,9 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground max-xl:hidden" title={fmtDateTime(c.updated_at)}>
                       {fmtRelative(c.updated_at)}
+                    </TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      {c.score !== null && <CallHighlights callId={c.id} />}
                     </TableCell>
                   </TableRow>
                 ))}
