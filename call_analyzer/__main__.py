@@ -79,22 +79,35 @@ def _parallel(calls, fn, workers, label):
                 yield call, result, None
 
 
+def _chain(args) -> bool:
+    """Whether analysis follows this transcription in the same run (a remote agent's transcript is then analyzed
+    as soon as it arrives). Not with --redo: the analyze step re-does every call itself."""
+    return not args.redo and (getattr(args, "chain", False) or os.getenv("CALL_ANALYZER_CHAIN") == "1")
+
+
 def cmd_transcribe(args):
+    from . import dispatch
     from .transcribe import transcribe, transcriber_label
     conn = db.connect()
     where = "audio_path IS NOT NULL" + ("" if args.redo else " AND transcript IS NULL")
     calls = db.select_calls(conn, where=where, **_filters(args))
-    print(f"Transcribing {len(calls)} recordings with {settings.transcribe_provider}...")
-    for call, text, exc in _parallel(calls, lambda c: transcribe(Path(c["audio_path"])), args.workers, "transcribed"):
-        if exc:
-            conn.execute("UPDATE calls SET error=? WHERE id=?", (f"transcribe: {exc}", call["id"]))
-        else:
-            conn.execute("UPDATE calls SET transcript=?, transcribed_at=?, transcribed_by=?, error=NULL WHERE id=?",
-                         (text, _now(), transcriber_label(), call["id"]))
-        conn.commit()
+
+    def on_host(batch):
+        print(f"Transcribing {len(batch)} recordings with {settings.transcribe_provider}...")
+        for call, text, exc in _parallel(batch, lambda c: transcribe(Path(c["audio_path"])), args.workers,
+                                         "transcribed"):
+            if exc:
+                conn.execute("UPDATE calls SET error=? WHERE id=?", (f"transcribe: {exc}", call["id"]))
+            else:
+                conn.execute("UPDATE calls SET transcript=?, transcribed_at=?, transcribed_by=?, error=NULL WHERE id=?",
+                             (text, _now(), transcriber_label(), call["id"]))
+            conn.commit()
+
+    dispatch.process("transcribe", calls, on_host, chain=_chain(args))
 
 
 def cmd_analyze(args):
+    from . import dispatch
     from .analyze import analyze_call
     conn = db.connect()
     where = "transcript IS NOT NULL AND transcript != ''" + ("" if args.redo else " AND analysis IS NULL")
@@ -105,15 +118,19 @@ def cmd_analyze(args):
         who = f"Claude ({settings.claude_model}), falling back to Cursor ({settings.cursor_model})"
     else:
         who = f"Claude ({settings.claude_model})"
-    print(f"Analyzing {len(calls)} calls with {who}...")
-    for call, result, exc in _parallel(calls, analyze_call, args.workers, "analyzed"):
-        if exc:
-            conn.execute("UPDATE calls SET error=? WHERE id=?", (f"analyze: {exc}", call["id"]))
-        else:
-            analysis, by = result
-            conn.execute("UPDATE calls SET analysis=?, analyzed_at=?, analyzed_by=?, error=NULL WHERE id=?",
-                         (analysis.model_dump_json(), _now(), by, call["id"]))
-        conn.commit()
+
+    def on_host(batch):
+        print(f"Analyzing {len(batch)} calls with {who}...")
+        for call, result, exc in _parallel(batch, analyze_call, args.workers, "analyzed"):
+            if exc:
+                conn.execute("UPDATE calls SET error=? WHERE id=?", (f"analyze: {exc}", call["id"]))
+            else:
+                analysis, by = result
+                conn.execute("UPDATE calls SET analysis=?, analyzed_at=?, analyzed_by=?, error=NULL WHERE id=?",
+                             (analysis.model_dump_json(), _now(), by, call["id"]))
+            conn.commit()
+
+    dispatch.process("analyze", calls, on_host)
 
 
 def cmd_report(args):
@@ -224,8 +241,16 @@ def cmd_check(args):
         print("  OK - API key set")
         return True
 
+    from .config import runs_on
+    from . import workers
+    online = workers.online_workers(db.connect())
+    print(f"Processing: transcribe on {runs_on('transcribe')}, analyze on {runs_on('analyze')}; "
+          f"{len(online)} remote agent(s) online" + (f" ({', '.join(w['name'] for w in online)})" if online else ""))
+
     print(f"Analysis ({settings.analysis_backend}):")
-    if settings.analysis_backend == "cursor":
+    if runs_on("analyze") == "agent":
+        print("  skipped - runs on remote agents only (each agent checks its own setup: agent status)")
+    elif settings.analysis_backend == "cursor":
         ok = cursor_ready() and ok
     elif settings.analysis_backend == "auto":
         ok = claude_ready() and ok
@@ -237,7 +262,9 @@ def cmd_check(args):
         print(f"  FAILED - unknown ANALYSIS_BACKEND={settings.analysis_backend!r}")
 
     print(f"Transcription ({settings.transcribe_provider}):")
-    if settings.transcribe_provider == "local":
+    if runs_on("transcribe") == "agent":
+        print("  skipped - runs on remote agents only (each agent checks its own setup: agent status)")
+    elif settings.transcribe_provider == "local":
         try:
             import ctranslate2
             gpus = ctranslate2.get_cuda_device_count()
@@ -292,6 +319,12 @@ def cmd_ui(args):
     uvicorn.run("call_analyzer.web.server:app", host=host, port=port, log_level="warning")
 
 
+def cmd_agent(args):
+    """Run this PC as a remote agent: it does the transcription / analysis the hosted server asks for."""
+    from . import agent
+    agent.main(args)
+
+
 def cmd_user(args):
     """Manage the accounts that can sign in to the web interface."""
     from getpass import getpass
@@ -338,6 +371,7 @@ def cmd_user(args):
 
 
 def cmd_run(args):
+    args.chain = True
     cmd_sync(args)
     cmd_download(args)
     cmd_transcribe(args)
@@ -384,6 +418,13 @@ def main():
     ui.add_argument("--host", help="Address to listen on, e.g. 0.0.0.0 in Docker (default: 127.0.0.1)")
     ui.add_argument("--no-browser", action="store_true")
     ui.set_defaults(fn=cmd_ui)
+    ag = sub.add_parser("agent", help="Run this PC as a remote agent of a hosted server: login | run | status | autostart")
+    ag.add_argument("action", choices=["login", "run", "status", "autostart"])
+    ag.add_argument("--code", help="login: the connection code from the server's Remote agents page")
+    ag.add_argument("--server", help="login: address of the hosted server, e.g. https://calls.example.com")
+    ag.add_argument("--token", help="login: the token shown when the agent was added on the server's Agents page")
+    ag.add_argument("--off", action="store_true", help="autostart: remove the Windows startup entry")
+    ag.set_defaults(fn=cmd_agent)
     user = sub.add_parser("user", help="Manage web interface logins: list | add | set | passwd | delete")
     user.add_argument("action", choices=["list", "add", "set", "passwd", "delete"])
     user.add_argument("username", nargs="?")

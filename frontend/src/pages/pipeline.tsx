@@ -1,7 +1,8 @@
-import { CircleCheckIcon, PlayIcon, SquareIcon, StethoscopeIcon } from "lucide-react";
+import { CircleCheckIcon, MonitorSmartphoneIcon, PlayIcon, SquareIcon, StethoscopeIcon } from "lucide-react";
 import * as React from "react";
 import { JobLog } from "@/components/job-log";
 import { PageHeader } from "@/components/page-header";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,6 +35,8 @@ import { toastManager } from "@/components/ui/toast";
 import { useApi } from "@/lib/api";
 import { fmtDateTime, fmtRelative } from "@/lib/format";
 import { useJob } from "@/lib/jobs";
+import { href } from "@/lib/router";
+import { liveAgents, RUNS_ON_LABELS, STEP_NAMES, useWorkers } from "@/lib/workers";
 import type { Stats } from "@/lib/types";
 
 const STEPS = [
@@ -98,6 +101,35 @@ function NumberInput({
   );
 }
 
+/** Says where transcription and analysis will run, when that isn't simply this server. */
+function ProcessingNotice() {
+  const { state } = useWorkers();
+  if (!state) return null;
+  const steps = (["transcribe", "analyze"] as const).filter((s) => state.runs_on[s] !== "host");
+  if (!steps.length) return null;
+  const online = liveAgents(state.workers).length;
+  return (
+    <Alert variant={online ? "info" : "warning"}>
+      <MonitorSmartphoneIcon aria-hidden="true" />
+      <AlertTitle>
+        {steps.map((s) => `${STEP_NAMES[s]}: ${RUNS_ON_LABELS[state.runs_on[s]].toLowerCase()}`).join(" · ")}
+      </AlertTitle>
+      <AlertDescription>
+        {online
+          ? `${online} ${online === 1 ? "agent is" : "agents are"} online. The job waits for them and shows their progress in the log.`
+          : state.runs_on.transcribe === "agent" || state.runs_on.analyze === "agent"
+            ? "No agent is online: the calls are queued and processed when one connects."
+            : "No agent is online, so this server does the work."}
+      </AlertDescription>
+      <AlertAction>
+        <Button render={<a href={href("agents")} />} size="sm" variant="outline">
+          Agents
+        </Button>
+      </AlertAction>
+    </Alert>
+  );
+}
+
 function JobResultBadge({ code }: { code: number }) {
   if (code === 0) return <Badge variant="success">Succeeded</Badge>;
   if (code === -1) return <Badge variant="warning">Stopped</Badge>;
@@ -140,6 +172,8 @@ export function PipelinePage(): React.ReactElement {
         description="Run any part of the pipeline with filters. One job runs at a time."
         title="Pipeline"
       />
+
+      <ProcessingNotice />
 
       <Card>
         <CardHeader>

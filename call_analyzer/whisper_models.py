@@ -10,7 +10,16 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import settings
+from .config import FROZEN, settings
+
+
+class ModelUnavailable(Exception):
+    """The server can't provide this converted model."""
+
+
+# Set by a remote agent: fetch_model(name, dest) downloads the converted model from the server into `dest`, so the
+# agent PC doesn't need torch to convert it. Raises ModelUnavailable when the server doesn't have it either.
+fetch_model = None
 
 
 @dataclass(frozen=True)
@@ -37,20 +46,28 @@ _PREPROCESSOR_DEFAULTS = {"chunk_length": 30, "hop_length": 160, "n_fft": 400, "
                           "nb_max_frames": 3000, "sampling_rate": 16000}
 
 
-def model_dir(name: str) -> Path:
-    return Path(settings.whisper_model_dir) / "ct2" / name
+def model_dir(name: str, cfg=None) -> Path:
+    return Path((cfg or settings).whisper_model_dir) / "ct2" / name
 
 
-def is_installed(name: str) -> bool:
-    return (model_dir(name) / "model.bin").exists()
+def is_installed(name: str, cfg=None) -> bool:
+    return (model_dir(name, cfg) / "model.bin").exists()
 
 
-def install(name: str, log=print) -> Path:
+def install(name: str, log=print, cfg=None) -> Path:
     """Download a dialect model from Hugging Face and convert it for faster-whisper."""
+    cfg = cfg or settings
     model = DIALECT_MODELS[name]
-    out = model_dir(name)
-    if is_installed(name):
+    out = model_dir(name, cfg)
+    if is_installed(name, cfg):
         return out
+    if fetch_model is not None:
+        try:
+            log(f"Getting {name} from the server…")
+            fetch_model(name, out)
+            return out
+        except ModelUnavailable as exc:
+            log(f"{exc}; converting it here instead")
     try:
         from ctranslate2.converters import TransformersConverter
         from huggingface_hub import snapshot_download
@@ -59,6 +76,8 @@ def install(name: str, log=print) -> Path:
     except ImportError as exc:
         how = ("set the environment variable INSTALL_CONVERT=true (as a build variable) and redeploy"
                if Path("/.dockerenv").exists() else "run `pip install -r requirements-convert.txt`")
+        if FROZEN:
+            how = "install it on the server first (Settings, Install now): the agent downloads it from there"
         raise RuntimeError(
             f"Whisper model '{name}' must be converted once, which needs torch and transformers: {how}, "
             f"or pick another WHISPER_MODEL ({exc})") from exc
@@ -66,7 +85,7 @@ def install(name: str, log=print) -> Path:
     from huggingface_hub import constants
     constants.HF_HUB_DISABLE_XET = True  # Hugging Face's Xet transfer can stall on some networks; plain HTTPS doesn't
 
-    src = Path(settings.whisper_model_dir) / "src" / name
+    src = Path(cfg.whisper_model_dir) / "src" / name
     log(f"Downloading {model.repo} (~{model.size_gb * 2:.0f} GB, only the first time)…")
     snapshot_download(model.repo, local_dir=src,
                       allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model", "tokenizer*"])
@@ -88,8 +107,8 @@ def install(name: str, log=print) -> Path:
     return out
 
 
-def resolve(name: str, log=print) -> str:
+def resolve(name: str, log=print, cfg=None) -> str:
     """What to pass to faster_whisper.WhisperModel: a built-in name / repo id, or a converted local folder."""
     if name in DIALECT_MODELS:
-        return str(install(name, log))
+        return str(install(name, log, cfg))
     return name

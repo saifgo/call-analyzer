@@ -6,6 +6,8 @@ import { GoVoiceProvider } from "@/lib/govoice";
 import { JobProvider } from "@/lib/jobs";
 import { MeProvider, useMe } from "@/lib/me";
 import { useRoute } from "@/lib/router";
+import { WorkersProvider } from "@/lib/workers";
+import { AgentsPage } from "@/pages/agents";
 import { BusinessPage } from "@/pages/business";
 import { CallsPage } from "@/pages/calls";
 import { DashboardPage } from "@/pages/dashboard";
@@ -33,6 +35,9 @@ function Pages() {
       break;
     case "pipeline":
       page = <PipelinePage />;
+      break;
+    case "agents":
+      page = <AgentsPage />;
       break;
     case "reports":
       page = <ReportsPage route={route} />;
@@ -62,7 +67,9 @@ function SignedIn() {
   return (
     <GoVoiceProvider enabled={isAdmin}>
       <JobProvider enabled={isAdmin}>
-        <Pages />
+        <WorkersProvider enabled={isAdmin}>
+          <Pages />
+        </WorkersProvider>
       </JobProvider>
     </GoVoiceProvider>
   );

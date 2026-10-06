@@ -5,3 +5,6 @@ reports/
 __pycache__/
 *.stackdump
 frontend/node_modules/
+build/
+dist/
+packaging/agent.ico

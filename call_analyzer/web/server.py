@@ -19,9 +19,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import auth, crm, db
+from .. import auth, crm, db, workers
 from ..config import ENV_PATH, ROOT, settings
-from . import govoice_login
+from . import govoice_login, workers_api
 from .export import audio_data_uri, render_call_page, render_report_page
 
 # Built from frontend/ (npm run build); see frontend/README.md.
@@ -39,19 +39,22 @@ async def lifespan(app):
     stop = threading.Event()
     threading.Thread(target=govoice_login.keepalive_loop, args=(stop,), daemon=True).start()
     threading.Thread(target=auto_process_loop, args=(stop,), daemon=True).start()
+    threading.Thread(target=workers_api.janitor_loop, args=(stop,), daemon=True).start()
     yield
     stop.set()
 
 
 app = FastAPI(title="Call Analyzer", lifespan=lifespan)
 app.include_router(govoice_login.router)
+app.include_router(workers_api.router)
 
 
 # --- Authentication ---------------------------------------------------------------------------
 
 SESSION_COOKIE = "call_analyzer_session"
 # Reachable without logging in: the login page and its assets (static/ is only the UI bundle, no data),
-# share links (they carry their own secret token) and the health check.
+# share links (they carry their own secret token), the health check, and /api/worker/ (remote agents sign in
+# with their own bearer token there; /api/workers, the admin side, still needs a login).
 PUBLIC_PATHS = {"/login", "/api/login", "/healthz"}
 # Lets the headless browser that renders PDFs open the print page without a login cookie. New on every start.
 PRINT_KEY = secrets.token_urlsafe(32)
@@ -59,7 +62,7 @@ PRINT_KEY = secrets.token_urlsafe(32)
 
 def _is_public(request: Request) -> bool:
     path = request.url.path
-    if path in PUBLIC_PATHS or path.startswith(("/share/", "/static/")):
+    if path in PUBLIC_PATHS or path.startswith(("/share/", "/static/", "/api/worker/")):
         return True
     return path.startswith("/export/") and hmac.compare_digest(request.query_params.get("key", ""), PRINT_KEY)
 
@@ -816,6 +819,9 @@ class JobRunner:
             # check and report don't take every filter; argparse accepts them all on pipeline commands.
             argv = [sys.executable, "-m", "call_analyzer", command] + ([] if command == "check" else cli_args)
             self.lines.append(f"$ call_analyzer {command} {' '.join(argv[4:])}".rstrip())
+            # When analysis follows, an agent's transcript is analyzed as soon as it arrives.
+            if command == "transcribe" and "analyze" in commands:
+                env["CALL_ANALYZER_CHAIN"] = "1"
             # Own process group on Linux/macOS so Stop also ends the claude CLI processes it starts.
             self.process = subprocess.Popen(argv, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                             stderr=subprocess.STDOUT, text=True, encoding="utf-8",
@@ -835,6 +841,8 @@ class JobRunner:
     def stop(self):
         self.stopped = True
         if self.process and self.process.poll() is None:
+            # Calls this job queued for remote agents are dropped too (the agents see it at their next heartbeat).
+            workers.cancel(db.connect(), pid=self.process.pid)
             if os.name == "nt":  # kill the whole tree (claude CLI children too)
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.process.pid)], capture_output=True)
             else:

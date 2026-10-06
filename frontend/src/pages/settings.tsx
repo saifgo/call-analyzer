@@ -1,4 +1,13 @@
-import { DownloadIcon, EyeIcon, EyeOffIcon, LogInIcon, RefreshCwIcon, StethoscopeIcon } from "lucide-react";
+import {
+  CpuIcon,
+  DownloadIcon,
+  EyeIcon,
+  EyeOffIcon,
+  LogInIcon,
+  MonitorSmartphoneIcon,
+  RefreshCwIcon,
+  StethoscopeIcon,
+} from "lucide-react";
 import * as React from "react";
 import { JobLog } from "@/components/job-log";
 import { PageHeader } from "@/components/page-header";
@@ -27,16 +36,22 @@ import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
 import { useGoVoice } from "@/lib/govoice";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
+import { href } from "@/lib/router";
+import { RUNS_ON_LABELS, STEP_NAMES, useWorkers } from "@/lib/workers";
 import type { SettingField, WhisperModel } from "@/lib/types";
 
 const SELECT_OPTIONS: Record<string, string[]> = {
   ANALYSIS_BACKEND: ["claude", "cursor", "auto"],
+  ANALYZE_RUNS_ON: ["host", "agent", "auto"],
+  TRANSCRIBE_RUNS_ON: ["host", "agent", "auto"],
   CLAUDE_BACKEND: ["subscription", "api"],
   TRANSCRIBE_PROVIDER: ["local", "elevenlabs", "openai"],
   WHISPER_DEVICE: ["auto", "cuda", "cpu"],
   WHISPER_MODEL: ["large-v3-turbo", "large-v3", "tunisian-large-v3", "arabic-dialectal-turbo", "medium", "small"],
 };
 const SELECT_LABELS: Record<string, Record<string, string>> = {
+  ANALYZE_RUNS_ON: RUNS_ON_LABELS,
+  TRANSCRIBE_RUNS_ON: RUNS_ON_LABELS,
   ANALYSIS_BACKEND: {
     auto: "Claude, then Cursor if unavailable",
     claude: "Claude",
@@ -141,6 +156,64 @@ function SettingControl({ field, value, onChange }: { field: SettingField; value
       type="text"
       value={value}
     />
+  );
+}
+
+/** The agents connected right now, shown above the settings that choose between this server and agents. */
+function AgentsSummary() {
+  const { state } = useWorkers();
+  if (!state) return <Skeleton className="h-16 rounded-xl" />;
+  const { workers } = state;
+  const online = workers.filter((w) => w.online && w.enabled).length;
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border bg-muted/32 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 font-medium text-sm">
+          <MonitorSmartphoneIcon aria-hidden="true" className="size-4 text-muted-foreground" />
+          {workers.length === 0
+            ? "No agents yet"
+            : `${online} of ${workers.length} ${workers.length === 1 ? "agent" : "agents"} online`}
+        </div>
+        <Button render={<a href={href("agents")} />} size="sm" variant="outline">
+          {workers.length === 0 ? "Add an agent" : "Manage agents"}
+        </Button>
+      </div>
+      {workers.length > 0 && (
+        <ul className="flex flex-col gap-2">
+          {workers.map((w) => (
+            <li className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm" key={w.id}>
+              <span className="flex min-w-0 items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className={`size-2 shrink-0 rounded-full ${w.online ? (w.enabled ? "bg-success" : "bg-warning") : "bg-muted-foreground/40"}`}
+                />
+                <span className="truncate font-medium" dir="auto">
+                  {w.name}
+                </span>
+              </span>
+              <span className="text-muted-foreground text-xs">
+                {!w.online ? "offline" : w.enabled ? (w.running.length ? `working on ${w.running.length}` : "idle") : "paused"}
+              </span>
+              {w.info.gpu !== undefined && (
+                <Badge variant="outline">
+                  <CpuIcon aria-hidden="true" />
+                  {w.info.gpu ? "GPU" : "CPU"}
+                </Badge>
+              )}
+              {(["transcribe", "analyze"] as const).map(
+                (step) =>
+                  w.info.capabilities?.[step] && (
+                    <Badge key={step} variant={w.ready[step] ? "success" : "warning"}>
+                      {STEP_NAMES[step]}
+                      {w.ready[step] ? "" : " · not ready"}
+                    </Badge>
+                  ),
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -276,6 +349,12 @@ export function SettingsPage(): React.ReactElement {
                 <CardTitle className="text-base">{section}</CardTitle>
               </CardHeader>
               <CardPanel className="flex flex-col">
+                {section === "Remote agents" && (
+                  <>
+                    <AgentsSummary />
+                    <Separator className="my-4" />
+                  </>
+                )}
                 {fields
                   .filter((f) => f.section === section)
                   .map((f, i) => (

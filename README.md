@@ -79,6 +79,7 @@ Opens http://127.0.0.1:8765 in your browser and asks you to sign in:
 - **Pipeline**: choose steps and filters, start or stop a job, and watch the live log.
 - **Reports**: read the coaching reports, or generate new ones.
 - **Business context**: edit `context/business.md`.
+- **Remote agents**: PCs that do the transcription/analysis for a hosted server; see [Remote agents](#remote-agents).
 - **Settings**: edit every `.env` value (cookie, models, backends) and run a setup check.
   Turn on **Ongoing mode** (`AUTO_PROCESS`) and, while the UI runs, it fetches new calls from GoVoice every
   `AUTO_PROCESS_MINUTES` (5) and downloads, transcribes and analyzes them. Runs show up on the Pipeline page.
@@ -204,6 +205,110 @@ CPU, which is much slower; on a small server consider `TRANSCRIBE_PROVIDER=eleve
 use, which needs torch: build with `INSTALL_CONVERT=true docker compose up -d --build` (adds ~1 GB). On Coolify,
 add the environment variable `INSTALL_CONVERT=true` as a build variable and redeploy. Converting
 `tunisian-large-v3` needs about 6–8 GB of free RAM.
+
+## Remote agents
+
+A hosted server often has no GPU and no Claude login. A **remote agent** is a PC (yours, or a colleague's) that
+connects to the server and does the heavy steps, **transcription** (Whisper) and **analysis** (Claude/Cursor), with
+its own hardware and logins. The server keeps everything else: GoVoice sync and download, the database, the web
+interface.
+
+```
+Hosted server                                     Agent PCs (any number)
+sync + download from GoVoice                      Whisper on the PC's GPU
+task queue (transcribe / analyze)  <-- HTTPS --   Claude with the PC's login
+calls, reports, UI                                 (the agent only connects out: no open ports, any router)
+```
+
+**Choose where each step runs** in Settings → *Remote agents* (or on the **Remote agents** page):
+
+| `TRANSCRIBE_RUNS_ON` / `ANALYZE_RUNS_ON` | |
+|---|---|
+| `host` (default) | This server does it, as before. Agents are not used. |
+| `agent` | Only agents do it. With none online the calls wait in a queue and are processed as soon as one connects; the server never takes over. |
+| `auto` | An agent while one is online, otherwise this server (also when the last agent drops out in the middle of a run). |
+
+The two steps are independent, e.g. transcribe on a PC with a GPU and analyze on the server with an API key.
+
+**Add an agent (any Windows PC, no Python needed)**
+
+1. On the **Remote agents** page click **Add agent** and give it a name. You get a **connection code** (shown once:
+   **New token** replaces it if it leaks, **Remove** revokes the agent).
+2. Install **Call Analyzer Agent** on the PC with `CallAnalyzerAgent-Setup-<version>.exe` (a normal installer, no
+   administrator rights). Use `CallAnalyzerAgent-GPU-Setup-<version>.exe` on a PC with an NVIDIA GPU (it carries
+   the CUDA libraries, so it is much bigger). Both are downloaded from the **Get the agent for Windows** section at
+   the top of the Remote agents page. An admin puts them there once with **Upload installer** (or copies them
+   into the server's `data/downloads` folder; `AGENT_DOWNLOAD_URL` adds an outside link, e.g. a GitHub release).
+   A proxy in front of the server must allow request bodies of ~1.2 GB for the GPU installer.
+3. The app opens and asks for the connection code. Paste it, click **Connect**. The agent then lives in the
+   system tray (near the clock): the dot on its icon shows if it is online, working, or paused, and its menu can
+   pause it, open the dashboard or its settings file, and toggle *Start with Windows*. The server's address must
+   be reachable from that PC (use `https://`: the token and the recordings travel over it); set `PUBLIC_URL` so
+   the code carries the public address.
+
+What the PC still needs for each step: **transcription** needs nothing (Whisper is in the app; models are
+downloaded when first used; the Tunisian Derja models are downloaded *from the server*, which converts them once:
+Settings → Install now). **Analysis** with `CLAUDE_BACKEND=subscription` needs the Claude Code CLI installed and
+signed in on that PC (`claude`); with `api` it needs `ANTHROPIC_API_KEY` in `%LOCALAPPDATA%\CallAnalyzerAgent\.env`.
+The Remote agents page tells you what a PC is missing.
+
+Settings, models and the log of the installed app are in `%LOCALAPPDATA%\CallAnalyzerAgent` (they stay when you
+update or uninstall). Command line, same as below: `CallAnalyzerAgent.exe login --code ca1.…`, `run`, `status`,
+`autostart [--off]`.
+
+**Build the installer** (on a Windows PC with this project's venv; you need to do this when the agent code changes):
+
+```powershell
+.venv\Scripts\pip install -r requirements.txt -r requirements-agent.txt     # once
+winget install JRSoftware.InnoSetup                                          # once
+.\packaging\build_agent.ps1          # CPU installer
+.\packaging\build_agent.ps1 -Gpu     # GPU installer (adds the NVIDIA libraries, needs requirements-gpu.txt)
+```
+
+The installers are written to `D:\call-analyzer-build` (or `.\build` without a D: drive; change with `-OutDir`).
+
+**Or from source** (developers; the same agent without the tray app): install Call Analyzer as in [Setup](#setup),
+then:
+
+```powershell
+.venv\Scripts\python -m call_analyzer agent login --code ca1.…
+.venv\Scripts\python -m call_analyzer agent run
+.venv\Scripts\python -m call_analyzer agent status        # what it will use, and whether it is ready
+.venv\Scripts\python -m call_analyzer agent autostart     # Windows: start it whenever you sign in (--off removes it)
+```
+
+**Settings: server defaults, agent overrides.** With every task the agent receives the server's current defaults
+(`WHISPER_MODEL`, `WHISPER_LANGUAGE`, `WHISPER_PROMPT`, `WHISPER_DEVICE`, `TRANSCRIBE_PROVIDER`, `ANALYSIS_BACKEND`,
+`CLAUDE_BACKEND`, `CLAUDE_MODEL`, `CURSOR_MODEL`, `FEEDBACK_LANGUAGE`, plus the text of `business.md`), so changing
+them in Settings applies to the agents too. Anything the agent sets itself wins. `agent login` creates
+`agent.toml` in the agent's folder (`%LOCALAPPDATA%\CallAnalyzerAgent` for the installed app,
+`~/.call-analyzer-agent` from source; `AGENT_HOME` changes it; the tray menu opens it):
+
+```toml
+[tasks]
+transcribe = 1      # how many at once; 0 turns the step off on this PC
+analyze = 2
+
+[overrides]
+whisper_model = "large-v3-turbo"   # a lighter model than the server's default, for a weaker GPU
+whisper_device = "cpu"
+claude_backend = "subscription"    # use this PC's Claude Code login instead of the server's API setting
+```
+
+API keys (`ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, ...), the Claude login and the model folder
+(`whisper_model_dir`) are never sent by the server: an agent uses its own, from its environment or its `.env`.
+The Remote agents page shows, per agent, what it overrides and which steps it is ready for (a missing `claude`
+login or Whisper install is reported there).
+
+**Several agents** share the queue: each takes the next waiting call as soon as it has a free slot, so more PCs
+means faster processing. An agent can be **paused** (finishes its current call, takes no new ones). If an agent
+goes silent for two minutes, or you stop it, its calls go back to the queue for the others; a call is tried up to
+3 times before it is marked as failed (the error is shown on the call and in *Recent tasks*). Results are marked
+with the agent that produced them (e.g. `Whisper tunisian-large-v3 (local, GPU) · agent Office PC`).
+
+Pipeline jobs work the same as before: they wait for the agents and show their progress in the log, and **Stop**
+cancels the calls the job queued. When a run includes both steps, a transcript is analyzed as soon as it arrives.
+Ongoing mode (`AUTO_PROCESS`) also uses agents.
 
 ## Command line
 

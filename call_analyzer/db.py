@@ -68,6 +68,38 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at  TEXT NOT NULL,
     expires_at  TEXT NOT NULL
 );
+-- Remote agents: PCs that connect to this server and do the transcription / analysis (see workers.py).
+CREATE TABLE IF NOT EXISTS workers (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    token_hash  TEXT NOT NULL UNIQUE,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL,
+    created_by  TEXT,
+    last_seen   TEXT,
+    info        TEXT   -- JSON the agent reports: host, os, version, capabilities, its own overrides
+);
+CREATE TABLE IF NOT EXISTS worker_tasks (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind           TEXT NOT NULL,      -- transcribe | analyze
+    call_id        TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'queued',   -- queued | running | done | failed | cancelled
+    worker_id      TEXT,
+    worker_name    TEXT,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    chain          INTEGER NOT NULL DEFAULT 0,       -- analyze right after the transcript arrives
+    origin_pid     INTEGER,            -- the pipeline process waiting for this task
+    progress       TEXT,
+    error          TEXT,
+    created_at     TEXT NOT NULL,
+    not_before     TEXT,
+    started_at     TEXT,
+    lease_expires  TEXT,
+    finished_at    TEXT
+);
+-- One open task per call and step, so running a step twice doesn't process a call twice.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_open ON worker_tasks(kind, call_id) WHERE status IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON worker_tasks(status, kind);
 """
 
 # Columns added after the first release; connect() adds them to older databases.

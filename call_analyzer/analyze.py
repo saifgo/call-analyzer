@@ -69,7 +69,9 @@ def _business_context() -> str:
     return path.read_text(encoding="utf-8") if path.exists() else "(no business context provided)"
 
 
-def _system_prompt() -> str:
+def _system_prompt(cfg=None, business: str | None = None) -> str:
+    """`business` is the text of business.md; an agent receives it from the server instead of reading a file."""
+    cfg = cfg or settings
     return f"""You are an expert B2B/B2C sales coach working for a Tunisian company. You review recorded phone calls
 between our sales agents and customers and give honest, specific, actionable feedback that helps close more deals.
 
@@ -78,14 +80,14 @@ so expect errors, misheard words and imperfect speaker labels; infer meaning fro
 for transcription noise. Speaker labels (channel_L/channel_R, speaker_0/speaker_1) are not fixed, and some transcripts
 have no labels at all: work out who is our agent and who is the customer from context.
 
-Write all feedback in {settings.feedback_language}. Keep quotes and "better_version"/"better_answer" sentences in the
+Write all feedback in {cfg.feedback_language}. Keep quotes and "better_version"/"better_answer" sentences in the
 language actually spoken in the call (Derja/French), so the agent can reuse them word for word.
 
 Be concrete: cite what was said, explain why it helps or hurts, and propose exact wording. Do not invent facts that are
 not in the transcript. Score fairly: 5 is average, 8+ is genuinely strong.
 
 <business_context>
-{_business_context()}
+{business if business is not None else _business_context()}
 </business_context>"""
 
 
@@ -97,7 +99,8 @@ def _direction(call) -> str:
     }.get(call["type"], f"Call type: {call['type']}")
 
 
-def _ask_claude_cli(system: str, prompt: str, schema: dict | None = None):
+def _ask_claude_cli(system: str, prompt: str, schema: dict | None = None, cfg=None):
+    cfg = cfg or settings
     exe = shutil.which("claude")
     if not exe:
         raise RuntimeError("`claude` CLI not found. Install Claude Code and run `claude` once to log in.")
@@ -108,7 +111,7 @@ def _ask_claude_cli(system: str, prompt: str, schema: dict | None = None):
         cmd = [
             exe, "-p",
             "--output-format", "json",
-            "--model", settings.claude_model,
+            "--model", cfg.claude_model,
             "--effort", "high",
             "--system-prompt-file", system_file,
             # Plain text-in/text-out: no tools, MCP servers, skills or project settings.
@@ -135,12 +138,14 @@ def _ask_claude_cli(system: str, prompt: str, schema: dict | None = None):
     return result.get("result", "")
 
 
-def _ask_claude_api(system: str, prompt: str, schema: dict | None = None):
+def _ask_claude_api(system: str, prompt: str, schema: dict | None = None, cfg=None):
     import anthropic
+
+    cfg = cfg or settings
 
     client = anthropic.Anthropic(max_retries=4)
     request = dict(
-        model=settings.claude_model,
+        model=cfg.claude_model,
         max_tokens=64000,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
@@ -160,12 +165,13 @@ def _ask_claude_api(system: str, prompt: str, schema: dict | None = None):
     return json.loads(text) if schema else text
 
 
-def ask_claude(system: str, prompt: str, schema: dict | None = None):
-    if settings.claude_backend == "api":
-        return _ask_claude_api(system, prompt, schema)
-    if settings.claude_backend == "subscription":
-        return _ask_claude_cli(system, prompt, schema)
-    raise RuntimeError(f"Unknown CLAUDE_BACKEND={settings.claude_backend!r}; use subscription or api")
+def ask_claude(system: str, prompt: str, schema: dict | None = None, cfg=None):
+    cfg = cfg or settings
+    if cfg.claude_backend == "api":
+        return _ask_claude_api(system, prompt, schema, cfg)
+    if cfg.claude_backend == "subscription":
+        return _ask_claude_cli(system, prompt, schema, cfg)
+    raise RuntimeError(f"Unknown CLAUDE_BACKEND={cfg.claude_backend!r}; use subscription or api")
 
 
 _cursor_lock = threading.Lock()
@@ -271,9 +277,10 @@ def _install_windows_bridge_fix() -> None:
     bridge._call_analyzer_pipe_fix = True
 
 
-def _ask_cursor(system: str, prompt: str, schema: dict | None = None):
+def _ask_cursor(system: str, prompt: str, schema: dict | None = None, cfg=None):
     """One-shot Cursor agent. No tools, and it runs in an empty folder so it cannot edit this project."""
-    if not settings.cursor_api_key:
+    cfg = cfg or settings
+    if not cfg.cursor_api_key:
         raise RuntimeError("CURSOR_API_KEY is empty. Set it in Settings.")
     try:
         from cursor_sdk import Agent, AgentOptions, CursorAgentError, LocalAgentOptions
@@ -293,8 +300,8 @@ def _ask_cursor(system: str, prompt: str, schema: dict | None = None):
                 result = Agent.prompt(
                     body,
                     AgentOptions(
-                        api_key=settings.cursor_api_key,
-                        model=settings.cursor_model or "composer-2.5",
+                        api_key=cfg.cursor_api_key,
+                        model=cfg.cursor_model or "composer-2.5",
                         tools=[],
                         local=LocalAgentOptions(cwd=workdir),
                     ),
@@ -307,35 +314,37 @@ def _ask_cursor(system: str, prompt: str, schema: dict | None = None):
     return _json_from_text(text) if schema else text
 
 
-def _claude_label() -> str:
-    via = "Claude Code subscription" if settings.claude_backend == "subscription" else "API"
-    return f"Claude {settings.claude_model} ({via})"
+def _claude_label(cfg=None) -> str:
+    cfg = cfg or settings
+    via = "Claude Code subscription" if cfg.claude_backend == "subscription" else "API"
+    return f"Claude {cfg.claude_model} ({via})"
 
 
-def _cursor_label() -> str:
-    return f"Cursor {settings.cursor_model or 'composer-2.5'}"
+def _cursor_label(cfg=None) -> str:
+    return f"Cursor {(cfg or settings).cursor_model or 'composer-2.5'}"
 
 
-def ask_model_labeled(system: str, prompt: str, schema: dict | None = None):
+def ask_model_labeled(system: str, prompt: str, schema: dict | None = None, cfg=None):
     """Like ask_model, but also returns which system answered (relevant when "auto" falls back)."""
-    backend = settings.analysis_backend
+    cfg = cfg or settings
+    backend = cfg.analysis_backend
     if backend == "cursor":
-        return _ask_cursor(system, prompt, schema), _cursor_label()
+        return _ask_cursor(system, prompt, schema, cfg), _cursor_label(cfg)
     if backend == "claude":
-        return ask_claude(system, prompt, schema), _claude_label()
+        return ask_claude(system, prompt, schema, cfg), _claude_label(cfg)
     if backend == "auto":
         try:
-            return ask_claude(system, prompt, schema), _claude_label()
+            return ask_claude(system, prompt, schema, cfg), _claude_label(cfg)
         except RuntimeError as exc:
             if not _claude_unavailable(exc):
                 raise
             print(f"Claude unavailable ({exc}); using Cursor.", file=sys.stderr)
-            return _ask_cursor(system, prompt, schema), _cursor_label()
+            return _ask_cursor(system, prompt, schema, cfg), _cursor_label(cfg)
     raise RuntimeError(f"Unknown ANALYSIS_BACKEND={backend!r}; use claude, cursor or auto")
 
 
-def ask_model(system: str, prompt: str, schema: dict | None = None):
-    return ask_model_labeled(system, prompt, schema)[0]
+def ask_model(system: str, prompt: str, schema: dict | None = None, cfg=None):
+    return ask_model_labeled(system, prompt, schema, cfg)[0]
 
 
 def _strict_schema(model: type[BaseModel]) -> dict:
@@ -356,8 +365,9 @@ def _strict_schema(model: type[BaseModel]) -> dict:
     return schema
 
 
-def analyze_call(call) -> tuple[CallAnalysis, str]:
-    """Returns the analysis and a label of the model that wrote it."""
+def analyze_call(call, cfg=None, business: str | None = None) -> tuple[CallAnalysis, str]:
+    """Returns the analysis and a label of the model that wrote it. `cfg` and `business` (the text of business.md)
+    are given by an agent, which uses the server's settings merged with its own."""
     prompt = f"""Analyze this call.
 
 <call_metadata>
@@ -371,7 +381,7 @@ Duration: {call['duration']} seconds
 <transcript>
 {call['transcript']}
 </transcript>"""
-    data, by = ask_model_labeled(_system_prompt(), prompt, schema=_strict_schema(CallAnalysis))
+    data, by = ask_model_labeled(_system_prompt(cfg, business), prompt, schema=_strict_schema(CallAnalysis), cfg=cfg)
     return CallAnalysis.model_validate(data), by
 
 

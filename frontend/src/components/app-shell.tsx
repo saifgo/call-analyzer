@@ -7,6 +7,7 @@ import {
   LogOutIcon,
   MessageSquareTextIcon,
   MonitorIcon,
+  MonitorSmartphoneIcon,
   MoonIcon,
   PhoneIcon,
   Settings2Icon,
@@ -69,6 +70,7 @@ import { STEP_LABELS, useJob } from "@/lib/jobs";
 import { useMe } from "@/lib/me";
 import { href, type Route } from "@/lib/router";
 import { type Theme, useTheme } from "@/lib/theme";
+import { liveAgents, stalledSteps, STEP_NAMES, useWorkers } from "@/lib/workers";
 
 const NAV = [
   {
@@ -84,6 +86,7 @@ const NAV = [
     adminOnly: true,
     items: [
       { icon: WorkflowIcon, label: "Pipeline", page: "pipeline" },
+      { icon: MonitorSmartphoneIcon, label: "Remote agents", page: "agents" },
       { icon: BriefcaseBusinessIcon, label: "Business context", page: "business" },
       { icon: UsersIcon, label: "Users", page: "users" },
       { icon: Settings2Icon, label: "Settings", page: "settings" },
@@ -99,7 +102,9 @@ const ADMIN_PAGES = new Set(NAV.filter((g) => g.adminOnly).flatMap((g) => g.item
 
 function NavLinks({ route }: { route: Route }) {
   const { state } = useJob();
+  const { state: workers } = useWorkers();
   const { isAdmin } = useMe();
+  const agentsOnline = workers ? liveAgents(workers.workers).length : 0;
   const { isMobile, setOpenMobile } = useSidebar();
   return NAV.filter((group) => isAdmin || !group.adminOnly).map((group) => (
     <SidebarGroup key={group.label}>
@@ -121,6 +126,9 @@ function NavLinks({ route }: { route: Route }) {
                 <SidebarMenuBadge>
                   <Spinner className="size-3.5" />
                 </SidebarMenuBadge>
+              )}
+              {item.page === "agents" && agentsOnline > 0 && (
+                <SidebarMenuBadge aria-label={`${agentsOnline} online`}>{agentsOnline}</SidebarMenuBadge>
               )}
             </SidebarMenuItem>
           ))}
@@ -202,6 +210,35 @@ function GoVoiceAlert() {
       <span aria-hidden="true" className="size-2 rounded-full bg-destructive" />
       Log in to GoVoice
     </Button>
+  );
+}
+
+/** Remote agents: warns when a step waits for an agent that isn't there, otherwise shows how many are online. */
+function AgentsAlert() {
+  const { state } = useWorkers();
+  if (!state) return null;
+  const stalled = stalledSteps(state);
+  if (stalled.length) {
+    return (
+      <Tooltip>
+        <TooltipTrigger render={<Button render={<a href={href("agents")} />} size="sm" variant="outline" />}>
+          <span aria-hidden="true" className="size-2 rounded-full bg-warning" />
+          No agent online
+        </TooltipTrigger>
+        <TooltipPopup className="max-w-xs">
+          {stalled.map((s) => STEP_NAMES[s]).join(" and ")} {stalled.length > 1 ? "are" : "is"} set to remote agents
+          only, so calls wait in the queue until an agent connects.
+        </TooltipPopup>
+      </Tooltip>
+    );
+  }
+  const online = liveAgents(state.workers).length;
+  const used = (["transcribe", "analyze"] as const).some((s) => state.runs_on[s] !== "host");
+  if (!used || online === 0) return null;
+  return (
+    <Badge render={<a href={href("agents")} />} variant="success">
+      {online} {online === 1 ? "agent" : "agents"} online
+    </Badge>
   );
 }
 
@@ -353,6 +390,7 @@ export function AppShell({
           {isAdmin && (
             <>
               <GoVoiceAlert />
+              <AgentsAlert />
               <JobStatus onOpen={() => setJobOpen((o) => !o)} />
             </>
           )}

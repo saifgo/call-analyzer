@@ -1,0 +1,4 @@
+# Only needed to build the installable Windows agent (packaging/build_agent.ps1) or to run its tray app from source.
+pystray>=0.19
+pillow>=10
+pyinstaller>=6.10

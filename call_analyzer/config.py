@@ -1,11 +1,27 @@
 import os
 import re
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
-ROOT = Path(__file__).resolve().parent.parent
+FROZEN = bool(getattr(sys, "frozen", False))  # the installed agent (CallAnalyzerAgent.exe), not a source checkout
+
+
+def agent_home() -> Path:
+    """Where an agent keeps its credentials (agent.json), settings (agent.toml), .env, models and log."""
+    if os.getenv("AGENT_HOME"):
+        return Path(os.environ["AGENT_HOME"])
+    if FROZEN and os.name == "nt":
+        return Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "CallAnalyzerAgent"
+    return Path.home() / ".call-analyzer-agent"
+
+
+# An installed agent has no project folder: everything it needs lives in its own per-user folder.
+ROOT = agent_home() if FROZEN else Path(__file__).resolve().parent.parent
+if FROZEN:
+    ROOT.mkdir(parents=True, exist_ok=True)
 # The settings file. Docker/Coolify set ENV_FILE=/app/data/.env so it lives in the data volume; the other
 # settings can then also come from the platform's environment variables until they're saved in Settings.
 ENV_PATH = Path(os.getenv("ENV_FILE") or ROOT / ".env")
@@ -13,6 +29,10 @@ ENV_PATH = Path(os.getenv("ENV_FILE") or ROOT / ".env")
 # environment, which still holds the values from when the server started; without override, edits
 # saved in Settings would be ignored.
 load_dotenv(ENV_PATH, override=True)
+
+
+# Where calls.db and the audio live. Docker mounts its data volume at /app/data, the default.
+DATA_DIR = Path(os.getenv("DATA_DIR") or ROOT / "data")
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -57,6 +77,11 @@ class Settings:
     cursor_model: str = os.getenv("CURSOR_MODEL") or "composer-2.5"
     feedback_language: str = os.getenv("FEEDBACK_LANGUAGE", "English")
 
+    # Where transcription and analysis run: host = this server, agent = remote agents only (jobs wait for one to
+    # connect), auto = remote agents while one is online, otherwise this server.
+    transcribe_runs_on: str = (os.getenv("TRANSCRIBE_RUNS_ON") or "host").lower()
+    analyze_runs_on: str = (os.getenv("ANALYZE_RUNS_ON") or "host").lower()
+
     # Listen on the local network instead of only this machine. Everything except share links needs a login.
     share_on_lan: bool = _bool("SHARE_ON_LAN", False)
     ui_port: int = int(os.getenv("UI_PORT") or 8765)
@@ -70,11 +95,69 @@ class Settings:
     admin_username: str = os.getenv("ADMIN_USERNAME", "").strip()
     admin_password: str = os.getenv("ADMIN_PASSWORD", "")
 
-    data_dir: Path = ROOT / "data"
-    audio_dir: Path = ROOT / "data" / "audio"
-    db_path: Path = ROOT / "data" / "calls.db"
+    data_dir: Path = DATA_DIR
+    audio_dir: Path = DATA_DIR / "audio"
+    db_path: Path = DATA_DIR / "calls.db"
     reports_dir: Path = ROOT / "reports"
     business_context_path: Path = ROOT / "context" / "business.md"
 
 
 settings = Settings()
+
+
+# --- Remote agents ----------------------------------------------------------------------------
+# An agent (a PC running `python -m call_analyzer agent run`) takes these settings from the server, and
+# uses its own value for any of them (or the local-only ones) that is set in its agent.toml.
+# Secrets and folders on the server are never sent: an agent uses its own keys and model folder.
+
+AGENT_SERVER_KEYS = (
+    "transcribe_provider", "whisper_model", "whisper_device", "whisper_language", "whisper_prompt",
+    "elevenlabs_model", "openai_transcribe_model",
+    "analysis_backend", "claude_backend", "claude_model", "cursor_model", "feedback_language",
+)
+# Only ever set on the agent itself (agent.toml or its environment).
+AGENT_LOCAL_KEYS = ("whisper_model_dir", "elevenlabs_api_key", "openai_api_key", "cursor_api_key")
+AGENT_OVERRIDE_KEYS = AGENT_SERVER_KEYS + AGENT_LOCAL_KEYS
+# An empty value is meaningful for these (auto-detect the language, no prompt); for the others it means "not set".
+_EMPTY_OK = {"whisper_language", "whisper_prompt"}
+_LOWERCASE = {"transcribe_provider", "whisper_device", "analysis_backend", "claude_backend"}
+
+
+def live(name: str, default: str = "") -> str:
+    """A setting as it is saved right now: the .env file (what the Settings page writes) first, then the
+    environment. The server process only loads .env at startup, so it reads the file again for anything
+    that has to follow Settings changes straight away."""
+    saved = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
+    value = saved.get(name)
+    if value is None:
+        value = os.environ.get(name, "")
+    return value.strip() or default
+
+
+RUNS_ON = ("host", "agent", "auto")
+
+
+def runs_on(kind: str) -> str:
+    """Where a step runs: host (this server), agent (remote agents only) or auto (agents while one is online)."""
+    value = live("TRANSCRIBE_RUNS_ON" if kind == "transcribe" else "ANALYZE_RUNS_ON", "host").lower()
+    return value if value in RUNS_ON else "host"
+
+
+def live_defaults() -> dict[str, str]:
+    """The settings the server hands to its agents, as saved right now."""
+    values = {}
+    for key in AGENT_SERVER_KEYS:
+        value = live(key.upper())
+        if value or key in _EMPTY_OK:
+            values[key] = value
+    return values
+
+
+def effective_settings(defaults: dict, overrides: dict, base: Settings = settings) -> Settings:
+    """Built-in < this machine's environment < the server's defaults < the agent's own overrides."""
+    merged: dict[str, str] = {}
+    for layer, allowed in ((defaults, AGENT_SERVER_KEYS), (overrides, AGENT_OVERRIDE_KEYS)):
+        for key, value in layer.items():
+            if key in allowed and value is not None and (str(value) != "" or key in _EMPTY_OK):
+                merged[key] = str(value).strip().lower() if key in _LOWERCASE else str(value)
+    return replace(base, **merged)

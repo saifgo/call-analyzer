@@ -173,3 +173,87 @@ export type HumanFeedback = {
 };
 
 export type FeedbackList = { total: number; feedback: HumanFeedback[]; authors: string[] };
+
+export type WorkerStep = "transcribe" | "analyze";
+/** Where a pipeline step runs: this server, remote agents only, or agents while one is online (else the server). */
+export type RunsOn = "host" | "agent" | "auto";
+
+export type WorkerCapability = { ok: boolean; reason: string; detail: string; slots: number };
+
+/** What an agent reports about itself. */
+export type WorkerInfo = {
+  hostname?: string;
+  os?: string;
+  version?: string;
+  gpu?: boolean;
+  slots?: Partial<Record<WorkerStep, number>>;
+  capabilities?: Partial<Record<WorkerStep, WorkerCapability>>;
+  /** Settings the agent sets itself (agent.toml); the server's defaults apply to the rest. */
+  overrides?: Record<string, string>;
+  /** The settings the agent works with right now: server defaults merged with its overrides. */
+  effective?: Record<string, string>;
+};
+
+export type WorkerRunning = {
+  id: number;
+  kind: WorkerStep;
+  call_id: string;
+  progress: string | null;
+  started_at: string;
+};
+
+export type Worker = {
+  id: string;
+  name: string;
+  /** false = paused by an admin: stays connected but gets no work. */
+  enabled: boolean;
+  online: boolean;
+  last_seen: string | null;
+  created_at: string;
+  created_by: string | null;
+  info: WorkerInfo;
+  running: WorkerRunning[];
+  done: number;
+  failed: number;
+  ready: Record<WorkerStep, boolean>;
+};
+
+export type WorkersState = {
+  runs_on: Record<WorkerStep, RunsOn>;
+  queue: { queued: number; running: number };
+  /** The settings agents receive from the server. */
+  defaults: Record<string, string>;
+  /** PUBLIC_URL: the address agents should connect to (empty: the address this page was opened at). */
+  public_url: string;
+  /** AGENT_DOWNLOAD_URL: where to get the installer (optional). */
+  download_url: string;
+  /** Installers found in the server's data/downloads folder. */
+  installers: AgentInstaller[];
+  workers: Worker[];
+};
+
+export type WorkerTask = {
+  id: number;
+  kind: WorkerStep;
+  call_id: string;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  worker_name: string | null;
+  progress: string | null;
+  error: string | null;
+  attempts: number;
+  created_at: string;
+  finished_at: string | null;
+  filename: string | null;
+  extension: string | null;
+  customer: string | null;
+};
+
+/** An agent installer stored on the server (data/downloads). */
+export type AgentInstaller = {
+  name: string;
+  size: number;
+  /** "gpu" = includes the NVIDIA libraries. */
+  kind: "cpu" | "gpu";
+  version: string | null;
+  modified: string;
+};
