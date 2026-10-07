@@ -38,9 +38,11 @@ from .workers import KINDS, PROTOCOL
 VERSION = "1.0"
 HEARTBEAT_SECONDS = 15
 CLAIM_WAIT = 20  # seconds the server holds a request open waiting for work
-DEFAULT_SLOTS = {"transcribe": 1, "analyze": 2}  # tasks of each kind this PC works on at once
+DEFAULT_SLOTS = {"transcribe": 1, "voice": 1, "analyze": 2}  # tasks of each kind this PC works on at once
 SECRET_KEYS = {k for k in AGENT_LOCAL_KEYS if k.endswith("_api_key")}
 EXIT_AUTH, EXIT_OUTDATED = 4, 5
+MODEL_POLL_SECONDS = 10  # how often the background model manager checks that the model is on this PC
+MODEL_RETRY_SECONDS = 300  # after a failed download
 
 log = logging.getLogger("agent")
 
@@ -78,6 +80,7 @@ OVERRIDES_TEMPLATE = """\
 [tasks]
 # How many tasks of each kind this PC works on at once. 0 turns the step off here.
 # transcribe = 1
+# voice = 1
 # analyze = 2
 
 [overrides]
@@ -85,6 +88,7 @@ OVERRIDES_TEMPLATE = """\
 # whisper_device = "cpu"             # auto | cuda | cpu
 # whisper_language = "fr"
 # whisper_model_dir = "D:\\\\models"     # where Whisper models are stored on this PC
+# voice_model = "superb/wav2vec2-base-superb-er"   # emotion model: downloaded from the server, no torch needed
 # claude_backend = "subscription"    # use this PC's Claude Code login instead of an API key
 # claude_model = "claude-opus-5-5"
 # analysis_backend = "claude"        # claude | cursor | auto
@@ -192,16 +196,20 @@ def transcribe_ready(cfg: Settings) -> tuple[bool, str]:
     if provider == "local":
         if find_spec("faster_whisper") is None:
             return False, "faster-whisper isn't installed (pip install -r requirements.txt)"
-        from .whisper_models import DIALECT_MODELS, is_installed
-        if cfg.whisper_model in DIALECT_MODELS and not is_installed(cfg.whisper_model, cfg) and (
-                find_spec("torch") is None or find_spec("transformers") is None):
-            return False, f"{cfg.whisper_model} must be converted once, which needs torch (requirements-convert.txt)"
         return True, ""
     if provider == "elevenlabs":
         return bool(cfg.elevenlabs_api_key), "" if cfg.elevenlabs_api_key else "No ELEVENLABS_API_KEY on this PC"
     if provider == "openai":
         return bool(cfg.openai_api_key), "" if cfg.openai_api_key else "No OPENAI_API_KEY on this PC"
     return False, f"Unknown transcribe provider {provider!r}"
+
+
+def voice_ready(cfg: Settings) -> tuple[bool, str]:
+    """The voice step runs the emotion model, converted to ONNX by the server, with onnxruntime: no torch here."""
+    for module in ("faster_whisper", "onnxruntime"):
+        if find_spec(module) is None:
+            return False, f"{module} isn't installed on this PC (pip install -r requirements.txt)"
+    return True, ""
 
 
 def analyze_ready(cfg: Settings) -> tuple[bool, str]:
@@ -228,6 +236,7 @@ def _capabilities(cfg: Settings, slots: dict) -> dict:
     for kind, check, detail in (
         ("transcribe", transcribe_ready,
          f"{cfg.whisper_model} ({cfg.whisper_device})" if cfg.transcribe_provider == "local" else cfg.transcribe_provider),
+        ("voice", voice_ready, cfg.voice_model),
         ("analyze", analyze_ready, cfg.claude_model if cfg.analysis_backend != "cursor" else cfg.cursor_model),
     ):
         ok, reason = check(cfg)
@@ -270,8 +279,15 @@ class Server:
 # --- The agent ----------------------------------------------------------------------------------
 
 class Agent:
-    def __init__(self, url: str, token: str, overrides: dict, slots: dict, *, transcribe_fn=None, analyze_fn=None):
+    def __init__(self, url: str, token: str, overrides: dict, slots: dict, *, transcribe_fn=None, analyze_fn=None,
+                 voice_fn=None, manage_models: bool | None = None):
         self.server = Server(url, token)
+        # Whether this agent makes sure the Whisper model is on the PC (downloading it in the background). Off when
+        # a transcribe function is injected (tests).
+        self.manage_models = transcribe_fn is None if manage_models is None else manage_models
+        self.model: dict = {}  # name, status (downloading | ready | error), detail: shown on the server and in the tray
+        self.model_lock = threading.Lock()  # one model download at a time
+        self.voice_model_lock = threading.Lock()
         self.overrides, self.slots = overrides, slots
         self.defaults: dict = {}
         self.name = ""
@@ -283,7 +299,7 @@ class Agent:
         self.running: dict[int, str] = {}  # task id -> kind
         self.cancelled: set[int] = set()
         self.fatal: Exception | None = None
-        self._transcribe, self._analyze = transcribe_fn, analyze_fn
+        self._transcribe, self._analyze, self._voice = transcribe_fn, analyze_fn, voice_fn
         self.gpu = _gpu()
 
     # settings -----------------------------------------------------------------------------------
@@ -291,14 +307,34 @@ class Agent:
     def cfg(self, defaults: dict | None = None) -> Settings:
         return effective_settings(self.defaults if defaults is None else defaults, self.overrides)
 
+    def model_status(self, cfg: Settings) -> dict | None:
+        """The Whisper model this agent needs and whether it is on the PC, or None when it needs no model."""
+        from . import whisper_models
+        if cfg.transcribe_provider != "local" or not self.manage_models:
+            return None
+        name = cfg.whisper_model
+        if whisper_models.is_present(name, cfg):
+            return {"name": name, "status": "ready", "detail": ""}
+        current = self.model if self.model.get("name") == name else {}
+        return {"name": name, "status": current.get("status") or "downloading",
+                "detail": current.get("detail") or "starting"}
+
     def info(self) -> dict:
         cfg = self.cfg()
         effective = {k: getattr(cfg, k) for k in AGENT_SERVER_KEYS}
         effective["whisper_prompt"] = effective["whisper_prompt"][:80]
+        capabilities = _capabilities(cfg, self.slots)
+        model = self.model_status(cfg)
+        if model and model["status"] != "ready" and capabilities["transcribe"]["ok"]:
+            # Not offered for transcription until the model is here: the server hands those calls to others (or,
+            # in auto mode, does them itself) instead of leaving them waiting on this PC.
+            capabilities["transcribe"].update(ok=False, reason=(
+                f"Couldn't get the model {model['name']}: {model['detail']}" if model["status"] == "error"
+                else f"Downloading the model {model['name']} ({model['detail']})"))
         return {
             "hostname": socket.gethostname(), "os": f"{platform.system()} {platform.release()}",
             "version": VERSION, "protocol": PROTOCOL, "gpu": self.gpu, "slots": self.slots,
-            "capabilities": _capabilities(cfg, self.slots),
+            "capabilities": capabilities, "model": model,
             "overrides": _mask(self.overrides), "effective": effective,
         }
 
@@ -328,22 +364,28 @@ class Agent:
         if "defaults" in reply:
             self.defaults = reply["defaults"]
 
+    def _heartbeat(self) -> bool:
+        """Tell the server this agent is alive and what it can do right now. False when it must stop."""
+        with self.lock:
+            running = list(self.running)
+        try:
+            reply = self.server.post("/api/worker/heartbeat", {"info": self.info(), "running": running})
+        except (AuthError, OutdatedError) as exc:
+            self._die(exc)
+            return False
+        except (requests.RequestException, ValueError) as exc:
+            self.connected = False
+            log.warning("Heartbeat failed: %s", exc)
+            return True
+        self._learn(reply)
+        with self.lock:
+            self.cancelled.update(reply.get("cancelled", []))
+        return True
+
     def heartbeat_loop(self):
         while not self.stop.wait(HEARTBEAT_SECONDS):
-            with self.lock:
-                running = list(self.running)
-            try:
-                reply = self.server.post("/api/worker/heartbeat", {"info": self.info(), "running": running})
-            except (AuthError, OutdatedError) as exc:
-                self._die(exc)
+            if not self._heartbeat():
                 return
-            except (requests.RequestException, ValueError) as exc:
-                self.connected = False
-                log.warning("Heartbeat failed: %s", exc)
-                continue
-            self._learn(reply)
-            with self.lock:
-                self.cancelled.update(reply.get("cancelled", []))
 
     def _die(self, exc: Exception):
         self.fatal = exc
@@ -388,7 +430,7 @@ class Agent:
         try:
             self.defaults = task.get("defaults", self.defaults)
             cfg = self.cfg(task.get("defaults"))
-            result = self._transcribe_task(task, cfg) if kind == "transcribe" else self._analyze_task(task, cfg)
+            result = getattr(self, f"_{kind}_task")(task, cfg)
         except (AuthError, OutdatedError) as exc:
             self._die(exc)
             return
@@ -436,17 +478,115 @@ class Agent:
         except Exception:
             pass  # progress text is cosmetic
 
-    def _fetch_model(self, name: str, dest: Path, task_id: int):
-        """Download a converted Whisper model from the server (it converts each one once, with torch), so this PC
-        doesn't need torch. Shown as the task's progress."""
+    def _set_model(self, name: str, status: str, detail: str = ""):
+        changed = (self.model.get("name"), self.model.get("status")) != (name, status)
+        self.model = {"name": name, "status": status, "detail": detail}
+        if changed and status in ("ready", "error") and self.connected:
+            self._heartbeat()  # the server can offer transcription right away, instead of at the next heartbeat
+
+    def _check_disk_space(self, name: str, cfg: Settings):
         from . import whisper_models
+        folder = Path(cfg.whisper_model_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        # A model from the server exists twice for a moment (the download and the unpacked copy).
+        need = whisper_models.model_size_gb(name) * (2.2 if name in whisper_models.DIALECT_MODELS else 1.1) * 1e9
+        free = shutil.disk_usage(folder).free
+        if free < need:
+            raise RuntimeError(
+                f"Not enough free disk space for the model {name}: about {need / 1e9:.1f} GB needed in {folder}, "
+                f"{free / 1e9:.1f} GB free. Free some space, or set whisper_model_dir in agent.toml to another drive.")
+
+    def ensure_model(self, cfg: Settings, progress=None):
+        """Make sure the Whisper model of `cfg` is on this PC, downloading it if not: the standard ones from Hugging
+        Face, the Tunisian ones from the server. Called in the background as soon as the model is needed (model_loop)
+        and by a transcription task as a fallback; only one download runs at a time."""
+        from . import whisper_models
+        if cfg.transcribe_provider != "local":
+            return
+        name = cfg.whisper_model
+        if whisper_models.is_present(name, cfg):
+            self._set_model(name, "ready")
+            return
+        with self.model_lock:
+            if whisper_models.is_present(name, cfg):  # another thread just finished it
+                self._set_model(name, "ready")
+                return
+
+            def report(text: str):
+                self._set_model(name, "downloading", text)
+                if progress:
+                    progress(f"model {name}: {text}")
+
+            finished = threading.Event()
+            try:
+                self._check_disk_space(name, cfg)
+                report("starting")
+                log.info("Getting the Whisper model %s (about %.1f GB)", name, whisper_models.model_size_gb(name))
+                if name in whisper_models.DIALECT_MODELS:
+                    whisper_models.fetch_model = lambda n, dest: self._fetch_model(n, dest, report)
+                    whisper_models.resolve(name, report, cfg)
+                else:
+                    total = whisper_models.model_size_gb(name)
+
+                    def watch():
+                        while not finished.wait(3):
+                            done = whisper_models.downloaded_bytes(name, cfg) / 1e9
+                            report(f"{done:.1f} of about {total:.1f} GB")
+
+                    threading.Thread(target=watch, daemon=True).start()
+                    whisper_models.download_standard(name, cfg)
+            except Exception as exc:
+                self._set_model(name, "error", str(exc))
+                raise
+            finally:
+                finished.set()
+            self._set_model(name, "ready")
+            log.info("The Whisper model %s is ready", name)
+
+    def model_loop(self):
+        """Background: keep the model the server asks for on this PC. Notices a changed default or a deleted model."""
+        from . import whisper_models
+        retry_at, first = 0.0, True
+        while first or not self.stop.wait(MODEL_POLL_SECONDS):  # the first check is right away, not after a wait
+            first = False
+            if not self.connected or self.slots.get("transcribe", 0) <= 0:
+                continue
+            cfg = self.cfg()
+            if cfg.transcribe_provider != "local":
+                continue
+            if whisper_models.is_present(cfg.whisper_model, cfg):
+                if self.model.get("status") != "ready" or self.model.get("name") != cfg.whisper_model:
+                    self._set_model(cfg.whisper_model, "ready")
+                continue
+            if time.time() < retry_at:
+                continue
+            try:
+                self.ensure_model(cfg)
+            except Exception as exc:
+                log.error("Couldn't get the Whisper model %s: %s (trying again in %g min)", cfg.whisper_model, exc,
+                          MODEL_RETRY_SECONDS / 60)
+                retry_at = time.time() + MODEL_RETRY_SECONDS
+
+    def _fetch_model(self, name: str, dest: Path, report):
+        """Download a converted Whisper model from the server (it converts each one once, with torch), so this PC
+        doesn't need torch. `report(text)` shows the progress."""
         base = f"/api/worker/models/{name}"
+        self._fetch_pack(name, dest, report, base + "/prepare", base + "/pack", {})
+
+    def _fetch_voice_model(self, name: str, dest: Path, report):
+        """The same for the voice step's emotion model, which the server converted to ONNX."""
+        self._fetch_pack(name, dest, report, "/api/worker/voice-model/prepare", "/api/worker/voice-model/pack",
+                         {"name": name})
+
+    def _fetch_pack(self, name: str, dest: Path, report, prepare_path: str, pack_path: str, body: dict):
+        """Ask the server to pack a converted model, wait for it, download the zip and unpack it into `dest`."""
+        from . import whisper_models
         try:
             while True:
-                reply = self.server.post(base + "/prepare", {}, timeout=60)
+                reply = self.server.post(prepare_path, body, timeout=60)
                 if reply.get("ready"):
                     break
-                self._progress(task_id, f"waiting for the server to pack {name}")
+                report("waiting for the server to pack it")
                 if self.stop.wait(5):
                     raise RuntimeError("Stopped")
         except requests.HTTPError as exc:
@@ -456,7 +596,8 @@ class Agent:
         dest.parent.mkdir(parents=True, exist_ok=True)
         pack = dest.with_name(dest.name + ".zip.part")
         done, total, shown = 0, int(reply.get("size") or 0), 0.0
-        with self.server.http.get(self.server.url + base + "/pack", stream=True, timeout=(10, 120)) as resp:
+        with self.server.http.get(self.server.url + pack_path, params=body or None, stream=True,
+                                  timeout=(10, 120)) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("Content-Length") or total)
             with open(pack, "wb") as fh:
@@ -466,8 +607,8 @@ class Agent:
                     if time.time() - shown > 4:
                         shown = time.time()
                         pct = f" {done * 100 // total}%" if total else ""
-                        self._progress(task_id, f"downloading {name} from the server:{pct} ({done / 1e9:.1f} GB)")
-        self._progress(task_id, f"unpacking {name}")
+                        report(f"downloading from the server:{pct} ({done / 1e9:.1f} GB)")
+        report("unpacking")
         tmp = dest.with_name(dest.name + ".tmp")
         shutil.rmtree(tmp, ignore_errors=True)
         with zipfile.ZipFile(pack) as archive:
@@ -477,25 +618,52 @@ class Agent:
         tmp.rename(dest)
         log.info("Installed %s in %s", name, dest)
 
+    def _download_audio(self, task: dict, workdir: str) -> Path:
+        suffix = Path(task["call"].get("filename") or "call.mp3").suffix or ".mp3"
+        audio = Path(workdir) / f"call{suffix}"
+        self._progress(task["id"], "downloading audio")
+        with self.server.http.get(self.server.url + task["audio_url"], stream=True, timeout=(10, 120)) as resp:
+            if resp.status_code == 401:
+                raise AuthError("Token rejected while downloading audio")
+            resp.raise_for_status()
+            with open(audio, "wb") as fh:
+                for chunk in resp.iter_content(1 << 16):
+                    fh.write(chunk)
+        return audio
+
     def _transcribe_task(self, task: dict, cfg: Settings) -> dict:
-        from . import whisper_models
         from .transcribe import transcribe, transcriber_label
         transcribe_fn = self._transcribe or transcribe
-        whisper_models.fetch_model = lambda name, dest: self._fetch_model(name, dest, task["id"])
-        suffix = Path(task["call"].get("filename") or "call.mp3").suffix or ".mp3"
+        if self.manage_models:
+            self.ensure_model(cfg, lambda text: self._progress(task["id"], text))
         with tempfile.TemporaryDirectory() as workdir:
-            audio = Path(workdir) / f"call{suffix}"
-            self._progress(task["id"], "downloading audio")
-            with self.server.http.get(self.server.url + task["audio_url"], stream=True, timeout=(10, 120)) as resp:
-                if resp.status_code == 401:
-                    raise AuthError("Token rejected while downloading audio")
-                resp.raise_for_status()
-                with open(audio, "wb") as fh:
-                    for chunk in resp.iter_content(1 << 16):
-                        fh.write(chunk)
+            audio = self._download_audio(task, workdir)
             self._progress(task["id"], f"transcribing with {cfg.whisper_model if cfg.transcribe_provider == 'local' else cfg.transcribe_provider}")
             text = transcribe_fn(audio, cfg)
         return {"transcript": text, "label": transcriber_label(cfg)}
+
+    def ensure_voice_model(self, cfg: Settings, progress):
+        """Make sure the emotion model is on this PC, downloading the converted one from the server if not (like the
+        Tunisian Whisper models). Only one download at a time."""
+        from . import voice_models
+        if voice_models.is_installed(cfg.voice_model, cfg):
+            return
+        with self.voice_model_lock:
+            voice_models.fetch_model = lambda n, dest: self._fetch_voice_model(
+                n, dest, lambda text: progress(f"voice model: {text}"))
+            voice_models.install(cfg.voice_model, progress, cfg)
+
+    def _voice_task(self, task: dict, cfg: Settings) -> dict:
+        from .voice import analyze_audio
+        voice_fn = self._voice or analyze_audio
+        if self.manage_models:
+            self.ensure_voice_model(cfg, lambda text: self._progress(task["id"], text))
+        with tempfile.TemporaryDirectory() as workdir:
+            audio = self._download_audio(task, workdir)
+            self._progress(task["id"], f"listening with {cfg.voice_model}")
+            # strict: an agent that can't load the model fails the task rather than send back loudness and pitch only
+            data = voice_fn(audio, cfg) if self._voice else voice_fn(audio, cfg, strict=True)
+        return {"voice": data, "label": cfg.voice_model}
 
     def _analyze_task(self, task: dict, cfg: Settings) -> dict:
         from .analyze import analyze_call
@@ -511,6 +679,8 @@ class Agent:
         self.hello()
         log.info("Connected to %s as %r", self.server.url, self.name)
         threads = [threading.Thread(target=self.heartbeat_loop, daemon=True, name="heartbeat")]
+        if self.manage_models:
+            threads.append(threading.Thread(target=self.model_loop, daemon=True, name="models"))
         for kind in KINDS:
             threads += [threading.Thread(target=self.runner, args=(kind,), daemon=True, name=f"{kind}-{i}")
                         for i in range(self.slots.get(kind, 0))]
@@ -587,13 +757,18 @@ def status():
     cfg = agent.cfg()
     print(f"Server:  {url}")
     print(f"Agent:   {remote['name']} ({'enabled' if remote['enabled'] else 'paused on the server'})")
-    print(f"Hosts:   transcribe on {remote['runs_on']['transcribe']}, analyze on {remote['runs_on']['analyze']}")
+    print("Hosts:   " + ", ".join(f"{kind} on {where}" for kind, where in remote["runs_on"].items()))
     print("\nSetting                    value                          source")
     for key in AGENT_SERVER_KEYS:
         source = "agent.toml" if key in overrides else ("server" if key in remote["defaults"] else "this PC")
         value = str(getattr(cfg, key))
         value = (value[:28] + "…") if len(value) > 29 else value
         print(f"  {key:<24} {value:<30} {source}")
+    if cfg.transcribe_provider == "local":
+        from . import whisper_models
+        here = whisper_models.is_present(cfg.whisper_model, cfg)
+        print(f"\nWhisper model {cfg.whisper_model} (~{whisper_models.model_size_gb(cfg.whisper_model):.1f} GB): "
+              + ("on this PC" if here else "not on this PC yet: the agent downloads it in the background when it runs"))
     print()
     for kind, cap in _capabilities(cfg, slots).items():
         print(f"  {kind:<11} {'ready' if cap['ok'] else 'NOT READY'}  {cap['detail']}"

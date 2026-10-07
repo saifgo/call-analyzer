@@ -50,7 +50,14 @@ export function WorkersProvider({
   return <WorkersContext.Provider value={value}>{children}</WorkersContext.Provider>;
 }
 
-export const STEP_NAMES: Record<WorkerStep, string> = { analyze: "Analysis", transcribe: "Transcription" };
+/** The steps that can run on remote agents, in pipeline order. */
+export const WORKER_STEPS: WorkerStep[] = ["transcribe", "voice", "analyze"];
+
+export const STEP_NAMES: Record<WorkerStep, string> = {
+  analyze: "Analysis",
+  transcribe: "Transcription",
+  voice: "Voice analysis",
+};
 
 export const RUNS_ON_LABELS: Record<RunsOn, string> = {
   agent: "Remote agents only",
@@ -66,7 +73,7 @@ export function liveAgents(workers: Worker[], step?: WorkerStep): Worker[] {
 /** Steps set to "agent" while no agent can do them: their calls wait in the queue. */
 export function stalledSteps(state: WorkersState | null): WorkerStep[] {
   if (!state) return [];
-  return (["transcribe", "analyze"] as WorkerStep[]).filter(
+  return WORKER_STEPS.filter(
     (step) => state.runs_on[step] === "agent" && liveAgents(state.workers, step).length === 0,
   );
 }

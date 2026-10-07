@@ -64,6 +64,13 @@ On a laptop, plug in the charger: on battery the GPU is slowed down about 10×. 
 `transcribe --redo`).
 5. **Fill in `context/business.md`**: what you sell, your ideal call, common objections, who is on which
    extension. Claude judges every call against this, so it makes a big difference.
+   Sales calls and customer service calls are judged separately: the AI first decides which kind a call is, then
+   scores it with the matching score card and the matching parts of `business.md` (sections whose title mentions
+   "service" or "support" are for service calls, "Who we call" / "Our ideal call" for sales calls, the rest for
+   both). Service calls get their own score card (greeting, understanding, solution, clarity, empathy, resolution)
+   and their own coaching report (`...-service-team.md`, `...-service-agent-<ext>.md`). Calls nobody picked up
+   (voicemail, no answer), wrong numbers and internal calls are not rated: they get a one-line summary but no score,
+   and are left out of every report and of the agents' average scores.
 
 ## Web interface
 
@@ -77,12 +84,16 @@ Opens http://127.0.0.1:8765 in your browser and asks you to sign in:
 - **Calls**: filter by agent, status, date, length or text; open a call to play the audio, read and **edit the
   transcript**, then "Save & re-analyze"; see the full feedback. Tick several calls to process them in bulk.
 - **Pipeline**: choose steps and filters, start or stop a job, and watch the live log.
-- **Reports**: read the coaching reports, or generate new ones.
+- **Reports**: read the coaching reports, or generate new ones. Reports take the human feedback written on the
+  calls into account: reviewers' notes and scores outweigh the AI's analysis, and a "Human review" section compares
+  the two.
 - **Business context**: edit `context/business.md`.
 - **Remote agents**: PCs that do the transcription/analysis for a hosted server; see [Remote agents](#remote-agents).
 - **Settings**: edit every `.env` value (cookie, models, backends) and run a setup check.
   Turn on **Ongoing mode** (`AUTO_PROCESS`) and, while the UI runs, it fetches new calls from GoVoice every
   `AUTO_PROCESS_MINUTES` (5) and downloads, transcribes and analyzes them. Runs show up on the Pipeline page.
+  List numbers in `SKIP_NUMBERS` (comma-separated, e.g. your agents' own phones called through the VoIP) and
+  their calls are never downloaded, transcribed or analyzed; they show as **Skipped** on the Calls page.
 - **CRM tab** (call drawer, next to Feedback and Transcript): looks up the customer's number in your
   [Twenty CRM](https://twenty.com) and lists the matching contacts with their opportunities. Set `CRM_BASE_URL`
   and `CRM_API_KEY` (Twenty: Settings > APIs & Webhooks) in Settings. Numbers are matched on their last 8 digits,
@@ -206,10 +217,47 @@ use, which needs torch: build with `INSTALL_CONVERT=true docker compose up -d --
 add the environment variable `INSTALL_CONVERT=true` as a build variable and redeploy. Converting
 `tunisian-large-v3` needs about 6–8 GB of free RAM.
 
+## Voice tone
+
+Claude only reads the transcript, which can't show *how* the agent sounds. **Voice analysis** listens to the
+recording itself:
+
+1. The speech is cut at pauses into windows of a few seconds.
+2. An audio classification model (`VOICE_MODEL`, default `superb/wav2vec2-base-superb-er`, neutral / happy /
+   angry / sad) gives each window an emotion, and loudness and pitch variation are measured (a flat monotone
+   voice has little pitch variation, a tense one is loud and high).
+3. These measurements are stored with the call and given to the analysis, which returns a **voice tone score
+   (1–10)** for the agent (`voice` in the analysis): how calm, warm and steady they sound, the agent's and the
+   customer's tone, the evidence by timestamp, and a tip on how to sound better. The tone/empathy score of the
+   card also takes it into account. It shows on the call page (score, timeline of the call by emotion, emotion
+   shares, pauses) and in the shared/PDF page.
+
+It is a pipeline step of its own, **voice**, between download and transcription (download → voice → transcribe →
+analyze), with its own section in Settings (`VOICE_ANALYSIS`, `VOICE_MODEL`). Like transcription and analysis it runs
+on this server or on remote agents: `VOICE_RUNS_ON` = `host`, `agent` or `auto` (Settings, or the Agents page). When
+a run includes the analysis, a call is analyzed as soon as both its transcript and its voice analysis are in.
+`voice --redo` measures again, e.g. after changing the model.
+
+Like the Tunisian Whisper models, the emotion model is **converted once on the server** (it is exported to ONNX,
+which needs torch: `pip install -r requirements-voice.txt --extra-index-url https://download.pytorch.org/whl/cpu`;
+Docker: build with `INSTALL_VOICE=true`, ~1 GB; the conversion takes about a minute and happens at the first voice
+step) and from then on runs with onnxruntime, without torch. A remote agent that doesn't have the model downloads the
+converted one from the server (it is packed on first request) and unpacks it into its model folder, so even the
+installed Windows agent app, which has no torch, can do the voice step. The server only offers its own
+`VOICE_MODEL`. If no converted model is available, the server still measures loudness and pitch, but an agent
+fails the task rather than send back less. Roughly 1 s of processing per 8 s of audio on a CPU. `VOICE_ANALYSIS=false` turns it off.
+
+Know its limits: GoVoice recordings are **mono**, so the audio can't say who is speaking: Claude attributes the
+windows to the agent from the transcript timestamps (stereo recordings with one voice per channel are measured per
+channel). The model was trained on English acted speech, and phone audio in Derja/French is a different thing, so
+single windows are weak evidence; the analysis is told to trust patterns, not one window, and to mark low
+confidence. Treat the score as a guide next to the human feedback, which always outweighs it. Existing analyses
+get the voice score when you re-analyze them (`analyze --redo`).
+
 ## Remote agents
 
 A hosted server often has no GPU and no Claude login. A **remote agent** is a PC (yours, or a colleague's) that
-connects to the server and does the heavy steps, **transcription** (Whisper) and **analysis** (Claude/Cursor), with
+connects to the server and does the heavy steps, **transcription** (Whisper), **voice analysis** and **analysis** (Claude/Cursor), with
 its own hardware and logins. The server keeps everything else: GoVoice sync and download, the database, the web
 interface.
 
@@ -246,9 +294,17 @@ The two steps are independent, e.g. transcribe on a PC with a GPU and analyze on
    be reachable from that PC (use `https://`: the token and the recordings travel over it); set `PUBLIC_URL` so
    the code carries the public address.
 
-What the PC still needs for each step: **transcription** needs nothing (Whisper is in the app; models are
-downloaded when first used; the Tunisian Derja models are downloaded *from the server*, which converts them once:
-Settings → Install now). **Analysis** with `CLAUDE_BACKEND=subscription` needs the Claude Code CLI installed and
+**The Whisper model downloads itself.** Right after connecting, and again whenever the server's `WHISPER_MODEL`
+changes, the agent checks that the model is on the PC and, if not, downloads it in the background: the standard
+models from Hugging Face, the Tunisian Derja models *from the server* (which converts each once: Settings →
+Install now). While it downloads, the tray icon turns blue and says so, and the Remote agents page shows the
+progress; the PC is not offered transcription work until the model is there (in `auto` mode the server does that
+work meanwhile), and then it starts at once. It checks the free disk space first (a model is 0.1–3 GB, the Tunisian
+ones twice that while unpacking) and retries a failed download after 5 minutes. Models go to
+`%LOCALAPPDATA%\CallAnalyzerAgent\data\models`: set `whisper_model_dir` in `agent.toml` to put them on another drive.
+Old models are not deleted when the default changes.
+
+What else a PC needs: **Analysis** with `CLAUDE_BACKEND=subscription` needs the Claude Code CLI installed and
 signed in on that PC (`claude`); with `api` it needs `ANTHROPIC_API_KEY` in `%LOCALAPPDATA%\CallAnalyzerAgent\.env`.
 The Remote agents page tells you what a PC is missing.
 
@@ -322,6 +378,7 @@ Ongoing mode (`AUTO_PROCESS`) also uses agents.
 # Or step by step
 .venv\Scripts\python -m call_analyzer sync          # fetch the list of recordings
 .venv\Scripts\python -m call_analyzer download
+.venv\Scripts\python -m call_analyzer voice       # listen to the recordings (voice tone)
 .venv\Scripts\python -m call_analyzer transcribe
 .venv\Scripts\python -m call_analyzer analyze
 .venv\Scripts\python -m call_analyzer report        # writes reports/*.md
@@ -336,7 +393,7 @@ Filters on every command: `--since`, `--until`, `--agent 102`, `--min-duration 3
 ## What you get
 
 **Per call** (`show <id>`): summary, outcome, customer interest, 1–10 scores (opening, discovery, pitch,
-objection handling, closing, tone), strengths, mistakes with the exact quote and a better sentence to use
+objection handling, closing, tone), a voice tone score from the audio itself, strengths, mistakes with the exact quote and a better sentence to use
 instead, objections and better answers, missed opportunities, top coaching tip, follow-up action.
 
 **Reports** (`reports/`): one for the team and one per agent: recurring patterns, top 3 priorities,

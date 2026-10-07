@@ -1,6 +1,6 @@
 """Where a pipeline step runs: on this host, or as tasks for remote agents (see workers.py).
 
-TRANSCRIBE_RUNS_ON / ANALYZE_RUNS_ON in Settings choose, per step:
+TRANSCRIBE_RUNS_ON / VOICE_RUNS_ON / ANALYZE_RUNS_ON in Settings choose, per step:
 - host:  this server does it, as before.
 - agent: only agents do it. If none is connected the calls stay queued and are processed whenever one connects;
          the host never takes over.
@@ -16,7 +16,7 @@ from .config import runs_on
 POLL_SECONDS = 2
 OFFLINE_GRACE = 30  # seconds without any agent online before the step stops waiting for them
 
-_DONE_WORD = {"transcribe": "transcribed", "analyze": "analyzed"}
+_DONE_WORD = {"transcribe": "transcribed", "voice": "measured", "analyze": "analyzed"}
 _FINISHED = ("done", "failed", "cancelled")
 
 

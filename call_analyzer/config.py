@@ -77,9 +77,14 @@ class Settings:
     cursor_model: str = os.getenv("CURSOR_MODEL") or "composer-2.5"
     feedback_language: str = os.getenv("FEEDBACK_LANGUAGE", "English")
 
+    # Voice analysis: an audio classification model listens to the recording itself (see voice.py).
+    voice_analysis: bool = _bool("VOICE_ANALYSIS", True)
+    voice_model: str = os.getenv("VOICE_MODEL") or "superb/wav2vec2-base-superb-er"
+
     # Where transcription and analysis run: host = this server, agent = remote agents only (jobs wait for one to
     # connect), auto = remote agents while one is online, otherwise this server.
     transcribe_runs_on: str = (os.getenv("TRANSCRIBE_RUNS_ON") or "host").lower()
+    voice_runs_on: str = (os.getenv("VOICE_RUNS_ON") or "host").lower()
     analyze_runs_on: str = (os.getenv("ANALYZE_RUNS_ON") or "host").lower()
 
     # Listen on the local network instead of only this machine. Everything except share links needs a login.
@@ -113,6 +118,7 @@ settings = Settings()
 AGENT_SERVER_KEYS = (
     "transcribe_provider", "whisper_model", "whisper_device", "whisper_language", "whisper_prompt",
     "elevenlabs_model", "openai_transcribe_model",
+    "voice_model",
     "analysis_backend", "claude_backend", "claude_model", "cursor_model", "feedback_language",
 )
 # Only ever set on the agent itself (agent.toml or its environment).
@@ -139,7 +145,7 @@ RUNS_ON = ("host", "agent", "auto")
 
 def runs_on(kind: str) -> str:
     """Where a step runs: host (this server), agent (remote agents only) or auto (agents while one is online)."""
-    value = live("TRANSCRIBE_RUNS_ON" if kind == "transcribe" else "ANALYZE_RUNS_ON", "host").lower()
+    value = live(f"{kind.upper()}_RUNS_ON", "host").lower()
     return value if value in RUNS_ON else "host"
 
 

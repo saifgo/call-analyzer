@@ -2,6 +2,7 @@
 
     python -m unittest discover tests -v
 """
+import json
 import os
 import socket
 import sqlite3
@@ -36,6 +37,10 @@ dispatch.OFFLINE_GRACE = 1.5
 # This machine may have no Whisper/Claude set up; the agents here use fakes, so they count as ready.
 agent_mod.transcribe_ready = lambda cfg: (True, "")
 agent_mod.analyze_ready = lambda cfg: (True, "")
+agent_mod.voice_ready = lambda cfg: (True, "")
+
+VOICE = {"version": 1, "model": "fake/model", "duration": 10.0, "separated": False,
+         "tracks": [{"label": "mixed", "windows": [], "summary": {}}]}
 
 ANALYSIS = CallAnalysis(
     is_sales_conversation=True, call_category="prospecting", summary="s", outcome="sale", customer_interest="high",
@@ -68,20 +73,27 @@ def wait_for(condition, timeout=15, message="condition"):
 class Running:
     """An agent running in a thread, with fake transcription/analysis that record the settings they got."""
 
-    def __init__(self, base, token, overrides=None, slots=None):
-        self.seen_transcribe, self.seen_analyze = [], []
+    def __init__(self, base, token, overrides=None, slots=None, manage_models=False):
+        self.seen_transcribe, self.seen_analyze, self.seen_voice, self.voice_given_to_analysis = [], [], [], []
 
         def transcribe(path, cfg):
             self.seen_transcribe.append(cfg)
             assert Path(path).read_bytes() == b"fake mp3 bytes"
             return "[00:00] agent: hello\n[00:03] customer: salam"
 
+        def voice(path, cfg):
+            self.seen_voice.append(cfg)
+            assert Path(path).read_bytes() == b"fake mp3 bytes"
+            return VOICE
+
         def analyze(call, cfg, business):
             self.seen_analyze.append((cfg, business, call["transcript"]))
+            self.voice_given_to_analysis.append(call.get("voice"))
             return ANALYSIS, "Fake Claude"
 
         self.agent = agent_mod.Agent(base, token, overrides or {}, slots or dict(agent_mod.DEFAULT_SLOTS),
-                                     transcribe_fn=transcribe, analyze_fn=analyze)
+                                     transcribe_fn=transcribe, analyze_fn=analyze, voice_fn=voice,
+                                     manage_models=manage_models)
         self.error = None
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -120,7 +132,8 @@ class AgentTests(unittest.TestCase):
         self.conn.execute("DELETE FROM workers")
         self.conn.execute("DELETE FROM calls")
         self.conn.commit()
-        set_env(TRANSCRIBE_RUNS_ON="agent", ANALYZE_RUNS_ON="agent", WHISPER_MODEL="large-v3")
+        set_env(TRANSCRIBE_RUNS_ON="agent", ANALYZE_RUNS_ON="agent", VOICE_RUNS_ON="host", WHISPER_MODEL="large-v3",
+                VOICE_MODEL="fake/model")
         self.agents: list[Running] = []
 
     def tearDown(self):
@@ -179,6 +192,89 @@ class AgentTests(unittest.TestCase):
         self.assertIn("business", running.seen_analyze[0][1].lower() + "business")  # the server sent business.md
         stats = {w["name"]: w for w in self.listing()["workers"]}["PC-1"]
         self.assertEqual((stats["done"], stats["failed"]), (2, 0))
+
+    def test_voice_step_on_an_agent_reaches_the_analysis(self):
+        set_env(VOICE_RUNS_ON="agent")
+        running = self.start_agent()
+        self.assertTrue(self.listing()["workers"][0]["ready"]["voice"])
+        self.assertEqual(self.listing()["runs_on"]["voice"], "agent")
+        call = self.add_call(transcript="[00:00] agent: hello")
+        dispatch.process("voice", [call], self.never, chain=True)
+        row = self.row()
+        self.assertEqual(json.loads(row["voice"])["model"], "fake/model")
+        self.assertTrue(row["voice_at"])
+        self.assertEqual(running.seen_voice[0].voice_model, "fake/model")  # the server's setting reached the agent
+        # The call was transcribed already, so the chained analysis is queued as soon as the voice is in, and the
+        # agent that analyzes it is given the voice data.
+        dispatch.process("analyze", [self.row()], self.never)
+        self.assertEqual(json.loads(running.voice_given_to_analysis[0])["model"], "fake/model")
+
+    def test_analysis_waits_for_both_transcript_and_voice(self):
+        set_env(VOICE_RUNS_ON="agent")
+        token = self.add_worker()
+        call = self.add_call()
+        dispatch.process("voice", [call], self.never, chain=True)  # nobody online: queued
+        dispatch.process("transcribe", [call], self.never, chain=True)
+        self.assertEqual(self.listing()["queue"]["queued"], 2)
+        running = Running(self.base, token)
+        self.agents.append(running)
+        wait_for(lambda: self.row()["analysis"], message="analysis after both steps")
+        # One analysis only, and it saw the voice data.
+        self.assertEqual(len(running.seen_analyze), 1)
+        self.assertEqual(json.loads(running.voice_given_to_analysis[0])["model"], "fake/model")
+
+    def test_a_failed_voice_step_does_not_block_or_mark_the_call(self):
+        set_env(VOICE_RUNS_ON="agent")
+        running = self.start_agent()
+
+        def broken(path, cfg):
+            raise RuntimeError("corrupt audio")
+
+        running.agent._voice = broken
+        workers.RETRY_DELAY = 0
+        call = self.add_call(transcript="[00:00] agent: hello")
+        dispatch.process("voice", [call], self.never, chain=True)
+        row = self.row()
+        self.assertIsNone(row["voice"])
+        self.assertIsNone(row["error"])  # the call is still fine without it
+        task = self.conn.execute("SELECT * FROM worker_tasks").fetchone()
+        self.assertEqual((task["kind"], task["status"]), ("voice", "failed"))
+        self.assertIn("corrupt audio", task["error"])
+
+    def test_voice_on_host_or_auto_follows_the_other_steps(self):
+        self.start_agent()
+        done = []
+        dispatch.process("voice", [self.add_call()], lambda batch: done.extend(c["id"] for c in batch))
+        self.assertEqual(done, ["1"])  # VOICE_RUNS_ON=host: agents are ignored
+        set_env(VOICE_RUNS_ON="auto")
+        self.add_call("2")
+        dispatch.process("voice", [self.row("2")], self.never)
+        self.assertIsNotNone(self.row("2")["voice"])  # an agent is online: it does it
+
+    def test_agent_downloads_the_converted_voice_model_from_the_server(self):
+        from call_analyzer import voice_models
+        # The server has the model converted (normally it converts it itself, with torch, the first time).
+        served = voice_models.model_dir("fake/model")
+        served.mkdir(parents=True, exist_ok=True)
+        (served / "model.onnx").write_bytes(b"onnx bytes")
+        (served / "model.json").write_text('{"labels": ["neu"], "do_normalize": true}', encoding="utf-8")
+        agent_home = Path(TMP.name) / "agent-models"
+        agent = agent_mod.Agent(self.base, self.add_worker(), {"whisper_model_dir": str(agent_home)},
+                                dict(agent_mod.DEFAULT_SLOTS), manage_models=False)
+        cfg = agent.cfg({"voice_model": "fake/model"})
+        self.assertFalse(voice_models.is_installed("fake/model", cfg))
+        shown = []
+        try:
+            agent.ensure_voice_model(cfg, shown.append)
+        finally:
+            voice_models.fetch_model = None
+        self.assertTrue(voice_models.is_installed("fake/model", cfg))
+        self.assertEqual((agent_home / "voice" / "fake--model" / "model.onnx").read_bytes(), b"onnx bytes")
+        self.assertTrue(any("downloading from the server" in text or "Getting" in text for text in shown), shown)
+        # Only the server's own VOICE_MODEL is offered: an agent can't make the server fetch other models.
+        with self.assertRaises(requests.HTTPError) as caught:
+            agent.server.post("/api/worker/voice-model/prepare", {"name": "someone/else"})
+        self.assertEqual(caught.exception.response.status_code, 404)
 
     def test_server_defaults_and_agent_overrides(self):
         # An agent with nothing set uses the server's default...
@@ -255,6 +351,29 @@ class AgentTests(unittest.TestCase):
         self.assertIn("GPU exploded", row["error"])
         task = self.conn.execute("SELECT * FROM worker_tasks").fetchone()
         self.assertEqual((task["status"], task["attempts"]), ("failed", workers.MAX_ATTEMPTS))
+
+    def test_agent_only_gets_the_steps_it_is_set_up_for(self):
+        # Transcription works on this PC, analysis doesn't (no Claude login).
+        agent_mod.analyze_ready = lambda cfg: (False, "Not logged in to Claude")
+        try:
+            running = self.start_agent("transcriber")
+            self.assertEqual(workers.online_workers(self.conn, "analyze"), [])
+            self.add_call("1")
+            self.add_call("2", transcript="[00:00] agent: hi")
+            analyze_id = workers.enqueue(self.conn, "analyze", ["2"])[0]
+            workers.enqueue(self.conn, "transcribe", ["1"])
+            wait_for(lambda: self.row("1")["transcript"], message="the transcription it can do")
+            time.sleep(2.5)  # long enough for its analyze runners to have claimed the task if they could
+            self.assertEqual(workers.get_task(self.conn, analyze_id)["status"], "queued")
+            self.assertEqual(running.seen_analyze, [])
+            self.assertIsNone(self.row("2")["error"])
+            running.stop()
+        finally:
+            agent_mod.analyze_ready = lambda cfg: (True, "")
+        # An agent that can analyze picks the waiting task up.
+        self.start_agent("analyst")
+        wait_for(lambda: self.row("2")["analysis"], message="analysis by the capable agent")
+        self.assertEqual(workers.get_task(self.conn, analyze_id)["worker_name"], "analyst")
 
     def test_lease_expiry_gives_the_task_to_another_agent(self):
         self.add_call()
@@ -337,11 +456,11 @@ class AgentTests(unittest.TestCase):
         running = self.start_agent()
         dest = Path(TMP.name) / "agent-models" / name
         # Packing runs in the background: the agent asks again until the pack is ready.
-        running.agent._fetch_model(name, dest, 0)
+        running.agent._fetch_model(name, dest, lambda text: None)
         self.assertEqual((dest / "model.bin").read_bytes(), b"weights" * 1000)
         self.assertTrue((dest / "config.json").exists())
         with self.assertRaises(whisper_models.ModelUnavailable):  # a model the server doesn't have
-            running.agent._fetch_model("arabic-dialectal-turbo", Path(TMP.name) / "x", 0)
+            running.agent._fetch_model("arabic-dialectal-turbo", Path(TMP.name) / "x", lambda text: None)
 
     def test_connection_code_roundtrip_and_login(self):
         token = self.add_worker("coded")
@@ -388,6 +507,70 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.admin.delete(url).status_code, 200)
         self.assertEqual(self.listing()["installers"], [])
         self.assertEqual(self.admin.delete(url).status_code, 404)
+
+    def _with_fake_model_store(self, free_bytes=None):
+        """The Whisper model store of this machine, replaced by a fake: absent until download_standard finishes."""
+        import types
+        from call_analyzer import whisper_models
+        state = {"present": False, "downloads": []}
+        saved = (whisper_models.is_present, whisper_models.download_standard, agent_mod.shutil.disk_usage,
+                 agent_mod.MODEL_POLL_SECONDS, agent_mod.MODEL_RETRY_SECONDS)
+
+        def download(name, cfg=None):
+            state["downloads"].append(name)
+            time.sleep(1.2)
+            state["present"] = True
+
+        whisper_models.is_present = lambda name, cfg=None: state["present"]
+        whisper_models.download_standard = download
+        agent_mod.MODEL_POLL_SECONDS, agent_mod.MODEL_RETRY_SECONDS = 0.2, 0.5
+        if free_bytes is not None:
+            agent_mod.shutil.disk_usage = lambda path: types.SimpleNamespace(free=free_bytes)
+
+        def restore():
+            (whisper_models.is_present, whisper_models.download_standard, agent_mod.shutil.disk_usage,
+             agent_mod.MODEL_POLL_SECONDS, agent_mod.MODEL_RETRY_SECONDS) = saved
+
+        self.addCleanup(restore)
+        return state
+
+    def test_missing_model_is_downloaded_in_the_background_before_work_is_offered(self):
+        state = self._with_fake_model_store()
+        set_env(TRANSCRIBE_RUNS_ON="auto")
+        token = self.add_worker("model-pc")
+        managed = Running(self.base, token, manage_models=True)
+        self.agents.append(managed)
+        wait_for(lambda: state["downloads"], message="the model download starts by itself")
+        worker = next(w for w in self.listing()["workers"] if w["name"] == "model-pc")
+        # While it downloads the PC is online but is not offered transcription...
+        self.assertFalse(worker["ready"]["transcribe"])
+        self.assertIn("Downloading the model large-v3", worker["info"]["capabilities"]["transcribe"]["reason"])
+        self.assertEqual(worker["info"]["model"]["status"], "downloading")
+        # ...so in "auto" mode the host does the work meanwhile instead of leaving it waiting.
+        done = []
+        dispatch.process("transcribe", [self.add_call("1")], lambda batch: done.extend(c["id"] for c in batch))
+        self.assertEqual(done, ["1"])
+        # Once the model is there the server learns at once and gives it work.
+        wait_for(lambda: self.listing()["workers"][0]["ready"]["transcribe"], timeout=8, message="ready after download")
+        self.assertEqual(self.listing()["workers"][0]["info"]["model"]["status"], "ready")
+        set_env(TRANSCRIBE_RUNS_ON="agent")
+        dispatch.process("transcribe", [self.add_call("2")], self.never)
+        self.assertIn("customer: salam", self.row("2")["transcript"])
+        self.assertEqual(state["downloads"], ["large-v3"])  # downloaded once
+
+    def test_model_download_is_refused_without_disk_space_and_retried(self):
+        state = self._with_fake_model_store(free_bytes=1000)
+        token = self.add_worker("tiny-disk")
+        managed = Running(self.base, token, manage_models=True)
+        self.agents.append(managed)
+        wait_for(lambda: self.listing()["workers"] and self.listing()["workers"][0]["info"].get("model", {}).get("status") == "error",
+                 message="a disk space error is reported")
+        reason = self.listing()["workers"][0]["info"]["capabilities"]["transcribe"]["reason"]
+        self.assertIn("Not enough free disk space", reason)
+        self.assertEqual(state["downloads"], [])
+        agent_mod.shutil.disk_usage = lambda path: __import__("types").SimpleNamespace(free=50 * 10**9)  # space freed
+        wait_for(lambda: self.listing()["workers"][0]["ready"]["transcribe"], message="retried after the failure")
+        self.assertEqual(state["downloads"], ["large-v3"])
 
     def test_duplicate_enqueue_is_one_task(self):
         self.add_call()

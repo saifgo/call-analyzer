@@ -8,6 +8,7 @@ start-with-Windows, around the agent in agent.py.
 """
 import argparse
 import ctypes
+import hashlib
 import os
 import socket
 import subprocess
@@ -80,16 +81,25 @@ def relaunch(*args: str):
 _keep = []  # the single-instance handle must stay alive as long as the program runs
 
 
+def _instance_name() -> str:
+    """One agent per data folder: a normal install uses the plain name (which the installer also checks); a copy run
+    with its own AGENT_HOME (testing, a second account on the PC) does not collide with it."""
+    if not os.getenv("AGENT_HOME"):
+        return "CallAnalyzerAgent"
+    return "CallAnalyzerAgent-" + hashlib.sha1(str(agent_mod.home().resolve()).lower().encode()).hexdigest()[:10]
+
+
 def single_instance() -> bool:
     if os.name == "nt":
-        handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\CallAnalyzerAgent")
+        handle = ctypes.windll.kernel32.CreateMutexW(None, False, f"Local\\{_instance_name()}")
         if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
             return False
         _keep.append(handle)
         return True
     sock = socket.socket()
     try:
-        sock.bind(("127.0.0.1", 47653))
+        offset = int(hashlib.sha1(_instance_name().encode()).hexdigest(), 16) % 1000 if os.getenv("AGENT_HOME") else 0
+        sock.bind(("127.0.0.1", 47653 + offset))
     except OSError:
         return False
     _keep.append(sock)
@@ -130,7 +140,7 @@ def setup_window() -> bool:
         sticky="w")
     ttk.Label(frame, wraplength=460, justify="left", text=(
         "On the server, open Remote agents, click Add agent, and copy the connection code. "
-        "Paste it here. This PC will then transcribe and analyze calls for the server.")).grid(
+        "Paste it here. This PC will then transcribe, listen to and analyze calls for the server.")).grid(
         sticky="w", pady=(8, 14))
     code = tk.StringVar()
     entry = ttk.Entry(frame, textvariable=code, width=66)
@@ -229,14 +239,21 @@ class TrayApp:
         agent = self.agent
         if not agent.connected:
             return "offline"
+        if agent.model.get("status") == "error":
+            return "error"
         if agent.paused or not agent.enabled:
             return "paused"
-        return "working" if agent.running else "online"
+        return "working" if agent.running or agent.model.get("status") == "downloading" else "online"
 
     def status_text(self, *_) -> str:
         agent, state = self.agent, self.current_state()
         if state == "offline":
             return "Can't reach the server, trying again…"
+        model = agent.model
+        if model.get("status") == "error":
+            return f"Can't get the model {model.get('name')}: {str(model.get('detail'))[:90]}"
+        if model.get("status") == "downloading":
+            return f"Downloading the {model.get('name')} model in the background ({model.get('detail')})"
         if not agent.enabled:
             return "Paused by an admin on the server"
         if agent.paused:

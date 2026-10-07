@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import auth, crm, db, workers
+from ..analyze import KIND_SQL, SCORE_SQL, kind_of
 from ..config import ENV_PATH, ROOT, settings
 from . import govoice_login, workers_api
 from .export import audio_data_uri, render_call_page, render_report_page
@@ -338,6 +339,14 @@ def whisper_models():
             for k, m in DIALECT_MODELS.items()]
 
 
+@app.get("/api/voice-models")
+def voice_models_list():
+    """Models that VOICE_MODEL can be set to, and whether they're converted on this server yet."""
+    from ..voice_models import VOICE_MODELS, is_installed
+    return [{"name": k, "label": m.label, "repo": k, "size_gb": m.size_gb, "installed": is_installed(k)}
+            for k, m in VOICE_MODELS.items()]
+
+
 @app.put("/api/settings")
 def put_settings(updates: dict[str, str]):
     # Start from the environment so values set outside the file (Coolify/Docker) aren't saved as empty.
@@ -384,8 +393,10 @@ def put_business(body: TextBody):
 # --- Calls ------------------------------------------------------------------------------------
 
 STATUS_SQL = {
-    "new": "audio_path IS NULL",
-    "downloaded": "audio_path IS NOT NULL AND transcript IS NULL",
+    "new": "audio_path IS NULL AND NOT skip_listed(caller, called)",
+    "downloaded": "audio_path IS NOT NULL AND transcript IS NULL AND NOT skip_listed(caller, called)",
+    # Not processed because a number is in SKIP_NUMBERS (calls processed before it was added keep their status).
+    "skipped": "transcript IS NULL AND analysis IS NULL AND skip_listed(caller, called)",
     "transcribed": "transcript IS NOT NULL AND analysis IS NULL",
     "analyzed": "analysis IS NOT NULL",
     "stale": "analysis IS NOT NULL AND transcribed_at > analyzed_at",
@@ -398,9 +409,13 @@ SORT_SQL = {
     "agent": "agent",
     "customer": "customer",
     "duration": "duration",
-    "score": "json_extract(analysis, '$.overall_score')",
+    "score": SCORE_SQL,
+    "human": "(SELECT AVG(score) FROM feedback WHERE feedback.call_id = calls.id)",
     "updated": "updated_at",
 }
+
+# Rows passed to _summary carry this column.
+SKIPPED_COL = "skip_listed(caller, called) AS skipped"
 
 
 def _summary(row) -> dict:
@@ -409,6 +424,8 @@ def _summary(row) -> dict:
         status = "stale" if (row["transcribed_at"] or "") > (row["analyzed_at"] or "") else "analyzed"
     elif row["transcript"] is not None:
         status = "transcribed"
+    elif row["skipped"]:
+        status = "skipped"
     elif row["audio_path"]:
         status = "downloaded"
     else:
@@ -417,15 +434,17 @@ def _summary(row) -> dict:
         "id": row["id"], "type": row["type"], "agent": row["agent"], "customer": row["customer"],
         "date_call": row["date_call"], "duration": row["duration"], "filename": row["filename"],
         "status": status, "error": row["error"],
-        "score": analysis.get("overall_score") if analysis else None,
-        "outcome": analysis.get("outcome") if analysis else None,
+        "kind": kind_of(analysis) if analysis else None,
+        "score": analysis.get("overall_score") if analysis and kind_of(analysis) != "other" else None,
+        # A service call has a resolution (resolved, escalated...) where a sales call has an outcome.
+        "outcome": (analysis.get("outcome") or analysis.get("resolution_status")) if analysis else None,
         "interest": analysis.get("customer_interest") if analysis else None,
         "updated_at": row["updated_at"],
     }
 
 
 @app.get("/api/calls")
-def list_calls(request: Request, agent: str = "", status: str = "", outcome: str = "", q: str = "",
+def list_calls(request: Request, agent: str = "", status: str = "", outcome: str = "", kind: str = "", q: str = "",
                since: str = "", until: str = "",
                min_duration: int = 0, sort: str = "-date", limit: int = 200, offset: int = 0):
     scope, scope_args = _scope_sql(request)
@@ -436,8 +455,11 @@ def list_calls(request: Request, agent: str = "", status: str = "", outcome: str
     if status in STATUS_SQL:
         clauses.append(STATUS_SQL[status])
     if outcome:
-        clauses.append("json_extract(analysis, '$.outcome') = ?")
+        clauses.append("COALESCE(json_extract(analysis, '$.outcome'), json_extract(analysis, '$.resolution_status')) = ?")
         args.append(outcome)
+    if kind in ("sales", "service", "other"):
+        clauses.append(f"{KIND_SQL} = ?")
+        args.append(kind)
     if q:
         clauses.append("(customer LIKE ? OR id = ? OR transcript LIKE ?)")
         args += [f"%{q}%", q, f"%{q}%"]
@@ -459,15 +481,25 @@ def list_calls(request: Request, agent: str = "", status: str = "", outcome: str
     order = f"{col} IS NULL, {col} {'DESC' if desc else 'ASC'}, date_call DESC"
     conn = db.connect()
     total = conn.execute(f"SELECT COUNT(*) FROM calls WHERE {where}", args).fetchone()[0]
-    rows = conn.execute(f"SELECT * FROM calls WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+    rows = conn.execute(f"SELECT *, {SKIPPED_COL} FROM calls WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
                         [*args, limit, offset]).fetchall()
     agents = [r[0] for r in conn.execute(f"SELECT DISTINCT agent FROM calls WHERE {scope} ORDER BY agent", scope_args)]
-    return {"total": total, "calls": [_summary(r) for r in rows], "agents": agents}
+    # Human score = average of the scores reviewers gave the call (feedback without a score doesn't count).
+    human = {r[0]: r[1] for r in conn.execute(
+        f"SELECT call_id, AVG(score) FROM feedback WHERE score IS NOT NULL AND call_id IN ({','.join('?' * len(rows))}) "
+        "GROUP BY call_id", [r["id"] for r in rows])} if rows else {}
+    calls = []
+    for r in rows:
+        item = _summary(r)
+        avg = human.get(r["id"])
+        item["human_score"] = round(avg, 1) if avg is not None else None
+        calls.append(item)
+    return {"total": total, "calls": calls, "agents": agents}
 
 
 def _get_row(call_id: str, request: Request | None = None):
     """The call, or 404. With a request, also 404 when the account may not see this agent's calls."""
-    row = db.connect().execute("SELECT * FROM calls WHERE id=?", (call_id,)).fetchone()
+    row = db.connect().execute(f"SELECT *, {SKIPPED_COL} FROM calls WHERE id=?", (call_id,)).fetchone()
     agents = _scope(request) if request else None
     if not row or (agents is not None and row["agent"] not in agents):
         raise HTTPException(404, "Call not found")
@@ -485,8 +517,31 @@ def get_call(call_id: str, request: Request):
         "analyzed_at": row["analyzed_at"],
         "analyzed_by": row["analyzed_by"],
         "analysis": json.loads(row["analysis"]) if row["analysis"] else None,
+        "voice": json.loads(row["voice"]) if row["voice"] else None,
         "has_audio": bool(row["audio_path"]) and Path(row["audio_path"]).exists(),
     }
+
+
+@app.get("/api/crm/leads")
+def get_crm_leads(refresh: bool = False):
+    """Opportunities still at the "new" stage in the CRM, with their contact's numbers: the leads to call. Each one
+    also says how often its numbers appear in our recorded calls (matched on the last 8 digits, like the CRM tab)."""
+    try:
+        result = crm.leads(refresh=refresh)
+    except crm.CrmError as exc:
+        raise HTTPException(502, str(exc))
+    calls: dict[str, dict] = {}
+    for row in db.connect().execute("SELECT id, customer, date_call FROM calls ORDER BY date_call"):
+        if key := crm.match_key(row["customer"]):
+            seen = calls.setdefault(key, {"count": 0})
+            seen.update(count=seen["count"] + 1, last_id=row["id"], last_date=row["date_call"])
+    for lead in result["leads"]:
+        keys = {crm.match_key(n) for n in (lead["contact"] or {}).get("phones", [])} - {None}
+        found = [calls[k] for k in keys if k in calls]
+        latest = max(found, key=lambda c: c["last_date"] or "", default=None)
+        lead["calls"] = {"count": sum(c["count"] for c in found), "match": next(iter(sorted(keys)), None),
+                         "last_id": latest and latest["last_id"], "last_date": latest and latest["last_date"]}
+    return result
 
 
 @app.get("/api/calls/{call_id}/crm")
@@ -532,10 +587,9 @@ class FeedbackBody(BaseModel):
     score: int | None = None  # the reviewer's own 1-10 score, to compare with the AI's
 
 
-FEEDBACK_SELECT = """
+FEEDBACK_SELECT = f"""
     SELECT f.id, f.call_id, f.author, u.display_name AS author_name, f.body, f.score, f.created_at, f.updated_at,
-           c.customer, c.agent, c.type, c.date_call, c.duration,
-           json_extract(c.analysis, '$.overall_score') AS ai_score
+           c.customer, c.agent, c.type, c.date_call, c.duration, {SCORE_SQL} AS ai_score
     FROM feedback f JOIN calls c ON c.id = f.call_id LEFT JOIN users u ON u.username = f.author"""
 
 
@@ -633,13 +687,16 @@ def stats(request: Request):
 
     agents = [dict(r) for r in conn.execute(f"""
         SELECT agent, COUNT(*) calls, COUNT(analysis) analyzed,
-               ROUND(AVG(json_extract(analysis, '$.overall_score')), 1) avg_score,
+               ROUND(AVG(CASE WHEN {KIND_SQL} = 'sales' THEN json_extract(analysis, '$.overall_score') END), 1) avg_score,
                SUM(json_extract(analysis, '$.outcome') IN ('sale', 'appointment_or_next_step')) wins,
+               COUNT(CASE WHEN {KIND_SQL} = 'sales' THEN json_extract(analysis, '$.overall_score') END) scored,
+               SUM({KIND_SQL} = 'service') service_calls,
+               ROUND(AVG(CASE WHEN {KIND_SQL} = 'service' THEN json_extract(analysis, '$.overall_score') END), 1) service_score,
                ROUND(SUM(duration) / 60.0) minutes
         FROM calls WHERE {scope} GROUP BY agent ORDER BY calls DESC""", scope_args)]
     outcomes = [dict(r) for r in conn.execute(f"""
         SELECT json_extract(analysis, '$.outcome') outcome, COUNT(*) n FROM calls
-        WHERE {scope} AND analysis IS NOT NULL GROUP BY 1 ORDER BY n DESC""", scope_args)]
+        WHERE {scope} AND json_extract(analysis, '$.outcome') IS NOT NULL GROUP BY 1 ORDER BY n DESC""", scope_args)]
     names = {}
     for username, display_name, agent in conn.execute("""
             SELECT u.username, u.display_name, ua.agent FROM user_agents ua JOIN users u USING (username)
@@ -766,7 +823,7 @@ def export_report_pdf(name: str, request: Request):
 
 # --- Jobs: run CLI commands in the background and stream their output -------------------------
 
-COMMANDS = {"check", "sync", "download", "transcribe", "analyze", "report", "run", "install-model"}
+COMMANDS = {"check", "sync", "download", "transcribe", "voice", "analyze", "report", "run", "install-model", "install-voice-model"}
 ARG_FLAGS = {"since": "--since", "until": "--until", "agent": "--agent", "min_duration": "--min-duration",
              "limit": "--limit", "ids": "--ids", "workers": "--workers"}
 BOOL_FLAGS = {"redo": "--redo", "team_only": "--team-only", "new_only": "--new-only"}
@@ -819,8 +876,8 @@ class JobRunner:
             # check and report don't take every filter; argparse accepts them all on pipeline commands.
             argv = [sys.executable, "-m", "call_analyzer", command] + ([] if command == "check" else cli_args)
             self.lines.append(f"$ call_analyzer {command} {' '.join(argv[4:])}".rstrip())
-            # When analysis follows, an agent's transcript is analyzed as soon as it arrives.
-            if command == "transcribe" and "analyze" in commands:
+            # When analysis follows, a call is analyzed as soon as an agent has sent its transcript and voice analysis.
+            if command in ("voice", "transcribe") and "analyze" in commands:
                 env["CALL_ANALYZER_CHAIN"] = "1"
             # Own process group on Linux/macOS so Stop also ends the claude CLI processes it starts.
             self.process = subprocess.Popen(argv, cwd=ROOT, env=env, stdout=subprocess.PIPE,
@@ -858,7 +915,7 @@ jobs = JobRunner()
 
 # Ongoing mode: fetch and process new calls every AUTO_PROCESS_MINUTES. No report step, since every run
 # would write a new set of report files.
-AUTO_COMMANDS = ["sync", "download", "transcribe", "analyze"]
+AUTO_COMMANDS = ["sync", "download", "voice", "transcribe", "analyze"]
 
 
 def _auto_settings() -> tuple[bool, int]:

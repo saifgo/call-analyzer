@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import type { DateRange } from "@daypicker/react";
-import { OutcomeBadge, ScoreBadge, StatusBadge } from "@/components/call-badges";
+import { KIND_LABEL, KindBadge, OutcomeBadge, ScoreBadge, StatusBadge } from "@/components/call-badges";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -49,15 +49,15 @@ import type { CallDetail, CallList } from "@/lib/types";
 import { CallSheet } from "./call-detail";
 
 const PAGE_SIZE = 50;
-const FILTER_KEYS = ["q", "agent", "status", "outcome", "since", "until", "min"] as const;
+const FILTER_KEYS = ["q", "agent", "status", "kind", "outcome", "since", "until", "min"] as const;
 // Everything kept in the URL: the filters plus the table sort ("duration", "-duration", …).
 const QUERY_KEYS = [...FILTER_KEYS, "sort"] as const;
 type Filters = Record<(typeof QUERY_KEYS)[number], string>;
 
 const DEFAULT_SORT = "-date";
-type SortKey = "date" | "agent" | "customer" | "duration" | "score" | "updated";
+type SortKey = "date" | "agent" | "customer" | "duration" | "score" | "human" | "updated";
 // Direction used the first time a column is clicked.
-const FIRST_DESC: Record<SortKey, boolean> = { date: true, agent: false, customer: false, duration: true, score: true, updated: true };
+const FIRST_DESC: Record<SortKey, boolean> = { date: true, agent: false, customer: false, duration: true, score: true, human: true, updated: true };
 
 function SortableHead({
   column,
@@ -101,15 +101,30 @@ const STATUS_ITEMS = [
   { label: "Transcribed", value: "transcribed" },
   { label: "Analyzed", value: "analyzed" },
   { label: "Needs re-analysis", value: "stale" },
+  { label: "Skipped (SKIP_NUMBERS)", value: "skipped" },
   { label: "Errors", value: "error" },
 ];
 
-// Same values as CallAnalysis.outcome in analyze.py.
+const KIND_ITEMS = [
+  { label: "Sales and service", value: "all" },
+  ...["sales", "service", "other"].map((value) => ({ label: KIND_LABEL[value], value })),
+];
+
+// Same values as CallAnalysis.outcome and ServiceAnalysis.resolution_status in analyze.py.
 const OUTCOME_ITEMS = [
   { label: "Any outcome", value: "all" },
-  ...["sale", "appointment_or_next_step", "callback_requested", "not_interested", "no_decision", "not_applicable"].map(
-    (value) => ({ label: humanize(value), value }),
-  ),
+  ...[
+    "sale",
+    "appointment_or_next_step",
+    "callback_requested",
+    "not_interested",
+    "no_decision",
+    "not_applicable",
+    "resolved",
+    "escalated",
+    "pending_customer",
+    "unresolved",
+  ].map((value) => ({ label: humanize(value), value })),
 ];
 
 const LENGTH_ITEMS = [
@@ -241,6 +256,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
   if (filters.q) params.set("q", filters.q);
   if (filters.agent) params.set("agent", filters.agent);
   if (filters.status) params.set("status", filters.status);
+  if (filters.kind) params.set("kind", filters.kind);
   if (filters.outcome) params.set("outcome", filters.outcome);
   if (filters.since) params.set("since", filters.since);
   if (filters.until) params.set("until", filters.until);
@@ -282,7 +298,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const pageHref = (p: number) => href("calls", null, { ...filters, page: p > 1 ? String(p) : "" });
   const running = !!job.state?.running;
-  const columns = isAdmin ? 11 : 10;
+  const columns = isAdmin ? 12 : 11;
 
   return (
     <>
@@ -336,6 +352,22 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
           </SelectTrigger>
           <SelectPopup>
             {STATUS_ITEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+        <Select
+          items={KIND_ITEMS}
+          onValueChange={(v) => setQuery({ kind: v === "all" ? "" : (v as string) })}
+          value={filters.kind || "all"}
+        >
+          <SelectTrigger aria-label="Kind of call" className="w-auto">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            {KIND_ITEMS.map((item) => (
               <SelectItem key={item.value} value={item.value}>
                 {item.label}
               </SelectItem>
@@ -398,7 +430,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
                 </Button>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button disabled={running} onClick={() => bulk(["download", "transcribe", "analyze"])} size="sm">
+                <Button disabled={running} onClick={() => bulk(["download", "voice", "transcribe", "analyze"])} size="sm">
                   <WorkflowIcon aria-hidden="true" />
                   Process
                 </Button>
@@ -446,7 +478,10 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
               </SortableHead>
               <TableHead>Status</TableHead>
               <SortableHead column="score" onSort={(s) => setQuery({ sort: s })} sort={sort}>
-                Score
+                AI score
+              </SortableHead>
+              <SortableHead column="human" onSort={(s) => setQuery({ sort: s })} sort={sort}>
+                Human score
               </SortableHead>
               <TableHead className="max-lg:hidden">Outcome</TableHead>
               <SortableHead className="max-xl:hidden" column="updated" onSort={(s) => setQuery({ sort: s })} sort={sort}>
@@ -496,8 +531,14 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
                     <TableCell>
                       <ScoreBadge score={c.score} />
                     </TableCell>
+                    <TableCell>
+                      <ScoreBadge score={c.human_score} />
+                    </TableCell>
                     <TableCell className="max-lg:hidden">
-                      <OutcomeBadge outcome={c.outcome} />
+                      <div className="flex flex-wrap gap-1">
+                        <KindBadge kind={c.kind} />
+                        <OutcomeBadge outcome={c.outcome} />
+                      </div>
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground max-xl:hidden" title={fmtDateTime(c.updated_at)}>
                       {fmtRelative(c.updated_at)}

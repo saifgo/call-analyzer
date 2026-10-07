@@ -10,6 +10,7 @@ import {
   MonitorSmartphoneIcon,
   MoonIcon,
   PhoneIcon,
+  PhoneOutgoingIcon,
   Settings2Icon,
   SunIcon,
   SquareIcon,
@@ -70,7 +71,7 @@ import { STEP_LABELS, useJob } from "@/lib/jobs";
 import { useMe } from "@/lib/me";
 import { href, type Route } from "@/lib/router";
 import { type Theme, useTheme } from "@/lib/theme";
-import { liveAgents, stalledSteps, STEP_NAMES, useWorkers } from "@/lib/workers";
+import { liveAgents, stalledSteps, STEP_NAMES, useWorkers, WORKER_STEPS } from "@/lib/workers";
 
 const NAV = [
   {
@@ -81,6 +82,11 @@ const NAV = [
       { icon: FileTextIcon, label: "Reports", page: "reports" },
     ],
     label: "Coaching",
+  },
+  {
+    adminOnly: true,
+    items: [{ icon: PhoneOutgoingIcon, label: "Leads to call", page: "leads" }],
+    label: "CRM",
   },
   {
     adminOnly: true,
@@ -227,13 +233,13 @@ function AgentsAlert() {
         </TooltipTrigger>
         <TooltipPopup className="max-w-xs">
           {stalled.map((s) => STEP_NAMES[s]).join(" and ")} {stalled.length > 1 ? "are" : "is"} set to remote agents
-          only, so calls wait in the queue until an agent connects.
+          only, so calls wait in the queue until an agent is ready (an agent may still be downloading its model).
         </TooltipPopup>
       </Tooltip>
     );
   }
   const online = liveAgents(state.workers).length;
-  const used = (["transcribe", "analyze"] as const).some((s) => state.runs_on[s] !== "host");
+  const used = WORKER_STEPS.some((s) => state.runs_on[s] !== "host");
   if (!used || online === 0) return null;
   return (
     <Badge render={<a href={href("agents")} />} variant="success">

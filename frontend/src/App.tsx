@@ -12,6 +12,7 @@ import { BusinessPage } from "@/pages/business";
 import { CallsPage } from "@/pages/calls";
 import { DashboardPage } from "@/pages/dashboard";
 import { FeedbackPage } from "@/pages/feedback";
+import { LeadsPage } from "@/pages/leads";
 import { LoginPage } from "@/pages/login";
 import { PipelinePage } from "@/pages/pipeline";
 import { ReportsPage } from "@/pages/reports";
@@ -32,6 +33,9 @@ function Pages() {
       break;
     case "feedback":
       page = <FeedbackPage route={route} />;
+      break;
+    case "leads":
+      page = <LeadsPage route={route} />;
       break;
     case "pipeline":
       page = <PipelinePage />;

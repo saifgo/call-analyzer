@@ -42,10 +42,12 @@ export const STEP_LABELS: Record<string, string> = {
   sync: "Sync",
   download: "Download",
   transcribe: "Transcribe",
+  voice: "Voice",
   analyze: "Analyze",
   report: "Report",
   run: "Run",
   "install-model": "Install Whisper model",
+  "install-voice-model": "Install voice model",
 };
 
 /** Steps that talk to GoVoice and need a valid GoVoice session. */

@@ -89,9 +89,9 @@ export function DashboardPage(): React.ReactElement {
   useOnJobFinished(reload);
   const running = !!job.state?.running;
 
-  const analyzedWithScore = s?.agents.reduce((n, a) => n + (a.avg_score !== null ? a.analyzed : 0), 0) ?? 0;
-  const avgScore = s && analyzedWithScore
-    ? s.agents.reduce((sum, a) => sum + (a.avg_score ?? 0) * (a.avg_score !== null ? a.analyzed : 0), 0) / analyzedWithScore
+  const scoredCalls = s?.agents.reduce((n, a) => n + (a.avg_score !== null ? a.scored : 0), 0) ?? 0;
+  const avgScore = s && scoredCalls
+    ? s.agents.reduce((sum, a) => sum + (a.avg_score ?? 0) * (a.avg_score !== null ? a.scored : 0), 0) / scoredCalls
     : null;
   const wins = s?.agents.reduce((n, a) => n + (a.wins ?? 0), 0) ?? 0;
   const minutes = s?.agents.reduce((n, a) => n + (a.minutes ?? 0), 0) ?? 0;
@@ -103,7 +103,7 @@ export function DashboardPage(): React.ReactElement {
         <RefreshCwIcon aria-hidden="true" />
         Sync call list
       </Button>
-      <Button disabled={running} onClick={() => job.start(["download", "transcribe", "analyze"])} variant="outline">
+      <Button disabled={running} onClick={() => job.start(["download", "voice", "transcribe", "analyze"])} variant="outline">
         <DownloadCloudIcon aria-hidden="true" />
         Process new calls
       </Button>
@@ -197,8 +197,8 @@ export function DashboardPage(): React.ReactElement {
               value={numberFmt.format(s.analyzed)}
             />
             <Kpi
-              hint={avgScore === null ? "No analyzed calls yet" : "Across every analyzed call"}
-              label="Average score"
+              hint={avgScore === null ? "No analyzed sales calls yet" : "Across every analyzed sales call"}
+              label="Average sales score"
               value={
                 avgScore === null ? "–" : (
                   <>
@@ -266,8 +266,10 @@ export function DashboardPage(): React.ReactElement {
                   <TableHead className="text-right">Calls</TableHead>
                   <TableHead className="text-right">Minutes</TableHead>
                   <TableHead className="text-right">Analyzed</TableHead>
-                  <TableHead className="text-right">Avg score</TableHead>
+                  <TableHead className="text-right">Sales score</TableHead>
                   <TableHead className="text-right">Sales / next steps</TableHead>
+                  <TableHead className="text-right">Service calls</TableHead>
+                  <TableHead className="text-right">Service score</TableHead>
                   <TableHead className="w-10">
                     <span className="sr-only">Open</span>
                   </TableHead>
@@ -295,6 +297,10 @@ export function DashboardPage(): React.ReactElement {
                       <ScoreBadge score={a.avg_score} />
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{a.wins ?? 0}</TableCell>
+                    <TableCell className="text-right tabular-nums">{a.service_calls ?? 0}</TableCell>
+                    <TableCell className="text-right">
+                      <ScoreBadge score={a.service_score} />
+                    </TableCell>
                     <TableCell className="text-right">
                       <ArrowRightIcon aria-hidden="true" className="ms-auto size-4 text-muted-foreground" />
                     </TableCell>

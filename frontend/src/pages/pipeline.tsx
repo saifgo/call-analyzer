@@ -36,12 +36,13 @@ import { useApi } from "@/lib/api";
 import { fmtDateTime, fmtRelative } from "@/lib/format";
 import { useJob } from "@/lib/jobs";
 import { href } from "@/lib/router";
-import { liveAgents, RUNS_ON_LABELS, STEP_NAMES, useWorkers } from "@/lib/workers";
+import { liveAgents, RUNS_ON_LABELS, STEP_NAMES, useWorkers, WORKER_STEPS } from "@/lib/workers";
 import type { Stats } from "@/lib/types";
 
 const STEPS = [
   { description: "Fetch the list of recordings from GoVoice", key: "sync", label: "Sync" },
   { description: "Download the mp3 files", key: "download", label: "Download" },
+  { description: "Listen to the recordings: voice tone from an emotion model", key: "voice", label: "Voice" },
   { description: "Speech-to-text (local Whisper by default)", key: "transcribe", label: "Transcribe" },
   { description: "Per-call feedback from Claude or Cursor", key: "analyze", label: "Analyze" },
   { description: "Coaching reports for the team and each agent", key: "report", label: "Report" },
@@ -105,7 +106,7 @@ function NumberInput({
 function ProcessingNotice() {
   const { state } = useWorkers();
   if (!state) return null;
-  const steps = (["transcribe", "analyze"] as const).filter((s) => state.runs_on[s] !== "host");
+  const steps = WORKER_STEPS.filter((s) => state.runs_on[s] !== "host");
   if (!steps.length) return null;
   const online = liveAgents(state.workers).length;
   return (
@@ -117,7 +118,7 @@ function ProcessingNotice() {
       <AlertDescription>
         {online
           ? `${online} ${online === 1 ? "agent is" : "agents are"} online. The job waits for them and shows their progress in the log.`
-          : state.runs_on.transcribe === "agent" || state.runs_on.analyze === "agent"
+          : steps.some((s) => state.runs_on[s] === "agent")
             ? "No agent is online: the calls are queued and processed when one connects."
             : "No agent is online, so this server does the work."}
       </AlertDescription>
@@ -257,7 +258,7 @@ export function PipelinePage(): React.ReactElement {
             <Field>
               <Label>
                 <Switch checked={form.redo} onCheckedChange={(redo) => setForm({ redo })} />
-                Redo calls that were already transcribed or analyzed
+                Redo calls that were already measured, transcribed or analyzed
               </Label>
             </Field>
             <Field>

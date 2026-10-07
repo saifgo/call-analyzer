@@ -16,7 +16,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .. import db, workers
+from .. import db, voice_models, workers
 from ..config import live, live_defaults, runs_on, settings
 from ..whisper_models import DIALECT_MODELS, is_installed, model_dir
 
@@ -25,6 +25,7 @@ router = APIRouter()
 MAX_WAIT = 30  # longest a claim request is held open
 MAX_INFO_BYTES = 20_000  # what an agent may report about itself
 KEEP_FINISHED_TASKS = 500
+AUDIO_KINDS = ("transcribe", "voice")  # the steps that work on the recording itself: the agent downloads it
 
 
 # --- Agent side ---------------------------------------------------------------------------------
@@ -66,7 +67,7 @@ def hello(body: HelloBody, worker: dict = Depends(current_worker)):
 def worker_config(worker: dict = Depends(current_worker)):
     """What an agent would use: the server's current defaults, and where each step runs."""
     return {"name": worker["name"], "enabled": worker["enabled"], "defaults": live_defaults(),
-            "runs_on": {"transcribe": runs_on("transcribe"), "analyze": runs_on("analyze")}}
+            "runs_on": {k: runs_on(k) for k in workers.KINDS}}
 
 
 class HeartbeatBody(BaseModel):
@@ -96,12 +97,12 @@ class ClaimBody(BaseModel):
 
 def _payload(conn, task) -> dict | None:
     """Everything an agent needs for a task, or None after failing a task that can't be done (missing audio...)."""
-    call = conn.execute("SELECT id, type, agent, customer, date_call, duration, filename, transcript, audio_path "
-                        "FROM calls WHERE id=?", (task["call_id"],)).fetchone()
+    call = conn.execute("SELECT id, type, agent, customer, date_call, duration, filename, transcript, audio_path, "
+                        "voice FROM calls WHERE id=?", (task["call_id"],)).fetchone()
     problem = None
     if not call:
         problem = "The call no longer exists"
-    elif task["kind"] == "transcribe" and not (call["audio_path"] and Path(call["audio_path"]).exists()):
+    elif task["kind"] in AUDIO_KINDS and not (call["audio_path"] and Path(call["audio_path"]).exists()):
         problem = "The recording isn't downloaded on the server"
     elif task["kind"] == "analyze" and not call["transcript"]:
         problem = "The call has no transcript"
@@ -112,10 +113,11 @@ def _payload(conn, task) -> dict | None:
         "id": task["id"], "kind": task["kind"], "attempt": task["attempts"], "defaults": live_defaults(),
         "call": {k: call[k] for k in ("id", "type", "agent", "customer", "date_call", "duration", "filename")},
     }
-    if task["kind"] == "transcribe":
+    if task["kind"] in AUDIO_KINDS:
         payload["audio_url"] = f"/api/worker/tasks/{task['id']}/audio"
     else:
         payload["call"]["transcript"] = call["transcript"]
+        payload["call"]["voice"] = call["voice"]  # from the voice step (voice.py), if it ran
         path = settings.business_context_path
         payload["business"] = path.read_text(encoding="utf-8") if path.exists() else "(no business context provided)"
     return payload
@@ -137,8 +139,11 @@ def claim(body: ClaimBody, worker: dict = Depends(current_worker)):
             if time.time() - last_touch > 10:  # waiting counts as being alive
                 workers.touch(conn, worker["id"])
                 last_touch = time.time()
-            if fresh["enabled"]:
-                while task := workers.claim(conn, fresh, body.kinds):
+            # Only steps this agent says it is set up for (it may have transcription but no Claude login, or a
+            # Whisper model still downloading): the rest stays queued for the host or another agent.
+            kinds = [k for k in body.kinds if workers.can_run(fresh, k)]
+            if fresh["enabled"] and kinds:
+                while task := workers.claim(conn, fresh, kinds):
                     if payload := _payload(conn, task):
                         return {"task": payload, "enabled": True}
             if time.time() >= deadline:
@@ -160,7 +165,7 @@ def task_audio(task_id: int, worker: dict = Depends(current_worker)):
     conn = db.connect()
     task = _owned(conn, task_id, worker)
     call = conn.execute("SELECT audio_path, filename FROM calls WHERE id=?", (task["call_id"],)).fetchone()
-    if task["kind"] != "transcribe" or not call or not call["audio_path"] or not Path(call["audio_path"]).exists():
+    if task["kind"] not in AUDIO_KINDS or not call or not call["audio_path"] or not Path(call["audio_path"]).exists():
         raise HTTPException(404, "No audio for this task")
     return FileResponse(call["audio_path"], media_type="audio/mpeg", filename=call["filename"])
 
@@ -179,6 +184,7 @@ def task_progress(task_id: int, body: ProgressBody, worker: dict = Depends(curre
 
 class ResultBody(BaseModel):
     transcript: str | None = None
+    voice: dict | None = None
     analysis: dict | None = None
     label: str = ""
 
@@ -234,19 +240,25 @@ def _pack_ready(name: str) -> bool:
     return pack.exists() and pack.stat().st_mtime >= (model_dir(name) / "model.bin").stat().st_mtime
 
 
-def _build_pack(name: str):
-    pack = _pack_path(name)
+def _zip_folder(folder: Path, pack: Path):
     pack.parent.mkdir(parents=True, exist_ok=True)
     tmp = pack.with_name(pack.name + ".part")
     try:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as archive:  # the weights don't compress
-            for path in sorted(model_dir(name).rglob("*")):
+            for path in sorted(folder.rglob("*")):
                 if path.is_file():
-                    archive.write(path, path.relative_to(model_dir(name)).as_posix())
+                    archive.write(path, path.relative_to(folder).as_posix())
         tmp.replace(pack)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _build_pack(name: str):
+    try:
+        _zip_folder(model_dir(name), _pack_path(name))
     except Exception as exc:
         print(f"Packing {name} for agents failed: {exc}")
-        tmp.unlink(missing_ok=True)
 
 
 @router.post("/api/worker/models/{name}/prepare")
@@ -269,6 +281,65 @@ def model_pack(name: str, worker: dict = Depends(current_worker)):
     if name not in DIALECT_MODELS or not is_installed(name) or not _pack_ready(name):
         raise HTTPException(404, f"{name} isn't packed yet")
     return FileResponse(_pack_path(name), media_type="application/zip", filename=f"{name}.zip")
+
+
+# The voice step's emotion model works the same way: converted to ONNX once here (needs torch), downloaded by agents.
+# Only the server's own VOICE_MODEL is offered, so an agent can't make the server fetch arbitrary models.
+
+class VoiceModelBody(BaseModel):
+    name: str
+
+
+_voice_errors: dict[str, str] = {}
+
+
+def _voice_pack_path(name: str) -> Path:
+    return settings.data_dir / "model-packs" / f"voice-{name.replace('/', '--')}.zip"
+
+
+def _voice_pack_ready(name: str) -> bool:
+    pack, onnx = _voice_pack_path(name), voice_models.model_dir(name) / "model.onnx"
+    return pack.exists() and onnx.exists() and pack.stat().st_mtime >= onnx.stat().st_mtime
+
+
+def _build_voice_pack(name: str):
+    try:
+        voice_models.install(name, lambda text: print(f"Voice model: {text}"))  # converts it if this is the first time
+        _zip_folder(voice_models.model_dir(name), _voice_pack_path(name))
+        _voice_errors.pop(name, None)
+    except Exception as exc:
+        _voice_errors[name] = str(exc)
+        print(f"Preparing the voice model {name} for agents failed: {exc}")
+
+
+def _served_voice_model(name: str) -> str:
+    if name != (live("VOICE_MODEL") or settings.voice_model):
+        raise HTTPException(404, "The server only offers the model set as VOICE_MODEL in Settings")
+    return name
+
+
+@router.post("/api/worker/voice-model/prepare")
+def prepare_voice_model(body: VoiceModelBody, worker: dict = Depends(current_worker)):
+    """Convert (once) and pack the voice model for download; later calls find it ready."""
+    name = _served_voice_model(body.name)
+    if _voice_pack_ready(name):
+        return {"ready": True, "size": _voice_pack_path(name).stat().st_size}
+    with _pack_lock:
+        thread = _packing.get(f"voice:{name}")
+        if not thread or not thread.is_alive():
+            if error := _voice_errors.get(name):
+                raise HTTPException(404, error)
+            _packing[f"voice:{name}"] = threading.Thread(target=_build_voice_pack, args=(name,), daemon=True)
+            _packing[f"voice:{name}"].start()
+    return {"ready": False}
+
+
+@router.get("/api/worker/voice-model/pack")
+def voice_model_pack(name: str, worker: dict = Depends(current_worker)):
+    name = _served_voice_model(name)
+    if not _voice_pack_ready(name):
+        raise HTTPException(404, "The voice model isn't packed yet")
+    return FileResponse(_voice_pack_path(name), media_type="application/zip", filename="voice-model.zip")
 
 
 # --- Admin side ---------------------------------------------------------------------------------
@@ -357,7 +428,7 @@ def list_workers():
     workers.requeue_expired(conn)
     stats = workers.worker_stats(conn)
     return {
-        "runs_on": {"transcribe": runs_on("transcribe"), "analyze": runs_on("analyze")},
+        "runs_on": {k: runs_on(k) for k in workers.KINDS},
         "queue": workers.queue_counts(conn),
         "defaults": live_defaults(),
         # For the Add agent dialog: the address agents should use, and where to get the installer.

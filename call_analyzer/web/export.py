@@ -7,6 +7,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from ..analyze import kind_of
+
 ARABIC = re.compile(r"[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]")
 LATIN = re.compile(r"[A-Za-zÀ-ÿ]")
 TIMESTAMP_LINE = re.compile(r"^\[(\d{2}:\d{2}(?::\d{2})?)\]\s*(?:(speaker_\w+|channel_\w+):\s*)?(.*)$")
@@ -15,9 +17,13 @@ SCORE_NAMES = {
     "opening": "Opening", "discovery": "Discovery", "pitch": "Pitch",
     "objection_handling": "Objections", "closing": "Closing", "tone_and_listening": "Tone & listening",
 }
+SERVICE_SCORE_NAMES = {
+    "greeting": "Greeting", "understanding": "Understanding the issue", "solution": "Solution",
+    "clarity": "Clarity", "empathy_and_tone": "Empathy & tone", "resolution": "Resolution",
+}
 DIRECTIONS = {"OUT": "Outbound", "IN": "Inbound", "QUEUE": "Inbound (queue)"}
-GOOD_OUTCOMES = {"sale", "appointment_or_next_step"}
-BAD_OUTCOMES = {"not_interested"}
+GOOD_OUTCOMES = {"sale", "appointment_or_next_step", "resolved"}
+BAD_OUTCOMES = {"not_interested", "unresolved"}
 
 
 def text_dir(text: str) -> str:
@@ -228,22 +234,27 @@ def audio_data_uri(path: Path) -> str:
 
 def _overview(a: dict) -> str:
     score = a.get("overall_score")
-    outcome = a.get("outcome")
+    service = a.get("call_kind") == "service"
+    outcome = a.get("outcome") or a.get("resolution_status")
     outcome_tone = "good" if outcome in GOOD_OUTCOMES else "bad" if outcome in BAD_OUTCOMES else "neutral"
     chips = [f'<span class="chip {outcome_tone}">{_e(_human(outcome) or "Unknown outcome")}</span>']
+    if service:
+        chips.insert(0, '<span class="chip">Customer service</span>')
     if a.get("customer_interest"):
         chips.append(f'<span class="chip">Interest: {_e(_human(a["customer_interest"]))}</span>')
-    if a.get("call_category"):
-        chips.append(f'<span class="chip">{_e(_human(a["call_category"]))}</span>')
-    if a.get("is_sales_conversation") is False:
-        chips.append('<span class="chip warn">Not a sales conversation</span>')
+    if a.get("customer_sentiment"):
+        chips.append(f'<span class="chip">Customer: {_e(_human(a["customer_sentiment"]))}</span>')
+    if category := a.get("call_category") or a.get("issue_category"):
+        chips.append(f'<span class="chip">{_e(_human(category))}</span>')
+    if not service and a.get("is_sales_conversation") is False:
+        chips.append('<span class="chip warn">Not a sales or service call</span>')
 
     scores = a.get("scores") or {}
     bars = "".join(
         f'<div class="bar"><div class="bar-head"><span>{_e(name)}</span><b>{_e(scores.get(key, "–"))}<small>/10</small></b>'
         f'</div><div class="track"><div class="fill {_tone(scores.get(key))}" '
         f'style="width:{max(0, min(10, scores.get(key) or 0)) * 10}%"></div></div></div>'
-        for key, name in SCORE_NAMES.items())
+        for key, name in (SERVICE_SCORE_NAMES if service else SCORE_NAMES).items())
 
     return f"""
     <section class="overview keep">
@@ -276,12 +287,30 @@ def render_call_page(row, *, audio_src: str | None, links: list[tuple[str, str]]
         parts.append('<p class="links"><span class="muted">Recording</span> ' + "".join(
             f'<a href="{_e(url)}">{_e(label)} ↗</a>' for label, url in links) + "</p>")
 
-    if a:
+    if a and kind_of(a) == "other":  # voicemail, no answer...: not rated, so no score card or coaching
+        summary = a.get("summary", "")
+        parts.append('<section class="overview keep"><div class="chips"><span class="chip warn">Not a sales or '
+                     'service call: not rated</span></div></section>')
+        parts.append(_section("Summary", [_block(summary)] if summary else [], content_text=summary))
+    elif a:
         parts.append(_overview(a))
         summary = a.get("summary", "")
         parts.append(_section("Summary", [_block(summary)] if summary else [], content_text=summary))
         if tip := a.get("top_coaching_tip"):
             parts.append(f'<section class="keep"><div class="callout tip">{_field("Top coaching tip", tip)}</div></section>')
+
+        if tone := a.get("voice"):
+            chips = (f'<span class="chip {_tone(tone.get("score"))}">Agent: {_e(_human(tone.get("agent_tone")))}</span> '
+                     f'<span class="chip">Customer: {_e(_human(tone.get("customer_tone")))}</span>')
+            if tone.get("confidence") != "high":
+                chips += f' <span class="chip">{_e(_human(tone.get("confidence")))} confidence</span>'
+            parts.append(_section("Voice tone", [
+                '<div class="card keep">'
+                f'<div class="bar-head"><span>How the agent sounds</span><b>{_e(tone.get("score", "–"))}<small>/10</small></b></div>'
+                f'<div class="track"><div class="fill {_tone(tone.get("score"))}" '
+                f'style="width:{max(0, min(10, tone.get("score") or 0)) * 10}%"></div></div>'
+                f'<p>{chips}</p>' + _field("Evidence", tone.get("evidence")) + _field("Tip", tone.get("coaching_tip"))
+                + "</div>"], content_text=tone.get("evidence", "")))
 
         strengths = a.get("strengths") or []
         parts.append(_section("Strengths", _bullets(strengths), content_text=" ".join(strengths)))
@@ -292,12 +321,13 @@ def render_call_page(row, *, audio_src: str | None, links: list[tuple[str, str]]
             + _field("Say instead", m.get("better_version"), "better") + "</div>" for m in mistakes
         ], content_text=" ".join(m.get("problem", "") for m in mistakes)))
 
-        objections = a.get("objections") or []
-        parts.append(_section("Objections", [
-            '<div class="card">' + _field("Objection", o.get("objection"), "strong")
-            + _field("How it was handled", o.get("how_handled"), "soft")
-            + _field("Better answer", o.get("better_answer"), "better") + "</div>" for o in objections
-        ], content_text=" ".join(o.get("objection", "") for o in objections)))
+        if a.get("call_kind") != "service":  # service calls have no objections to handle
+            objections = a.get("objections") or []
+            parts.append(_section("Objections", [
+                '<div class="card">' + _field("Objection", o.get("objection"), "strong")
+                + _field("How it was handled", o.get("how_handled"), "soft")
+                + _field("Better answer", o.get("better_answer"), "better") + "</div>" for o in objections
+            ], content_text=" ".join(o.get("objection", "") for o in objections)))
 
         missed = a.get("missed_opportunities") or []
         parts.append(_section("Missed opportunities", _bullets(missed), content_text=" ".join(missed)))

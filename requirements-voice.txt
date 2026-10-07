@@ -1,0 +1,8 @@
+# Voice analysis (call_analyzer/voice.py): needed once, on the machine that converts the emotion model to ONNX
+# (normally the server; see voice_models.py). Once converted, the model runs with onnxruntime and no torch, and a
+# remote agent downloads it from the server instead. Without a converted model only loudness and pitch are
+# measured. CPU-only torch is enough:
+#   pip install -r requirements-voice.txt --extra-index-url https://download.pytorch.org/whl/cpu
+torch
+transformers>=4.45
+onnx

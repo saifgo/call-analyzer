@@ -80,9 +80,27 @@ def _parallel(calls, fn, workers, label):
 
 
 def _chain(args) -> bool:
-    """Whether analysis follows this transcription in the same run (a remote agent's transcript is then analyzed
-    as soon as it arrives). Not with --redo: the analyze step re-does every call itself."""
+    """Whether analysis follows this voice or transcription step in the same run (a call is then analyzed as soon
+    as its transcript and voice analysis have both arrived from remote agents). Not with --redo: the analyze step
+    re-does every call itself."""
     return not args.redo and (getattr(args, "chain", False) or os.getenv("CALL_ANALYZER_CHAIN") == "1")
+
+
+def cmd_voice(args):
+    """Listen to the recordings: emotion, loudness and pitch of the voices (see voice.py). Runs before the
+    transcription so the analysis, which uses both, finds it. --redo measures again, e.g. with another VOICE_MODEL."""
+    from . import dispatch, voice
+    if not settings.voice_analysis:
+        print("Voice analysis is off (VOICE_ANALYSIS=false in Settings): skipped.")
+        return
+    conn = db.connect()
+    where = "audio_path IS NOT NULL" + ("" if args.redo else " AND voice IS NULL")
+    calls = db.select_calls(conn, where=where, **_filters(args))
+
+    def on_host(batch):
+        voice.ensure(conn, batch, redo=True)  # the batch is already the calls that need it
+
+    dispatch.process("voice", calls, on_host, chain=_chain(args))
 
 
 def cmd_transcribe(args):
@@ -134,31 +152,43 @@ def cmd_analyze(args):
 
 
 def cmd_report(args):
-    from .analyze import coaching_report
+    from .analyze import coaching_report, kind_of
     conn = db.connect()
     calls = db.select_calls(conn, where="analysis IS NOT NULL", **_filters(args))
-    sales_calls = [c for c in calls if json.loads(c["analysis"]).get("is_sales_conversation")]
-    if not sales_calls:
-        print("No analyzed sales calls match these filters. Run `analyze` first.")
+    by_kind = {"sales": [], "service": []}  # voicemail, wrong numbers... (kind "other") are in no report
+    for call in calls:
+        analysis = json.loads(call["analysis"])
+        kind = kind_of(analysis)
+        if kind in by_kind and (kind == "service" or analysis.get("is_sales_conversation")):
+            by_kind[kind].append(call)
+    if not any(by_kind.values()):
+        print("No analyzed sales or service calls match these filters. Run `analyze` first.")
         return
-
-    if args.agent:
-        groups = {f"agent-{args.agent}": sales_calls}
-    else:
-        groups = {"team": sales_calls}
-        if not args.team_only:
-            for call in sales_calls:
-                groups.setdefault(f"agent-{call['agent']}", []).append(call)
 
     settings.reports_dir.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
-    for name, group in groups.items():
-        title = "the whole sales team" if name == "team" else f"agent extension {name.removeprefix('agent-')}"
-        print(f"Writing report for {title} ({len(group)} calls)...")
-        text = coaching_report(title, group)
-        path = settings.reports_dir / f"{stamp}-{name}.md"
-        path.write_text(f"# Coaching report: {title}\n\n{text}\n", encoding="utf-8")
-        print(f"  -> {path}")
+    for kind, kind_calls in by_kind.items():
+        if not kind_calls:
+            continue
+        # Service reports are named service-team / service-agent-<ext>, so they never overwrite the sales ones.
+        prefix = "service-" if kind == "service" else ""
+        if args.agent:
+            groups = {f"agent-{args.agent}": kind_calls}
+        else:
+            groups = {"team": kind_calls}
+            if not args.team_only:
+                for call in kind_calls:
+                    groups.setdefault(f"agent-{call['agent']}", []).append(call)
+        for name, group in groups.items():
+            if name == "team":
+                title = "the whole customer service team" if kind == "service" else "the whole sales team"
+            else:
+                title = f"agent extension {name.removeprefix('agent-')}" + (" (customer service)" if kind == "service" else "")
+            print(f"Writing {kind} report for {title} ({len(group)} calls)...")
+            text = coaching_report(title, group, db.feedback_by_call(conn, [c["id"] for c in group]), kind=kind)
+            path = settings.reports_dir / f"{stamp}-{prefix}{name}.md"
+            path.write_text(f"# Coaching report: {title}\n\n{text}\n", encoding="utf-8")
+            print(f"  -> {path}")
 
 
 def cmd_show(args):
@@ -175,6 +205,7 @@ def cmd_show(args):
 
 
 def cmd_stats(args):
+    from .analyze import SCORE_SQL  # voicemails and the like are not rated, so not in the average
     conn = db.connect()
 
     def count(where: str) -> int:
@@ -183,12 +214,12 @@ def cmd_stats(args):
     print(f"calls in DB:  {count('1=1')}")
     print(f"downloaded:   {count('audio_path IS NOT NULL')}")
     print(f"transcribed:  {count('transcript IS NOT NULL')}")
+    print(f"voice:        {count('voice IS NOT NULL')}")
     print(f"analyzed:     {count('analysis IS NOT NULL')}")
     print(f"with errors:  {count('error IS NOT NULL')}")
     print("\nagent    calls  analyzed  avg score")
-    for row in conn.execute("""SELECT agent, COUNT(*) n, COUNT(analysis) a,
-                                      ROUND(AVG(json_extract(analysis, '$.overall_score')), 1) score
-                               FROM calls GROUP BY agent ORDER BY n DESC"""):
+    for row in conn.execute(f"""SELECT agent, COUNT(*) n, COUNT(analysis) a, ROUND(AVG({SCORE_SQL}), 1) score
+                                FROM calls GROUP BY agent ORDER BY n DESC"""):
         score = row["score"] if row["score"] is not None else "-"
         print(f"{row['agent']:<8} {row['n']:>5}  {row['a']:>8}  {score:>9}")
 
@@ -244,8 +275,22 @@ def cmd_check(args):
     from .config import runs_on
     from . import workers
     online = workers.online_workers(db.connect())
-    print(f"Processing: transcribe on {runs_on('transcribe')}, analyze on {runs_on('analyze')}; "
+    print(f"Processing: transcribe on {runs_on('transcribe')}, voice on {runs_on('voice')}, analyze on {runs_on('analyze')}; "
           f"{len(online)} remote agent(s) online" + (f" ({', '.join(w['name'] for w in online)})" if online else ""))
+
+    print("Voice analysis:")
+    if not settings.voice_analysis:
+        print("  off (VOICE_ANALYSIS=false)")
+    elif runs_on("voice") == "agent":
+        print("  skipped - runs on remote agents only (each agent checks its own setup: agent status)")
+    else:
+        try:
+            import torch  # noqa: F401
+            import transformers  # noqa: F401
+            print(f"  OK - emotion model {settings.voice_model} (downloaded on first use)")
+        except ImportError:
+            print("  NOTE - torch/transformers are not installed: only loudness and pitch are measured "
+                  "(pip install -r requirements-voice.txt)")
 
     print(f"Analysis ({settings.analysis_backend}):")
     if runs_on("analyze") == "agent":
@@ -299,6 +344,21 @@ def cmd_install_model(args):
         print(f"{name} is a standard Whisper model: it downloads by itself on first use.")
         return
     install(name)
+
+
+def cmd_install_voice_model(args):
+    """Download + convert the voice step's emotion model now instead of at the first voice step."""
+    from .voice_models import VOICE_MODELS, install, is_installed
+
+    name = args.name or settings.voice_model
+    if args.name and name not in VOICE_MODELS:
+        sys.exit(f"Error: unknown voice model {name!r}")
+    if not args.name:
+        print("Voice models (VOICE_MODEL=<name>):")
+        for key, m in VOICE_MODELS.items():
+            print(f"  {key:60} {'installed' if is_installed(key) else 'not installed':14} {m.label}")
+    install(name)
+    print(f"Voice model {name} is installed.")
 
 
 def cmd_ui(args):
@@ -374,6 +434,7 @@ def cmd_run(args):
     args.chain = True
     cmd_sync(args)
     cmd_download(args)
+    cmd_voice(args)
     cmd_transcribe(args)
     cmd_analyze(args)
     cmd_report(args)
@@ -404,15 +465,19 @@ def main():
 
     add("sync", cmd_sync, "Fetch the recordings list from GoVoice into the local DB")
     add("download", cmd_download, "Download mp3 files")
+    add("voice", cmd_voice, "Listen to the recordings: voice tone (audio emotion model)")
     add("transcribe", cmd_transcribe, "Transcribe downloaded recordings")
     add("analyze", cmd_analyze, "Get per-call feedback from Claude")
     add("report", cmd_report, "Write coaching reports (team + per agent) to reports/")
-    add("run", cmd_run, "sync + download + transcribe + analyze + report")
+    add("run", cmd_run, "sync + download + voice + transcribe + analyze + report")
     add("stats", cmd_stats, "Show pipeline progress")
     sub.add_parser("check", help="Check GoVoice cookie, Claude and Whisper setup").set_defaults(fn=cmd_check)
     im = sub.add_parser("install-model", help="Download + convert a Tunisian Derja Whisper model (lists them without a name)")
     im.add_argument("name", nargs="?", help="Default: WHISPER_MODEL")
     im.set_defaults(fn=cmd_install_model)
+    ivm = sub.add_parser("install-voice-model", help="Download + convert the voice analysis emotion model (VOICE_MODEL)")
+    ivm.add_argument("name", nargs="?", help="Default: VOICE_MODEL")
+    ivm.set_defaults(fn=cmd_install_voice_model)
     ui = sub.add_parser("ui", help="Open the web interface")
     ui.add_argument("--port", type=int, help="Default: UI_PORT from .env (8765)")
     ui.add_argument("--host", help="Address to listen on, e.g. 0.0.0.0 in Docker (default: 127.0.0.1)")

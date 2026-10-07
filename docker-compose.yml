@@ -4,6 +4,7 @@ services:
       context: .
       args:
         INSTALL_CONVERT: ${INSTALL_CONVERT:-false}
+        INSTALL_VOICE: ${INSTALL_VOICE:-false}
     image: call-analyzer
     restart: unless-stopped
     init: true  # reaps the claude/chromium processes started by pipeline jobs and PDF export
@@ -16,6 +17,7 @@ services:
         required: false
     environment:
       ENV_FILE: /app/data/.env
+      HF_HOME: /app/data/huggingface  # the voice tone model is kept in the data volume, not downloaded after every rebuild
     volumes:
       - data:/app/data            # calls.db, audio, Whisper models, settings saved from the UI
       - reports:/app/reports

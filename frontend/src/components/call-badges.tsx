@@ -24,6 +24,7 @@ const STATUS: Record<string, { label: string; dot: string }> = {
   transcribed: { dot: "bg-info", label: "Transcribed" },
   analyzed: { dot: "bg-success", label: "Analyzed" },
   stale: { dot: "bg-warning", label: "Needs re-analysis" },
+  skipped: { dot: "bg-muted-foreground/24", label: "Skipped" },
 };
 
 function Dot({ className }: { className: string }) {
@@ -51,11 +52,15 @@ export function StatusBadge({ call }: { call: Pick<CallSummary, "status" | "erro
   );
 }
 
-const OUTCOME_VARIANT: Record<string, "success" | "info" | "error" | "secondary"> = {
+const OUTCOME_VARIANT: Record<string, "success" | "info" | "error" | "warning" | "secondary"> = {
   appointment_or_next_step: "success",
   callback_requested: "info",
+  escalated: "info",
   not_interested: "error",
+  pending_customer: "warning",
+  resolved: "success",
   sale: "success",
+  unresolved: "error",
 };
 
 export function OutcomeBadge({ outcome }: { outcome: string | null | undefined }) {
@@ -69,3 +74,11 @@ export const OUTCOME_COLOR: Record<string, string> = {
   not_interested: "bg-destructive",
   sale: "bg-success",
 };
+
+export const KIND_LABEL: Record<string, string> = { other: "Other", sales: "Sales", service: "Service" };
+
+/** Which score card judged the call; sales is the default so only the other kinds get a badge. */
+export function KindBadge({ kind }: { kind: string | null | undefined }) {
+  if (!kind || kind === "sales") return null;
+  return <Badge variant="outline">{KIND_LABEL[kind] ?? humanize(kind)}</Badge>;
+}

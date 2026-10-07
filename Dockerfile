@@ -12,6 +12,8 @@ FROM python:3.12-slim
 ARG INSTALL_GPU=false
 # INSTALL_CONVERT=true adds CPU torch + transformers, needed once to convert the Tunisian Derja Whisper models.
 ARG INSTALL_CONVERT=false
+# INSTALL_VOICE=true adds CPU torch + transformers for the voice tone model that listens to the recordings.
+ARG INSTALL_VOICE=false
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -24,11 +26,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt requirements-gpu.txt requirements-convert.txt ./
+COPY requirements.txt requirements-gpu.txt requirements-convert.txt requirements-voice.txt ./
 RUN pip install -r requirements.txt \
  && if [ "$INSTALL_GPU" = "true" ]; then pip install -r requirements-gpu.txt; fi \
  && if [ "$INSTALL_CONVERT" = "true" ]; then \
-      pip install -r requirements-convert.txt --extra-index-url https://download.pytorch.org/whl/cpu; fi
+      pip install -r requirements-convert.txt --extra-index-url https://download.pytorch.org/whl/cpu; fi  && if [ "$INSTALL_VOICE" = "true" ] && [ "$INSTALL_CONVERT" != "true" ]; then       pip install -r requirements-voice.txt --extra-index-url https://download.pytorch.org/whl/cpu; fi
 # Where the pip-installed CUDA libraries live (no effect when they aren't installed).
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib
 

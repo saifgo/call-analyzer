@@ -1,7 +1,9 @@
 import json
+import re
 import sqlite3
 
-from .config import settings
+from .config import live, settings
+from .crm import match_key
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS calls (
@@ -23,6 +25,8 @@ CREATE TABLE IF NOT EXISTS calls (
     analysis        TEXT,
     analyzed_at     TEXT,
     analyzed_by     TEXT,
+    voice           TEXT,   -- JSON from voice.py: what the recording sounds like (emotion, loudness, pitch)
+    voice_at        TEXT,
     error           TEXT,
     updated_at      TEXT
 );
@@ -103,7 +107,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON worker_tasks(status, kind);
 """
 
 # Columns added after the first release; connect() adds them to older databases.
-_ADDED_COLUMNS = {"transcribed_by": "TEXT", "analyzed_by": "TEXT", "updated_at": "TEXT"}
+_ADDED_COLUMNS = {"transcribed_by": "TEXT", "analyzed_by": "TEXT", "updated_at": "TEXT", "voice": "TEXT",
+                  "voice_at": "TEXT"}
 # Accounts that existed before roles keep full access.
 _ADDED_USER_COLUMNS = {"role": "TEXT NOT NULL DEFAULT 'admin'", "display_name": "TEXT"}
 
@@ -145,7 +150,25 @@ def connect() -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _migrate(conn)
     conn.executescript(TRIGGERS)
+    # SQL skip_listed(caller, called): whether a call involves a number in SKIP_NUMBERS, as saved when connecting.
+    keys = skip_keys()
+
+    def skip_listed(*numbers) -> int:
+        return int(bool(keys) and any(_number_key(n) in keys for n in numbers))
+
+    conn.create_function("skip_listed", 2, skip_listed, deterministic=True)
     return conn
+
+
+def _number_key(number: str | None) -> str:
+    """Phone numbers compare on their last 8 digits (with or without +216, like the CRM); extensions as they are."""
+    digits = re.sub(r"\D", "", number or "")
+    return match_key(digits) or digits
+
+
+def skip_keys() -> set[str]:
+    """The numbers in SKIP_NUMBERS (e.g. our own phones, called to test the line): their calls aren't processed."""
+    return {key for n in re.split(r"[,;]", live("SKIP_NUMBERS")) if (key := _number_key(n))}
 
 
 def _is_extension(number: str) -> bool:
@@ -186,7 +209,9 @@ def select_calls(conn, *, where: str = "1=1", params: tuple = (), since=None, un
     if ids:
         clauses.append(f"id IN ({','.join('?' * len(ids))})")
         args.extend(ids)
-        min_duration = 0  # explicitly chosen calls are always processed
+        min_duration = 0  # explicitly chosen calls are always processed, even short or skip-listed ones
+    else:
+        clauses.append("NOT skip_listed(caller, called)")
     if since:
         clauses.append("date_call >= ?")
         args.append(since)
@@ -203,3 +228,19 @@ def select_calls(conn, *, where: str = "1=1", params: tuple = (), since=None, un
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, args).fetchall()
+
+
+def feedback_by_call(conn, call_ids) -> dict[str, list[dict]]:
+    """Human feedback for these calls (oldest first), keyed by call id: author, note and the reviewer's own score."""
+    call_ids = list(call_ids)
+    by_call: dict[str, list[dict]] = {}
+    for start in range(0, len(call_ids), 500):  # stay under SQLite's variable limit
+        chunk = call_ids[start:start + 500]
+        rows = conn.execute(
+            f"""SELECT f.call_id, COALESCE(u.display_name, f.author) AS author, f.body, f.score
+                FROM feedback f LEFT JOIN users u ON u.username = f.author
+                WHERE f.call_id IN ({','.join('?' * len(chunk))}) ORDER BY f.created_at, f.id""", chunk)
+        for row in rows:
+            by_call.setdefault(row["call_id"], []).append(
+                {"reviewer": row["author"], "note": row["body"], "reviewer_score": row["score"]})
+    return by_call

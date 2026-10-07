@@ -1,6 +1,8 @@
 // Shapes returned by call_analyzer/web/server.py.
 
-export type CallStatus = "new" | "downloaded" | "transcribed" | "analyzed" | "stale";
+export type CallStatus = "new" | "downloaded" | "transcribed" | "analyzed" | "stale" | "skipped";
+
+export type CallKind = "sales" | "service" | "other";
 
 export type CallSummary = {
   id: string;
@@ -13,26 +15,85 @@ export type CallSummary = {
   status: CallStatus;
   error: string | null;
   score: number | null;
+  /** Average of the scores people gave this call in Human feedback (calls list only). */
+  human_score?: number | null;
+  /** Sales outcome, or for a service call how it ended (resolved, escalated...). */
   outcome: string | null;
   interest: string | null;
+  /** sales | service | other; null until analyzed. */
+  kind: CallKind | null;
   /** Last time anything about the call changed (download, transcript, analysis, error). */
   updated_at: string | null;
 };
 
+/** How the agent sounds, scored by the analysis from the audio measurements (VoiceData). */
+export type VoiceTone = {
+  score: number;
+  agent_tone: string;
+  customer_tone: string;
+  evidence: string;
+  coaching_tip: string;
+  confidence: "high" | "medium" | "low";
+};
+
+/** What both kinds of analysis have; sales calls add outcome/interest/objections, service calls issue/resolution.
+ * "other" calls (voicemail, no answer...) are not rated: they only have call_kind and summary. */
 export type Analysis = {
-  is_sales_conversation: boolean;
-  call_category: string;
-  outcome: string;
-  customer_interest: string;
+  /** Missing on analyses written before service calls got their own score card (those are sales or other). */
+  call_kind?: CallKind;
+  is_sales_conversation?: boolean;
+  call_category?: string;
+  outcome?: string;
+  customer_interest?: string;
+  issue_category?: string;
+  resolution_status?: string;
+  customer_sentiment?: string;
   overall_score: number;
   scores: Record<string, number>;
   summary: string;
   strengths: string[];
   mistakes: { quote: string; problem: string; better_version: string }[];
-  objections: { objection: string; how_handled: string; better_answer: string }[];
+  objections?: { objection: string; how_handled: string; better_answer: string }[];
   missed_opportunities: string[];
   top_coaching_tip: string;
   follow_up_action: string;
+  /** Missing on analyses made before voice analysis, or when the recording wasn't measured. */
+  voice?: VoiceTone | null;
+};
+
+/** Measurements of the recording itself (call_analyzer/voice.py): per stretch of speech, then summed up. */
+export type VoiceWindow = {
+  start: number;
+  end: number;
+  /** Loudness in dBFS: compare within one call. */
+  db: number;
+  /** Pitch spread in semitones: about 1-2 is monotone, 3-5 lively. */
+  pitch_st?: number;
+  /** Probability of each emotion (neutral, happy, angry, sad...), highest first. */
+  emotion?: Record<string, number>;
+};
+
+export type VoiceData = {
+  /** Emotion classifier; null when only loudness and pitch could be measured. */
+  model: string | null;
+  duration: number;
+  /** True when each channel of a stereo recording was measured on its own. */
+  separated: boolean;
+  tracks: {
+    label: string;
+    windows: VoiceWindow[];
+    summary: {
+      speech_seconds: number;
+      speech_share: number;
+      long_pauses: number;
+      longest_pause_s: number;
+      loudness_std_db?: number;
+      pitch_variation_st?: number;
+      emotion_share?: Record<string, number>;
+      dominant?: string;
+      angry_seconds?: number;
+    };
+  }[];
 };
 
 export type CallDetail = CallSummary & {
@@ -44,6 +105,8 @@ export type CallDetail = CallSummary & {
   /** System that wrote the analysis, e.g. "Claude claude-opus-5-5 (API)" or "Cursor composer-2.5". */
   analyzed_by: string | null;
   analysis: Analysis | null;
+  /** What the recording sounds like; null until it was measured. */
+  voice: VoiceData | null;
   has_audio: boolean;
 };
 
@@ -63,8 +126,13 @@ export type Stats = {
     name: string | null;
     calls: number;
     analyzed: number;
+    /** Average score of the sales calls (service calls have their own score card). */
     avg_score: number | null;
+    /** How many scored sales calls avg_score is over. */
+    scored: number;
     wins: number | null;
+    service_calls: number | null;
+    service_score: number | null;
     minutes: number | null;
   }[];
   outcomes: { outcome: string; n: number }[];
@@ -159,6 +227,15 @@ export type CrmPerson = {
 /** `searched` is false when the number is too short to look up (an internal extension). */
 export type CrmLookup = { configured: boolean; number: string; searched: boolean; people: CrmPerson[] };
 
+/** An opportunity still at the "new" stage in the CRM, with its point of contact: a lead to call. */
+export type CrmLead = CrmOpportunity & {
+  contact: Omit<CrmPerson, "opportunities"> | null;
+  /** How often the contact's numbers appear in our recorded calls (last 8 digits). */
+  calls: { count: number; match: string | null; last_id: string | null; last_date: string | null };
+};
+
+export type CrmLeads = { configured: boolean; stage: string; leads: CrmLead[]; truncated: boolean };
+
 /** A note a person wrote about a call. `score` is their own 1-10 score, to compare with the AI's. */
 export type HumanFeedback = {
   id: number;
@@ -174,7 +251,7 @@ export type HumanFeedback = {
 
 export type FeedbackList = { total: number; feedback: HumanFeedback[]; authors: string[] };
 
-export type WorkerStep = "transcribe" | "analyze";
+export type WorkerStep = "transcribe" | "voice" | "analyze";
 /** Where a pipeline step runs: this server, remote agents only, or agents while one is online (else the server). */
 export type RunsOn = "host" | "agent" | "auto";
 
@@ -188,6 +265,8 @@ export type WorkerInfo = {
   gpu?: boolean;
   slots?: Partial<Record<WorkerStep, number>>;
   capabilities?: Partial<Record<WorkerStep, WorkerCapability>>;
+  /** The Whisper model the agent needs: downloaded in the background when it isn't on the PC yet. */
+  model?: { name: string; status: "ready" | "downloading" | "error"; detail: string } | null;
   /** Settings the agent sets itself (agent.toml); the server's defaults apply to the rest. */
   overrides?: Record<string, string>;
   /** The settings the agent works with right now: server defaults merged with its overrides. */

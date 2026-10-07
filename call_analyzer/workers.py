@@ -6,8 +6,8 @@ result back. The server never calls the agent.
 
     pipeline step (transcribe / analyze) --enqueue--> worker_tasks --claim--> agent --result--> calls table
 
-Each step can run on the host, on agents, or on agents with the host as the fallback (TRANSCRIBE_RUNS_ON and
-ANALYZE_RUNS_ON in Settings; see dispatch.py). A task is leased to one agent at a time. The agent's heartbeats keep
+Each step can run on the host, on agents, or on agents with the host as the fallback (TRANSCRIBE_RUNS_ON,
+VOICE_RUNS_ON and ANALYZE_RUNS_ON in Settings; see dispatch.py). A task is leased to one agent at a time. The agent's heartbeats keep
 the lease alive; when they stop, the task goes back to the queue for another agent.
 """
 import hashlib
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 
 from . import db
 
-KINDS = ("transcribe", "analyze")
+KINDS = ("transcribe", "voice", "analyze")
 PROTOCOL = 1  # bump when the agent <-> server messages change incompatibly
 MIN_PROTOCOL = 1  # older agents are told to update
 
@@ -171,6 +171,8 @@ def enqueue(conn, kind: str, call_ids: list[str], *, chain: bool = False, origin
 
 
 def _call_error(conn, call_id: str, kind: str, error: str):
+    if kind == "voice":  # a call the voice analysis failed on is still transcribed and analyzed, just without it
+        return
     conn.execute("UPDATE calls SET error=? WHERE id=?", (f"{kind}: {error}", call_id))
 
 
@@ -248,21 +250,41 @@ def complete(conn, task, worker: dict, result: dict):
             raise ValueError("The result has no transcript")
         conn.execute("UPDATE calls SET transcript=?, transcribed_at=?, transcribed_by=?, error=NULL WHERE id=?",
                      (transcript, now, _by(label, worker), task["call_id"]))
+    elif task["kind"] == "voice":
+        voice = result.get("voice")
+        if not isinstance(voice, dict) or not isinstance(voice.get("tracks"), list):
+            raise ValueError("The result has no voice data")
+        conn.execute("UPDATE calls SET voice=?, voice_at=? WHERE id=?",
+                     (json.dumps(voice, ensure_ascii=False), now, task["call_id"]))
     else:
-        from .analyze import CallAnalysis  # the same model the host validates its own analyses with
+        from .analyze import parse_analysis  # the same models the host validates its own analyses with
         try:
-            analysis = CallAnalysis.model_validate(result.get("analysis"))
+            analysis = parse_analysis(result.get("analysis"))
         except Exception as exc:
             raise ValueError(f"The analysis doesn't match the expected format: {exc}") from exc
         conn.execute("UPDATE calls SET analysis=?, analyzed_at=?, analyzed_by=?, error=NULL WHERE id=?",
                      (analysis.model_dump_json(), now, _by(label, worker), task["call_id"]))
     conn.execute("UPDATE worker_tasks SET status='done', finished_at=?, progress=NULL, error=NULL, "
                  "lease_expires=NULL WHERE id=?", (now, task["id"]))
-    if task["kind"] == "transcribe" and task["chain"]:
-        from .config import runs_on
-        if runs_on("analyze") != "host":  # the host's own analyze step picks the call up otherwise
-            enqueue(conn, "analyze", [task["call_id"]], origin_pid=task["origin_pid"])
+    if task["kind"] != "analyze" and task["chain"]:
+        _continue_to_analysis(conn, task)
     conn.commit()
+
+
+def _continue_to_analysis(conn, task):
+    """The pipeline run goes on to analyze this call: queue the analysis once the transcript and the voice analysis
+    are both in (whichever step finishes last does it), unless the call is analyzed already."""
+    from .config import runs_on
+    if runs_on("analyze") == "host":  # the host's own analyze step picks the call up otherwise
+        return
+    call_id = task["call_id"]
+    call = conn.execute("SELECT transcript, analysis FROM calls WHERE id=?", (call_id,)).fetchone()
+    if not call or not call["transcript"] or call["analysis"]:
+        return
+    if conn.execute("SELECT 1 FROM worker_tasks WHERE call_id=? AND kind IN ('transcribe', 'voice') "
+                    "AND status IN ('queued', 'running')", (call_id,)).fetchone():
+        return
+    enqueue(conn, "analyze", [call_id], origin_pid=task["origin_pid"])
 
 
 def release_task(conn, task_id: int):

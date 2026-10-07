@@ -57,6 +57,7 @@ import { Sheet, SheetDescription, SheetHeader, SheetPanel, SheetPopup, SheetTitl
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { VoicePanel } from "@/components/voice-panel";
 import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
 import { Bidi, textDir } from "@/lib/bidi";
@@ -66,13 +67,23 @@ import { useMe } from "@/lib/me";
 import type { Analysis, CallDetail, CrmLookup, CrmOpportunity, CrmPerson, HumanFeedback, Share } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const SCORE_NAMES: Record<string, string> = {
+// Sales calls and customer service calls are judged on different score cards (ServiceScores in analyze.py).
+const SALES_SCORE_NAMES: Record<string, string> = {
   closing: "Closing",
   discovery: "Discovery",
   objection_handling: "Objections",
   opening: "Opening",
   pitch: "Pitch",
   tone_and_listening: "Tone & listening",
+};
+
+const SERVICE_SCORE_NAMES: Record<string, string> = {
+  greeting: "Greeting",
+  understanding: "Understanding the issue",
+  solution: "Solution",
+  clarity: "Clarity",
+  empathy_and_tone: "Empathy & tone",
+  resolution: "Resolution",
 };
 
 const SCORE_COLOR = { error: "bg-destructive", success: "bg-success", warning: "bg-warning" };
@@ -142,6 +153,26 @@ function ProcessedBy({ verb, at, by }: { verb: string; at: string | null; by: st
 /** `onReanalyze` is only given to admins; agents just read the feedback. */
 function Feedback({ call, onReanalyze }: { call: CallDetail; onReanalyze?: () => void }) {
   const a = call.analysis as Analysis;
+  const isService = call.kind === "service";
+  const scoreNames = isService ? SERVICE_SCORE_NAMES : SALES_SCORE_NAMES;
+  if (call.kind === "other") {
+    // Voicemail, no answer, wrong number...: not rated, and left out of reports and average scores.
+    return (
+      <div className="flex flex-col gap-6">
+        <ProcessedBy at={call.analyzed_at} by={call.analyzed_by} verb="Analyzed" />
+        <div className="flex flex-wrap gap-1.5">
+          <Badge variant="warning">Not a sales or service call</Badge>
+        </div>
+        <Section title="Summary">
+          <Bidi className="text-sm leading-relaxed" text={a.summary} />
+        </Section>
+        <p className="text-muted-foreground text-sm">
+          Voicemails, unanswered calls, wrong numbers and internal calls are not rated: they are left out of the
+          reports and of the agents' average scores.
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-6">
       <ProcessedBy at={call.analyzed_at} by={call.analyzed_by} verb="Analyzed" />
@@ -159,10 +190,13 @@ function Feedback({ call, onReanalyze }: { call: CallDetail; onReanalyze?: () =>
       )}
 
       <div className="flex flex-wrap gap-1.5">
-        <OutcomeBadge outcome={a.outcome} />
-        {a.call_category && <Badge variant="secondary">{humanize(a.call_category)}</Badge>}
+        {isService && <Badge variant="outline">Customer service</Badge>}
+        <OutcomeBadge outcome={a.outcome ?? a.resolution_status} />
+        {(a.call_category ?? a.issue_category) && (
+          <Badge variant="secondary">{humanize((a.call_category ?? a.issue_category) as string)}</Badge>
+        )}
         {a.customer_interest && <Badge variant="outline">Interest: {humanize(a.customer_interest)}</Badge>}
-        {a.is_sales_conversation === false && <Badge variant="warning">Not a sales conversation</Badge>}
+        {a.customer_sentiment && <Badge variant="outline">Customer: {humanize(a.customer_sentiment)}</Badge>}
       </div>
 
       <Section title="Summary">
@@ -181,7 +215,7 @@ function Feedback({ call, onReanalyze }: { call: CallDetail; onReanalyze?: () =>
 
       <Section title="Scores">
         <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-          {Object.entries(SCORE_NAMES).map(([key, name]) => {
+          {Object.entries(scoreNames).map(([key, name]) => {
             const value = a.scores?.[key];
             return (
               <Meter key={key} max={10} value={value ?? 0}>
@@ -200,6 +234,8 @@ function Feedback({ call, onReanalyze }: { call: CallDetail; onReanalyze?: () =>
           })}
         </div>
       </Section>
+
+      <VoicePanel data={call.voice} tone={a.voice} />
 
       <Section title="Strengths">
         <BulletList items={a.strengths} />
@@ -221,21 +257,23 @@ function Feedback({ call, onReanalyze }: { call: CallDetail; onReanalyze?: () =>
         )}
       </Section>
 
-      <Section title="Objections">
-        {a.objections?.length ? (
-          a.objections.map((o, i) => (
-            <Card className="rounded-xl" key={i}>
-              <CardPanel className="flex flex-col gap-3 p-4">
-                <Labeled label="Objection" text={o.objection} />
-                <Labeled label="How it was handled" text={o.how_handled} tone="muted" />
-                <Labeled label="Better answer" text={o.better_answer} tone="better" />
-              </CardPanel>
-            </Card>
-          ))
-        ) : (
-          <p className="text-muted-foreground text-sm">None</p>
-        )}
-      </Section>
+      {!isService && (
+        <Section title="Objections">
+          {a.objections?.length ? (
+            a.objections.map((o, i) => (
+              <Card className="rounded-xl" key={i}>
+                <CardPanel className="flex flex-col gap-3 p-4">
+                  <Labeled label="Objection" text={o.objection} />
+                  <Labeled label="How it was handled" text={o.how_handled} tone="muted" />
+                  <Labeled label="Better answer" text={o.better_answer} tone="better" />
+                </CardPanel>
+              </Card>
+            ))
+          ) : (
+            <p className="text-muted-foreground text-sm">None</p>
+          )}
+        </Section>
+      )}
 
       <Section title="Missed opportunities">
         <BulletList items={a.missed_opportunities} />
@@ -893,7 +931,7 @@ function CallBody({
           {isAdmin && (
             <>
               {(!call.analysis || call.error) && (
-                <Button disabled={running} onClick={() => job.start(["download", "transcribe", "analyze"], ids)} size="sm">
+                <Button disabled={running} onClick={() => job.start(["download", "voice", "transcribe", "analyze"], ids)} size="sm">
                   <WorkflowIcon aria-hidden="true" />
                   Process call
                 </Button>
@@ -994,7 +1032,7 @@ function CallBody({
                 </EmptyHeader>
                 {isAdmin && (
                   <EmptyContent>
-                    <Button disabled={running} onClick={() => job.start(["download", "transcribe", "analyze"], ids)} size="sm">
+                    <Button disabled={running} onClick={() => job.start(["download", "voice", "transcribe", "analyze"], ids)} size="sm">
                       <WorkflowIcon aria-hidden="true" />
                       Process call
                     </Button>

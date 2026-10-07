@@ -58,6 +58,7 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "@/compone
 import { Progress, ProgressIndicator, ProgressTrack } from "@/components/ui/progress";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toastManager } from "@/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
@@ -65,11 +66,15 @@ import { api, loginUrl, useApi } from "@/lib/api";
 import { fmtDateTime, fmtRelative, numberFmt } from "@/lib/format";
 import { href } from "@/lib/router";
 import type { AgentInstaller, RunsOn, Worker, WorkersState, WorkerStep, WorkerTask } from "@/lib/types";
-import { liveAgents, RUNS_ON_LABELS, STEP_NAMES, useWorkers } from "@/lib/workers";
+import { liveAgents, RUNS_ON_LABELS, STEP_NAMES, useWorkers, WORKER_STEPS } from "@/lib/workers";
 import { cn } from "@/lib/utils";
 
-const STEPS: WorkerStep[] = ["transcribe", "analyze"];
-const SETTING_KEY: Record<WorkerStep, string> = { analyze: "ANALYZE_RUNS_ON", transcribe: "TRANSCRIBE_RUNS_ON" };
+const STEPS = WORKER_STEPS;
+const SETTING_KEY: Record<WorkerStep, string> = {
+  analyze: "ANALYZE_RUNS_ON",
+  transcribe: "TRANSCRIBE_RUNS_ON",
+  voice: "VOICE_RUNS_ON",
+};
 const RUNS_ON_ITEMS = (Object.keys(RUNS_ON_LABELS) as RunsOn[]).map((value) => ({
   label: RUNS_ON_LABELS[value],
   value,
@@ -77,6 +82,7 @@ const RUNS_ON_ITEMS = (Object.keys(RUNS_ON_LABELS) as RunsOn[]).map((value) => (
 const STEP_HELP: Record<WorkerStep, string> = {
   analyze: "Claude or Cursor writes the feedback for each call.",
   transcribe: "Whisper turns each recording into text.",
+  voice: "An emotion model listens to each recording for the voice tone score (the agent downloads it from the server).",
 };
 
 /** Settings an agent works with, in the order they're shown. */
@@ -85,6 +91,7 @@ const SHOWN_SETTINGS = [
   "whisper_device",
   "whisper_language",
   "transcribe_provider",
+  "voice_model",
   "analysis_backend",
   "claude_backend",
   "claude_model",
@@ -741,6 +748,7 @@ function StatusBadge({ worker }: { worker: Worker }) {
 
 function StepBadge({ step, worker }: { step: WorkerStep; worker: Worker }) {
   const cap = worker.info.capabilities?.[step];
+  if (!cap && step === "voice") return null; // agents from before the voice step don't report it
   if (!cap) return <Badge variant="outline">{STEP_NAMES[step]}: unknown</Badge>;
   return (
     <Tooltip>
@@ -861,6 +869,29 @@ function AgentCard({
             <StepBadge key={step} step={step} worker={worker} />
           ))}
         </div>
+
+        {info.model && info.model.status !== "ready" && (
+          <div
+            className={cn(
+              "flex items-start gap-2 rounded-lg border px-3 py-2 text-sm",
+              info.model.status === "error" ? "border-destructive/32 bg-destructive/4" : "bg-info/4",
+            )}
+          >
+            {info.model.status === "downloading" ? (
+              <Spinner className="mt-0.5 size-3.5 shrink-0" />
+            ) : (
+              <CircleAlertIcon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+            )}
+            <span className="min-w-0">
+              {info.model.status === "downloading" ? "Downloading the model " : "Couldn't get the model "}
+              <span className="font-medium">{info.model.name}</span>
+              <span className="block break-words text-muted-foreground text-xs">
+                {info.model.detail}
+                {info.model.status === "downloading" && ". It starts transcribing as soon as it is here."}
+              </span>
+            </span>
+          </div>
+        )}
 
         {worker.running.length > 0 ? (
           <ul className="flex flex-col gap-1.5 text-sm">

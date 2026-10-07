@@ -37,13 +37,19 @@ import { api, useApi } from "@/lib/api";
 import { useGoVoice } from "@/lib/govoice";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
 import { href } from "@/lib/router";
-import { RUNS_ON_LABELS, STEP_NAMES, useWorkers } from "@/lib/workers";
+import { RUNS_ON_LABELS, STEP_NAMES, useWorkers, WORKER_STEPS } from "@/lib/workers";
 import type { SettingField, WhisperModel } from "@/lib/types";
 
 const SELECT_OPTIONS: Record<string, string[]> = {
   ANALYSIS_BACKEND: ["claude", "cursor", "auto"],
   ANALYZE_RUNS_ON: ["host", "agent", "auto"],
   TRANSCRIBE_RUNS_ON: ["host", "agent", "auto"],
+  VOICE_MODEL: [
+    "superb/wav2vec2-base-superb-er",
+    "Aniemore/wav2vec2-emotion-v1-crosslingual",
+    "Lajavaness/wav2vec2-lg-xlsr-fr-speech-emotion-recognition",
+  ],
+  VOICE_RUNS_ON: ["host", "agent", "auto"],
   CLAUDE_BACKEND: ["subscription", "api"],
   TRANSCRIBE_PROVIDER: ["local", "elevenlabs", "openai"],
   WHISPER_DEVICE: ["auto", "cuda", "cpu"],
@@ -52,6 +58,7 @@ const SELECT_OPTIONS: Record<string, string[]> = {
 const SELECT_LABELS: Record<string, Record<string, string>> = {
   ANALYZE_RUNS_ON: RUNS_ON_LABELS,
   TRANSCRIBE_RUNS_ON: RUNS_ON_LABELS,
+  VOICE_RUNS_ON: RUNS_ON_LABELS,
   ANALYSIS_BACKEND: {
     auto: "Claude, then Cursor if unavailable",
     claude: "Claude",
@@ -61,6 +68,11 @@ const SELECT_LABELS: Record<string, Record<string, string>> = {
     api: "Claude API key",
     subscription: "Claude subscription",
   },
+  VOICE_MODEL: {
+    "Aniemore/wav2vec2-emotion-v1-crosslingual": "Aniemore crosslingual · 7 emotions, more detail but 3x slower",
+    "Lajavaness/wav2vec2-lg-xlsr-fr-speech-emotion-recognition": "Lajavaness French · tension / pleased / relaxed, 3x slower",
+    "superb/wav2vec2-base-superb-er": "superb · neutral / happy / angry / sad, small and fast",
+  },
   WHISPER_MODEL: {
     "arabic-dialectal-turbo": "arabic-dialectal-turbo · Arabic dialects incl. Tunisian, faster",
     "large-v3": "large-v3 · most accurate standard model",
@@ -69,10 +81,24 @@ const SELECT_LABELS: Record<string, Record<string, string>> = {
   },
 };
 
-/** Tunisian/dialect Whisper models must be downloaded and converted once before use. */
-function WhisperModelNote({ name, saved, onInstall }: { name: string; saved: boolean; onInstall: () => void }) {
+/** Models that must be downloaded and converted once before use (Tunisian Whisper models, the voice emotion model):
+ * says whether the selected one is installed on this server, and offers to install it. */
+function ModelNote({
+  endpoint,
+  name,
+  onInstall,
+  saved,
+  when,
+}: {
+  endpoint: string;
+  name: string;
+  onInstall: () => void;
+  saved: boolean;
+  /** When it would otherwise be installed by itself, e.g. "at the first transcription". */
+  when: string;
+}) {
   const job = useJob();
-  const { data: models, reload } = useApi<WhisperModel[]>("/api/whisper-models");
+  const { data: models, reload } = useApi<WhisperModel[]>(endpoint);
   useOnJobFinished(reload);
   const model = models?.find((m) => m.name === name);
   if (!model) return null;
@@ -85,8 +111,7 @@ function WhisperModelNote({ name, saved, onInstall }: { name: string; saved: boo
           </>
         ) : (
           <>
-            Not installed yet: downloaded from {model.repo} and converted (~{model.size_gb} GB) at the first
-            transcription, or now.
+            Not installed yet: downloaded from {model.repo} and converted (~{model.size_gb} GB) {when}, or now.
           </>
         )}
       </span>
@@ -99,7 +124,7 @@ function WhisperModelNote({ name, saved, onInstall }: { name: string; saved: boo
     </div>
   );
 }
-const BOOLEAN_KEYS = new Set(["GOVOICE_VERIFY_SSL", "AUTO_PROCESS", "SHARE_ON_LAN", "COOKIE_SECURE"]);
+const BOOLEAN_KEYS = new Set(["GOVOICE_VERIFY_SSL", "AUTO_PROCESS", "SHARE_ON_LAN", "COOKIE_SECURE", "VOICE_ANALYSIS"]);
 
 function SecretInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
   const [shown, setShown] = React.useState(false);
@@ -200,7 +225,7 @@ function AgentsSummary() {
                   {w.info.gpu ? "GPU" : "CPU"}
                 </Badge>
               )}
-              {(["transcribe", "analyze"] as const).map(
+              {WORKER_STEPS.map(
                 (step) =>
                   w.info.capabilities?.[step] && (
                     <Badge key={step} variant={w.ready[step] ? "success" : "warning"}>
@@ -312,9 +337,9 @@ export function SettingsPage(): React.ReactElement {
     }
   };
 
-  const saveAndInstall = async () => {
+  const saveAndInstall = async (command: "install-model" | "install-voice-model") => {
     if (dirty && !(await save())) return;
-    await job.start(["install-model"]);
+    await job.start([command]);
   };
 
   const saveAndCheck = async () => {
@@ -377,10 +402,21 @@ export function SettingsPage(): React.ReactElement {
                             value={values[f.key] ?? ""}
                           />
                           {f.key === "WHISPER_MODEL" && (
-                            <WhisperModelNote
+                            <ModelNote
+                              endpoint="/api/whisper-models"
                               name={values[f.key] ?? ""}
-                              onInstall={saveAndInstall}
+                              onInstall={() => saveAndInstall("install-model")}
                               saved={!dirty}
+                              when="at the first transcription"
+                            />
+                          )}
+                          {f.key === "VOICE_MODEL" && (
+                            <ModelNote
+                              endpoint="/api/voice-models"
+                              name={values[f.key] || f.default}
+                              onInstall={() => saveAndInstall("install-voice-model")}
+                              saved={!dirty}
+                              when="at the first voice step"
                             />
                           )}
                         </div>

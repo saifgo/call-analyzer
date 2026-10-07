@@ -46,6 +46,62 @@ _PREPROCESSOR_DEFAULTS = {"chunk_length": 30, "hop_length": 160, "n_fft": 400, "
                           "nb_max_frames": 3000, "sampling_rate": 16000}
 
 
+# Approximate download sizes (GB) of the standard models: to check the disk has room and to show progress.
+STANDARD_SIZES_GB = {"tiny": 0.08, "base": 0.15, "small": 0.5, "medium": 1.5, "large": 3.1, "large-v1": 3.1,
+                     "large-v2": 3.1, "large-v3": 3.1, "turbo": 1.6, "large-v3-turbo": 1.6, "distil": 1.5}
+
+
+def model_size_gb(name: str) -> float:
+    if name in DIALECT_MODELS:
+        return DIALECT_MODELS[name].size_gb
+    base = name.removesuffix(".en")
+    return STANDARD_SIZES_GB.get(base) or (STANDARD_SIZES_GB["distil"] if "distil" in base else 3.1)
+
+
+def is_present(name: str, cfg=None) -> bool:
+    """Whether the model can be used right now without downloading anything."""
+    cfg = cfg or settings
+    if name in DIALECT_MODELS:
+        return is_installed(name, cfg)
+    if Path(name).is_dir():  # a folder with a converted model
+        return True
+    try:
+        from faster_whisper.utils import download_model
+        download_model(name, local_files_only=True, cache_dir=cfg.whisper_model_dir)
+        return True
+    except Exception:
+        return False
+
+
+def download_standard(name: str, cfg=None) -> None:
+    """Download a standard Whisper model from Hugging Face into WHISPER_MODEL_DIR (what faster-whisper does at the
+    first use, done ahead of time)."""
+    from faster_whisper.utils import download_model
+    download_model(name, cache_dir=(cfg or settings).whisper_model_dir)
+
+
+def downloaded_bytes(name: str, cfg=None) -> int:
+    """How much of the model is on disk so far (for the progress text)."""
+    cfg = cfg or settings
+    root = Path(cfg.whisper_model_dir)
+    if name in DIALECT_MODELS:
+        paths = [root / "ct2" / f"{name}.zip.part", root / "ct2" / f"{name}.tmp", root / "ct2" / name]
+    else:
+        try:
+            from faster_whisper.utils import _MODELS
+            repo = _MODELS.get(name, name)
+        except ImportError:
+            repo = name
+        paths = [root / f"models--{repo.replace('/', '--')}"]
+    total = 0
+    for path in paths:
+        if path.is_file():
+            total += path.stat().st_size
+        elif path.is_dir():
+            total += sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    return total
+
+
 def model_dir(name: str, cfg=None) -> Path:
     return Path((cfg or settings).whisper_model_dir) / "ct2" / name
 

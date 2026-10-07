@@ -46,6 +46,11 @@ def match_key(number: str) -> str | None:
 
 
 def _get(path: str, params: dict) -> list[dict]:
+    return _get_page(path, params)[0]
+
+
+def _get_page(path: str, params: dict) -> tuple[list[dict], dict]:
+    """One page of records, and Twenty's pageInfo (hasNextPage, endCursor) to fetch the next one."""
     base, key, verify = _config()
     try:
         res = requests.get(f"{base}/rest/{path}", params=params, headers={"Authorization": f"Bearer {key}"},
@@ -56,8 +61,8 @@ def _get(path: str, params: dict) -> list[dict]:
         raise CrmError("The CRM rejected the API key. Check CRM_API_KEY in Settings.")
     if not res.ok:
         raise CrmError(f"The CRM answered {res.status_code} for {path}.")
-    data = res.json().get("data") or {}
-    return data.get(path) or []
+    body = res.json()
+    return (body.get("data") or {}).get(path) or [], body.get("pageInfo") or {}
 
 
 def _full_name(name: dict | None) -> str:
@@ -134,4 +139,54 @@ def lookup(number: str) -> dict:
 
     with _cache_lock:
         _cache[key] = (time.time(), result)
+    return result
+
+
+# --- Leads to call --------------------------------------------------------------------------------
+
+LEAD_STAGE = "NEW"  # opportunities nobody has worked on yet
+LEADS_PAGE = 200  # the most Twenty's REST API returns at once
+MAX_LEADS = 2000
+
+_leads_cache: dict[str, tuple[float, list[dict], bool]] = {}  # stage -> (when, records, more in the CRM)
+
+
+def _lead(rec: dict, base: str) -> dict:
+    contact = rec.get("pointOfContact")
+    if contact:
+        contact = _person(contact, [], base)
+        contact.pop("opportunities")
+    return {**_opportunity(rec, base), "contact": contact}
+
+
+def leads(stage: str = LEAD_STAGE, refresh: bool = False) -> dict:
+    """Opportunities at `stage` (newest first), each with its point of contact and their phone numbers.
+
+    Returns {"configured": bool, "stage": str, "leads": [...], "truncated": bool}. Cached for CACHE_SECONDS unless
+    `refresh`. Raises CrmError when the CRM can't be queried."""
+    result = {"configured": is_configured(), "stage": stage, "leads": [], "truncated": False}
+    if not result["configured"]:
+        return result
+    with _cache_lock:
+        cached = _leads_cache.get(stage)
+    if cached and not refresh and time.time() - cached[0] < CACHE_SECONDS:
+        records, more = cached[1], cached[2]
+    else:
+        records, cursor, more = [], None, False
+        while len(records) < MAX_LEADS:
+            params = {"filter": f"stage[eq]:{stage}", "depth": 1, "limit": LEADS_PAGE,
+                      "order_by": "createdAt[DescNullsLast]"}
+            if cursor:
+                params["starting_after"] = cursor
+            page, info = _get_page("opportunities", params)
+            records += page
+            more = bool(info.get("hasNextPage") and info.get("endCursor"))
+            if not more:
+                break
+            cursor = info["endCursor"]
+        with _cache_lock:
+            _leads_cache[stage] = (time.time(), records, more)
+    base = _config()[0]
+    result["leads"] = [_lead(rec, base) for rec in records]
+    result["truncated"] = more
     return result

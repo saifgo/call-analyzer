@@ -2,6 +2,10 @@
 
 Claude uses this file to judge every call. The more specific, the better the feedback.
 
+Sales calls and customer service calls are judged separately. Sections whose title mentions *service* or *support*
+are only read when judging service calls; "Who we call", "Our ideal call" and other sales sections are only read when
+judging sales calls; everything else (what we sell, the team...) is read for both.
+
 ## What we sell
 - Product / service: TuniMobile, a B2B platform for distributing electronic prepaid recharge vouchers in Tunisia. Shops sell Ooredoo, Orange and Tunisie Telecom recharges (1 DT and 5 DT) to their customers from a PDA, a printer, a cash register or the app. It works with or without an existing POS. One account can manage several shops. Shops top up a prepaid balance by cash, bank deposit (versement) or bank transfer (virement). We also sell printers and PDAs, and provide technical support.
 - Price range / offers: Prices are the standard market prices, the same as everyone else. The price per voucher depends on the shop's last deposit:
@@ -61,6 +65,23 @@ Claude uses this file to judge every call. The more specific, the better the fee
    - Then: first deposit and first sale within 48 hours, with the salesman or support team helping the first sale.
    - If the owner isn't ready: book a salesman visit with a fixed date and time, and send the sign-up link by SMS or WhatsApp.
    - Never end the call without a concrete next step and date.
+## Customer service: what a good support call looks like
+(Draft: edit it to match how your support team really works. Service calls are judged on solving the customer's
+problem, not on selling.)
+- Customers: shops that already use TuniMobile (owner or the person at the counter). Often in a hurry, with a queue of customers waiting, so be quick, calm and clear.
+- Greeting: greet in Tunisian Arabic or French as the customer does, give the name, and identify the shop/account (account number, phone number or shop name) before touching anything.
+- Understand first: let the customer explain, then repeat the problem back in one sentence. Ask the key questions: which operator (Ooredoo, Orange, Tunisie Telecom), which device (PDA, printer, cash register, app), what exactly happens and the error message, since when, what they already tried.
+- Typical problems and the expected answer:
+  - A deposit or transfer is not on the balance: check the payment method (cash, bank deposit, transfer) and the date; never promise a time that the finance team has not confirmed; escalate when it is not found.
+  - A recharge failed or the customer was charged and the recipient did not receive it: take the number, operator, amount and time, then check or escalate; give the customer a clear delay.
+  - Printer or PDA not working: guide step by step (power, paper, connection, restart, app update); if it is still broken, book a technician or a replacement.
+  - Account or access problem: verify the person before changing anything.
+  - How do I use it: walk through the steps and make sure the customer repeats them.
+- Prices and tiers: explain how the deposit tiers work if asked, but do not push a bigger deposit during a support call.
+- Resolution: end by checking the problem is solved or giving a precise next step with who does it and by when (and call back if promised). Never leave a customer without a next step.
+- A good moment to help the customer sell more (a tip, a feature they don't use) is a bonus, never a requirement.
+- Tone: patient and polite even with an angry customer; never blame the customer; never invent an answer, say you will check and come back.
+
 ## Team
 - Extension 102 = (Cyrin soui)
 - Extension 103 = (Ons Smine)
