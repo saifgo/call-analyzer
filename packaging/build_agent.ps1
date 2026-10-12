@@ -8,7 +8,7 @@
 # Output goes to -OutDir (default: D:\call-analyzer-build when D: exists, else .\build).
 param(
     [switch]$Gpu,
-    [string]$Version = "1.0",
+    [string]$Version = "1.1",
     [string]$OutDir
 )
 $ErrorActionPreference = "Stop"

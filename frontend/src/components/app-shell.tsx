@@ -2,6 +2,7 @@ import {
   BriefcaseBusinessIcon,
   ChevronsUpDownIcon,
   FileTextIcon,
+  HeadsetIcon,
   KeyRoundIcon,
   LayoutDashboardIcon,
   LogOutIcon,
@@ -74,6 +75,10 @@ import { type Theme, useTheme } from "@/lib/theme";
 import { liveAgents, stalledSteps, STEP_NAMES, useWorkers, WORKER_STEPS } from "@/lib/workers";
 
 const NAV = [
+  {
+    items: [{ icon: HeadsetIcon, label: "Call desk", page: "operations" }],
+    label: "Operations",
+  },
   {
     items: [
       { icon: LayoutDashboardIcon, label: "Dashboard", page: "dashboard" },

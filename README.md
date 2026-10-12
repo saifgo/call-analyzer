@@ -98,6 +98,52 @@ Opens http://127.0.0.1:8765 in your browser and asks you to sign in:
   [Twenty CRM](https://twenty.com) and lists the matching contacts with their opportunities. Set `CRM_BASE_URL`
   and `CRM_API_KEY` (Twenty: Settings > APIs & Webhooks) in Settings. Numbers are matched on their last 8 digits,
   so `+21694721843` and `94721843` find the same contact (the CRM must store the number without spaces).
+- **Call desk** (Operations): agents and admins switch on **Taking calls** and are served CRM contacts one at a
+  time. The queue is the opportunities at the New stage that have a phone number, oldest first, whoever owns them;
+  the next free agent gets the oldest contact nobody holds, and callbacks go in front once they're due. The agent
+  sees what's known about the contact (CRM details and notes, earlier desk calls, recorded calls with that number),
+  presses **Start call**, fills in what they learn (business type, daily revenue, how and where they buy their
+  vouchers and at what price…; saved as they type), then **End call** and closes it with an outcome, a note, the
+  contact's next stage and optionally a callback (for anyone, or kept for themselves). Closing a call moves the
+  opportunity to the chosen stage, copies the city and "has a POS" answers to the contact, and attaches a note with
+  everything to the opportunity and the contact. Admins also get a **Team board**: who is on a call, the queue,
+  scheduled callbacks and the latest results (with a retry when the CRM couldn't be updated). A contact served to
+  someone whose desk is closed goes back to the queue after 5 minutes unless the call was started; a contact
+  closed on the desk isn't served from the queue again (book a callback to call it again). The API key needs
+  permission to edit records.
+  **Test call** (in the desk bar) serves a made-up contact with a number you type in, to try the whole flow without
+  touching the queue: nothing about it is written to the CRM, it isn't counted in the day's figures, its callbacks
+  are kept for whoever made it, and it pauses you so no real contact follows.
+  **New call** starts a sales call outside the queue: type the number and the CRM is searched for it. A contact
+  found there can be called right away (on one of their opportunities, or a new one if they have none); a new number
+  asks for the contact's name, city and email, adds them to the CRM with a New opportunity ("<name> Call Desk
+  Lead", owned by the agent's **CRM user**, set per account in Users), then calls them now or leaves them in the queue. The call then goes like any other: questions, outcome,
+  appointment, CRM note. A contact you were served but hadn't called yet goes back to the queue.
+- **Campaigns** (Operations > Campaigns, admins): each campaign is a queue (the CRM opportunities at the stages you
+  pick), the questions agents ask on its calls, the outcomes calls can end with (each says whether the contact was
+  **reached**, whether it's a **win** for the KPIs, the stage it suggests, and whether to suggest a callback), and its
+  calling rules: how many unanswered calls in a row before giving up (and the stage those contacts move to), how long
+  to wait before trying again, and the days and hours its queue is served (callbacks that come due are served at any
+  time). The first campaign, "New leads", holds the questions and outcomes the desk had before. Agents pick their
+  campaign in the desk bar when there are several. A campaign with calls can't be deleted, only archived.
+- **Power dial** (desk bar, needs the browser phone): each contact served is dialed after a 3-second countdown, and a
+  call nobody answers is saved with the suggested outcome (no answer, busy…) and the campaign's retry after 5 seconds
+  unless the agent touches the form, so the next contact follows straight away.
+- **Recordings**: after each GoVoice sync, every desk call is matched to its recording (same number, the agent's
+  extension, closest start time within 3 minutes). The call's page then shows the desk outcome, and the desk's
+  history links to the recording. If GoVoice's clock differs from the server's (e.g. a server on UTC), set
+  `RECORDING_CLOCK_OFFSET_MINUTES` (GoVoice's time minus the server's, e.g. 60).
+- **KPIs** (Operations > KPIs; agents see their own): calls closed, contact rate, wins and conversion rate, calls
+  and wins per desk hour (time spent with "Taking calls" on), talk and wrap-up time, callbacks booked, contacts
+  given back, and the AI's average score of the recorded calls, per agent and day by day.
+- **Insights** (Operations > Insights, admins): the desk outcomes against the AI's scores of the same recordings:
+  the win rate per AI score band, which score card criteria the wins score higher on, the AI's own reading of the
+  outcome next to the agent's, and the rated calls to listen to.
+  **Quick actions** send the contact a WhatsApp message in one click while they're on the desk (the price list, how to
+  make a deposit, how to create an account…), through the WhatsApp Cloud API (Settings > WhatsApp). A business may
+  only write first with a template Meta approved, so each quick action is an approved template: pick it in Settings,
+  say what fills its variables (the contact's name, the agent's name or a fixed text) and, for a template that sends
+  a document/image/video, the public link to the file. What was sent is listed in the call's CRM note.
 
 The interface is built with React and [coss ui](https://coss.com/ui), with light and dark themes; its source is in
 `frontend/` (see `frontend/README.md` to change it).
@@ -155,6 +201,48 @@ From the command line:
 ```
 
 Accounts created before roles existed stay admins.
+
+### Softphone (calls in the browser)
+
+Agents can make and take their GoVoice calls in the app instead of GoVoice's web phone: the phone button in the
+bottom corner opens a dialer, and incoming calls ring on every page (answer, decline, mute, hold, keypad, hang up).
+
+GoVoice is an Asterisk PBX with a WebRTC WebSocket (`wss://otn.govoice.tn:8089/ws`). The browser connects to it
+directly and signs in as the agent's extension, like GoVoice's own web phone does. The call audio goes between the browser and
+GoVoice. It doesn't pass through this server.
+
+To set it up, open **Users**, edit the account and fill in **Phone**: the extension (e.g. `100`) and the GoVoice
+account it belongs to (**My Account** on otn.govoice.tn: the username, e.g. `user100`, and its password). The SIP
+password isn't typed in: the server fetches it from GoVoice's account API with that login when you save, and again
+each time the agent opens the app, so a SIP password changed in GoVoice is picked up. If GoVoice refuses the login,
+the agent's phone says so and the account password has to be entered again in Users. The SIP username comes
+from GoVoice too (e.g. `1759512535_100`; GoVoice sends both Caesar-shifted and the app shifts them back like GoVoice's web phone does). Phones set up before this used `SOFTPHONE_USER_PREFIX` + extension (taken
+from `GOVOICE_RECORDINGS_DIR` when empty) until they are saved again. The other settings are in Settings > Softphone.
+
+- The microphone only works over **HTTPS** (or on `localhost`), so serve the app over HTTPS when it's hosted.
+- Only one tab registers the phone. Other tabs say so, and take over when that tab closes.
+- If the agent also has GoVoice's web phone open on the same extension, both ring.
+- No audio from some networks: add a TURN server to `SOFTPHONE_ICE_SERVERS`.
+
+**Sound** (the sound-wave button in the dialer or on the call card) cleans the call audio in the browser, with no
+server or outside service. The settings are saved per browser and apply right away, also during a call:
+
+- **Noise reduction:** Off (only the browser's own), **Standard** (RNNoise: keyboards, fans, street noise, most
+  chatter; light on the PC) or **Strong** (GTCRN: cleaner voice, removes more background voices, uses more CPU).
+- **Cut background voices:** a voice gate lowers the agent's line by about 26 dB while they aren't speaking, so
+  colleagues aren't heard between their sentences. The slider sets how loud the agent's voice must be to open it.
+  The level meter (or **Test my microphone** outside a call) turns green on the voice and should stay grey when only
+  the room is heard. It works best with a headset whose microphone is close to the mouth: a laptop microphone hears
+  colleagues nearly as loud as the agent.
+- **Clean the customer's audio:** the same noise reduction on what the agent hears. Use it with a headset.
+
+The models (a few hundred KB) are part of the UI bundle. If a browser can't run them, the microphone is sent as is.
+
+The GoVoice account passwords, SIP passwords and access tokens are stored encrypted in the database (`softphones`
+table, AES with `cryptography`'s Fernet). The key is `SECRET_KEY` if set, else a random key created once in
+`data/secret.key`: **back that file up with the database**; without it the saved passwords can't be read and have to
+be entered again in Users. Passwords saved before encryption are encrypted the next time the app starts. The SIP
+password is only sent to the account's own browser; the account password never leaves the server.
 
 ## Hosting with Docker
 

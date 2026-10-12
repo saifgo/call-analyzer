@@ -1,6 +1,7 @@
 """Local web UI: settings, call browser with editable transcripts, pipeline runner, reports."""
 import hmac
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -19,17 +20,22 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import auth, crm, db, workers
+from .. import auth, crm, db, desk_stats, workers
 from ..analyze import KIND_SQL, SCORE_SQL, kind_of
 from ..config import ENV_PATH, ROOT, settings
-from . import govoice_login, workers_api
+from . import govoice_login, operations_api, softphone_api, whatsapp_api, workers_api
 from .export import audio_data_uri, render_call_page, render_report_page
 
 # Built from frontend/ (npm run build); see frontend/README.md.
 STATIC = Path(__file__).parent / "static"
+# StaticFiles takes types from the OS registry, which on some Windows PCs serves .js as text/plain (the browser then
+# refuses the softphone's audio worklets) or doesn't know .wasm.
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("application/wasm", ".wasm")
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
 SECRET_KEYS = {"GOVOICE_COOKIE", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "OPENAI_API_KEY",
-               "CLAUDE_CODE_OAUTH_TOKEN", "CURSOR_API_KEY", "ADMIN_PASSWORD", "CRM_API_KEY"}
+               "CLAUDE_CODE_OAUTH_TOKEN", "CURSOR_API_KEY", "ADMIN_PASSWORD", "CRM_API_KEY", "WHATSAPP_TOKEN",
+               "SECRET_KEY"}
 
 
 @asynccontextmanager
@@ -48,6 +54,9 @@ async def lifespan(app):
 app = FastAPI(title="Call Analyzer", lifespan=lifespan)
 app.include_router(govoice_login.router)
 app.include_router(workers_api.router)
+app.include_router(operations_api.router)
+app.include_router(softphone_api.router)
+app.include_router(whatsapp_api.router)
 
 
 # --- Authentication ---------------------------------------------------------------------------
@@ -83,6 +92,7 @@ AGENT_ALLOWED = [(method, re.compile(pattern)) for method, pattern in [
     ("GET", r"/api/me"),
     ("PUT", r"/api/me/password"),
     ("POST", r"/api/logout"),
+    ("GET", r"/api/softphone"),  # their own GoVoice SIP sign-in, for the browser softphone
     ("GET", r"/api/stats"),
     ("GET", r"/api/calls"),
     ("GET", r"/api/calls/[^/]+"),
@@ -91,6 +101,17 @@ AGENT_ALLOWED = [(method, re.compile(pattern)) for method, pattern in [
     ("GET", r"/api/reports"),
     ("GET", r"/api/reports/[^/]+"),
     ("GET", r"/api/reports/[^/]+/export\.pdf"),
+    # The Operations call desk (the team board, giving contacts back and CRM retries stay admin-only).
+    ("GET", r"/api/operations/(config|desk|lookup|kpis)"),  # kpis: only their own
+    ("POST", r"/api/operations/(ready|next|test|direct|leads|campaign)"),
+    ("GET", r"/api/operations/\d+/context"),
+    ("POST", r"/api/operations/\d+/(call|end|finish|give-back)"),
+    ("PUT", r"/api/operations/\d+/answers"),
+    ("DELETE", r"/api/operations/callbacks/\d+"),
+    # WhatsApp quick actions: agents send them (setting them up stays admin-only).
+    ("GET", r"/api/whatsapp/actions"),
+    ("GET", r"/api/operations/\d+/whatsapp"),
+    ("POST", r"/api/operations/\d+/whatsapp"),
 ]]
 
 
@@ -208,12 +229,14 @@ class NewUserBody(BaseModel):
     role: str = "agent"
     display_name: str = ""
     agents: list[str] = []
+    crm_member_id: str = ""
 
 
 class UserUpdateBody(BaseModel):
     role: str | None = None
     display_name: str | None = None
     agents: list[str] | None = None
+    crm_member_id: str | None = None
     password: str | None = None
 
 
@@ -225,7 +248,8 @@ def list_accounts():
 @app.post("/api/users")
 def create_account(body: NewUserBody):
     try:
-        auth.create_user(body.username.strip(), body.password, body.role, body.display_name, body.agents)
+        auth.create_user(body.username.strip(), body.password, body.role, body.display_name, body.agents,
+                         body.crm_member_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return auth.get_user(body.username.strip())
@@ -238,12 +262,24 @@ def update_account(username: str, body: UserUpdateBody, request: Request):
     if username == request.state.user and body.role not in (None, "admin"):
         raise HTTPException(400, "You can't remove your own admin access")
     try:
-        auth.update_user(username, role=body.role, display_name=body.display_name, agents=body.agents)
+        auth.update_user(username, role=body.role, display_name=body.display_name, agents=body.agents,
+                         crm_member_id=body.crm_member_id)
         if body.password:
             auth.set_password(username, body.password)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return auth.get_user(username)
+
+
+@app.get("/api/crm/members")
+def crm_members():
+    """The CRM's users, to link accounts to (who owns the leads an agent adds from the call desk)."""
+    if not crm.is_configured():
+        return {"configured": False, "members": []}
+    try:
+        return {"configured": True, "members": crm.workspace_members()}
+    except crm.CrmError as exc:
+        raise HTTPException(502, str(exc))
 
 
 @app.delete("/api/users/{username}")
@@ -443,20 +479,50 @@ def _summary(row) -> dict:
     }
 
 
+def _csv(value: str) -> list[str]:
+    """Filter values passed as "a,b,c" (several choices of one filter)."""
+    return [v for v in (x.strip() for x in value.split(",")) if v]
+
+
+def _in(column: str, values: list[str]) -> str:
+    return f"{column} IN ({','.join('?' * len(values))})"
+
+
+def _length_sql(length: str) -> tuple[str | None, list[int]]:
+    """`length` is comma-separated second ranges "min-max" (max exclusive, either side may be empty), OR-ed."""
+    parts, args = [], []
+    for r in _csv(length):
+        lo, _, hi = r.partition("-")
+        cond = []
+        if lo.isdigit():
+            cond.append("duration >= ?")
+            args.append(int(lo))
+        if hi.isdigit():
+            cond.append("duration < ?")
+            args.append(int(hi))
+        if cond:
+            parts.append(f"({' AND '.join(cond)})")
+    return (f"({' OR '.join(parts)})" if parts else None), args
+
+
+OUTCOME_SQL = "COALESCE(json_extract(analysis, '$.outcome'), json_extract(analysis, '$.resolution_status'))"
+
+
 @app.get("/api/calls")
 def list_calls(request: Request, agent: str = "", status: str = "", outcome: str = "", kind: str = "", q: str = "",
-               since: str = "", until: str = "",
+               since: str = "", until: str = "", length: str = "",
                min_duration: int = 0, sort: str = "-date", limit: int = 200, offset: int = 0):
     scope, scope_args = _scope_sql(request)
     clauses, args = [scope], list(scope_args)
-    if agent:
-        clauses.append("agent = ?")
-        args.append(agent)
-    if status in STATUS_SQL:
-        clauses.append(STATUS_SQL[status])
-    if outcome:
-        clauses.append("COALESCE(json_extract(analysis, '$.outcome'), json_extract(analysis, '$.resolution_status')) = ?")
-        args.append(outcome)
+    # agent, status, outcome and length take several comma-separated values; a call matches any of them.
+    if agents := _csv(agent):
+        clauses.append(_in("agent", agents))
+        args += agents
+    if statuses := [STATUS_SQL[v] for v in _csv(status) if v in STATUS_SQL]:
+        clauses.append(f"(({') OR ('.join(statuses)}))")
+    if outcomes := _csv(outcome):
+        clauses.append(_in(OUTCOME_SQL, outcomes))
+        args += outcomes
     if kind in ("sales", "service", "other"):
         clauses.append(f"{KIND_SQL} = ?")
         args.append(kind)
@@ -469,6 +535,10 @@ def list_calls(request: Request, agent: str = "", status: str = "", outcome: str
     if until:
         clauses.append("date_call < ?")
         args.append(until)
+    length_sql, length_args = _length_sql(length)
+    if length_sql:
+        clauses.append(length_sql)
+        args += length_args
     if min_duration:
         clauses.append("duration >= ?")
         args.append(min_duration)
@@ -519,6 +589,8 @@ def get_call(call_id: str, request: Request):
         "analysis": json.loads(row["analysis"]) if row["analysis"] else None,
         "voice": json.loads(row["voice"]) if row["voice"] else None,
         "has_audio": bool(row["audio_path"]) and Path(row["audio_path"]).exists(),
+        # The call desk call this recording is (outcome, campaign, note), when it was made from the desk.
+        "desk": desk_stats.desk_call_for_recording(db.connect(), call_id),
     }
 
 
@@ -678,9 +750,17 @@ def delete_feedback(feedback_id: int):
 
 
 @app.get("/api/stats")
-def stats(request: Request):
+def stats(request: Request, since: str = "", until: str = ""):
     conn = db.connect()
     scope, scope_args = _scope_sql(request)
+    # The latest call ignores the date range; everything else only counts calls in it.
+    last_call = conn.execute(f"SELECT MAX(date_call) FROM calls WHERE {scope}", scope_args).fetchone()[0]
+    if since:
+        scope += " AND date_call >= ?"
+        scope_args = [*scope_args, since]
+    if until:
+        scope += " AND date_call < ?"
+        scope_args = [*scope_args, until]
 
     def count(where: str) -> int:
         return conn.execute(f"SELECT COUNT(*) FROM calls WHERE {scope} AND {where}", scope_args).fetchone()[0]
@@ -711,7 +791,7 @@ def stats(request: Request):
         "analyzed": count("analysis IS NOT NULL"),
         "stale": count(STATUS_SQL["stale"]),
         "errors": count("error IS NOT NULL"),
-        "last_call": conn.execute(f"SELECT MAX(date_call) FROM calls WHERE {scope}", scope_args).fetchone()[0],
+        "last_call": last_call,
         "agents": agents,
         "outcomes": outcomes,
     }

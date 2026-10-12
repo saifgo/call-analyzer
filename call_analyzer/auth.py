@@ -60,9 +60,9 @@ def _agents_by_user(conn) -> dict[str, list[str]]:
 
 
 def get_user(username: str) -> dict | None:
-    """{username, role, display_name, agents, created_at}, or None."""
+    """{username, role, display_name, crm_member_id, agents, created_at}, or None."""
     conn = db.connect()
-    row = conn.execute("SELECT username, role, display_name, created_at FROM users WHERE username=?",
+    row = conn.execute("SELECT username, role, display_name, crm_member_id, created_at FROM users WHERE username=?",
                        (username,)).fetchone()
     if not row:
         return None
@@ -73,7 +73,7 @@ def get_user(username: str) -> dict | None:
 def list_accounts() -> list[dict]:
     conn = db.connect()
     linked = _agents_by_user(conn)
-    rows = conn.execute("SELECT username, role, display_name, created_at FROM users ORDER BY username")
+    rows = conn.execute("SELECT username, role, display_name, crm_member_id, created_at FROM users ORDER BY username")
     return [{**dict(r), "agents": linked.get(r["username"], [])} for r in rows]
 
 
@@ -98,7 +98,7 @@ def set_password(username: str, password: str):
 
 
 def create_user(username: str, password: str, role: str = "admin", display_name: str = "",
-                agents: list[str] = ()):
+                agents: list[str] = (), crm_member_id: str = ""):
     if not USERNAME_RE.match(username):
         raise ValueError("Username can only use letters, digits and . _ @ - (up to 64 characters)")
     if user_exists(username):
@@ -108,16 +108,19 @@ def create_user(username: str, password: str, role: str = "admin", display_name:
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
     conn = db.connect()
-    conn.execute("INSERT INTO users (username, password_hash, created_at, role, display_name) VALUES (?, ?, ?, ?, ?)",
-                 (username, hash_password(password), _now().isoformat(), role, display_name.strip() or None))
+    conn.execute("INSERT INTO users (username, password_hash, created_at, role, display_name, crm_member_id) "
+                 "VALUES (?, ?, ?, ?, ?, ?)",
+                 (username, hash_password(password), _now().isoformat(), role, display_name.strip() or None,
+                  crm_member_id.strip() or None))
     conn.executemany("INSERT INTO user_agents (username, agent) VALUES (?, ?)",
                      [(username, a) for a in _clean_agents(agents)])
     conn.commit()
 
 
 def update_user(username: str, *, role: str | None = None, display_name: str | None = None,
-                agents: list[str] | None = None):
-    """Change an account's role, name or linked agent extensions. A role change signs them out everywhere."""
+                agents: list[str] | None = None, crm_member_id: str | None = None):
+    """Change an account's role, name, linked agent extensions or CRM user ("" unlinks it). A role change signs them
+    out everywhere."""
     current = get_user(username)
     if not current:
         raise ValueError(f"No user {username!r}")
@@ -131,6 +134,8 @@ def update_user(username: str, *, role: str | None = None, display_name: str | N
         conn.execute("DELETE FROM sessions WHERE username=?", (username,))
     if display_name is not None:
         conn.execute("UPDATE users SET display_name=? WHERE username=?", (display_name.strip() or None, username))
+    if crm_member_id is not None:
+        conn.execute("UPDATE users SET crm_member_id=? WHERE username=?", (crm_member_id.strip() or None, username))
     if agents is not None:
         conn.execute("DELETE FROM user_agents WHERE username=?", (username,))
         conn.executemany("INSERT INTO user_agents (username, agent) VALUES (?, ?)",
@@ -145,6 +150,7 @@ def delete_user(username: str) -> bool:
     conn = db.connect()
     conn.execute("DELETE FROM sessions WHERE username=?", (username,))
     conn.execute("DELETE FROM user_agents WHERE username=?", (username,))
+    conn.execute("DELETE FROM softphones WHERE username=?", (username,))
     deleted = conn.execute("DELETE FROM users WHERE username=?", (username,)).rowcount
     conn.commit()
     return bool(deleted)

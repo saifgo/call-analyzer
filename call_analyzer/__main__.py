@@ -35,10 +35,19 @@ def cmd_sync(args):
                     break
                 page_new = 0
         print(f"Fetched {fetched} recordings from GoVoice, {new} new.")
+        _link_desk_calls(conn)
         return
     records = list(GoVoiceClient().iter_recordings(perpage=100, stop_before=args.since))
     new = db.upsert_recordings(conn, records)
     print(f"Fetched {len(records)} recordings from GoVoice, {new} new.")
+    _link_desk_calls(conn)
+
+
+def _link_desk_calls(conn):
+    """Match the call desk's calls to the recordings just fetched (see desk_stats.link_recordings)."""
+    from .desk_stats import link_recordings
+    if linked := link_recordings(conn):
+        print(f"Linked {linked} call desk calls to their recordings.")
 
 
 def cmd_download(args):

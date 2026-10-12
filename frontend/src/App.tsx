@@ -1,11 +1,13 @@
 import type * as React from "react";
 import { AppShell } from "@/components/app-shell";
+import { Softphone } from "@/components/softphone";
 import { AnchoredToastProvider, ToastProvider } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { GoVoiceProvider } from "@/lib/govoice";
 import { JobProvider } from "@/lib/jobs";
 import { MeProvider, useMe } from "@/lib/me";
 import { useRoute } from "@/lib/router";
+import { SoftphoneProvider } from "@/lib/softphone";
 import { WorkersProvider } from "@/lib/workers";
 import { AgentsPage } from "@/pages/agents";
 import { BusinessPage } from "@/pages/business";
@@ -14,13 +16,14 @@ import { DashboardPage } from "@/pages/dashboard";
 import { FeedbackPage } from "@/pages/feedback";
 import { LeadsPage } from "@/pages/leads";
 import { LoginPage } from "@/pages/login";
+import { OperationsPage } from "@/pages/operations";
 import { PipelinePage } from "@/pages/pipeline";
 import { ReportsPage } from "@/pages/reports";
 import { SettingsPage } from "@/pages/settings";
 import { UsersPage } from "@/pages/users";
 
 /** Pages agent accounts can open; the others fall back to the dashboard (the server refuses them anyway). */
-const AGENT_PAGES = new Set(["dashboard", "calls", "feedback", "reports"]);
+const AGENT_PAGES = new Set(["dashboard", "operations", "calls", "feedback", "reports"]);
 
 function Pages() {
   const route = useRoute();
@@ -28,6 +31,9 @@ function Pages() {
   let page: React.ReactNode;
   let crumb: string | null = null;
   switch (isAdmin || AGENT_PAGES.has(route.page) ? route.page : "dashboard") {
+    case "operations":
+      page = <OperationsPage route={route} />;
+      break;
     case "calls":
       page = <CallsPage route={route} />;
       break;
@@ -57,7 +63,7 @@ function Pages() {
       page = <UsersPage />;
       break;
     default:
-      page = <DashboardPage />;
+      page = <DashboardPage route={route} />;
   }
   return (
     <AppShell crumb={crumb} route={route}>
@@ -72,7 +78,10 @@ function SignedIn() {
     <GoVoiceProvider enabled={isAdmin}>
       <JobProvider enabled={isAdmin}>
         <WorkersProvider enabled={isAdmin}>
-          <Pages />
+          <SoftphoneProvider>
+            <Pages />
+            <Softphone />
+          </SoftphoneProvider>
         </WorkersProvider>
       </JobProvider>
     </GoVoiceProvider>

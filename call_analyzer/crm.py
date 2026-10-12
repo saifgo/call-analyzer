@@ -1,8 +1,10 @@
 """Look up a call's customer in a Twenty CRM (https://twenty.com) by phone number, via its REST API."""
+import json
 import os
 import re
 import threading
 import time
+import uuid
 
 import requests
 from dotenv import dotenv_values
@@ -51,6 +53,11 @@ def _get(path: str, params: dict) -> list[dict]:
 
 def _get_page(path: str, params: dict) -> tuple[list[dict], dict]:
     """One page of records, and Twenty's pageInfo (hasNextPage, endCursor) to fetch the next one."""
+    body = _get_json(path, params)
+    return (body.get("data") or {}).get(path) or [], body.get("pageInfo") or {}
+
+
+def _get_json(path: str, params: dict) -> dict:
     base, key, verify = _config()
     try:
         res = requests.get(f"{base}/rest/{path}", params=params, headers={"Authorization": f"Bearer {key}"},
@@ -61,8 +68,7 @@ def _get_page(path: str, params: dict) -> tuple[list[dict], dict]:
         raise CrmError("The CRM rejected the API key. Check CRM_API_KEY in Settings.")
     if not res.ok:
         raise CrmError(f"The CRM answered {res.status_code} for {path}.")
-    body = res.json()
-    return (body.get("data") or {}).get(path) or [], body.get("pageInfo") or {}
+    return res.json()
 
 
 def _full_name(name: dict | None) -> str:
@@ -159,23 +165,25 @@ def _lead(rec: dict, base: str) -> dict:
     return {**_opportunity(rec, base), "contact": contact}
 
 
-def leads(stage: str = LEAD_STAGE, refresh: bool = False) -> dict:
-    """Opportunities at `stage` (newest first), each with its point of contact and their phone numbers.
+def leads(stage: str = LEAD_STAGE, refresh: bool = False, oldest_first: bool = False) -> dict:
+    """Opportunities at `stage` (newest first, or oldest first for the call queue), each with its point of contact
+    and their phone numbers.
 
     Returns {"configured": bool, "stage": str, "leads": [...], "truncated": bool}. Cached for CACHE_SECONDS unless
     `refresh`. Raises CrmError when the CRM can't be queried."""
     result = {"configured": is_configured(), "stage": stage, "leads": [], "truncated": False}
     if not result["configured"]:
         return result
+    cache_key = f"{stage}:{'asc' if oldest_first else 'desc'}"
     with _cache_lock:
-        cached = _leads_cache.get(stage)
+        cached = _leads_cache.get(cache_key)
     if cached and not refresh and time.time() - cached[0] < CACHE_SECONDS:
         records, more = cached[1], cached[2]
     else:
         records, cursor, more = [], None, False
         while len(records) < MAX_LEADS:
             params = {"filter": f"stage[eq]:{stage}", "depth": 1, "limit": LEADS_PAGE,
-                      "order_by": "createdAt[DescNullsLast]"}
+                      "order_by": f"createdAt[{'AscNullsLast' if oldest_first else 'DescNullsLast'}]"}
             if cursor:
                 params["starting_after"] = cursor
             page, info = _get_page("opportunities", params)
@@ -185,8 +193,193 @@ def leads(stage: str = LEAD_STAGE, refresh: bool = False) -> dict:
                 break
             cursor = info["endCursor"]
         with _cache_lock:
-            _leads_cache[stage] = (time.time(), records, more)
+            _leads_cache[cache_key] = (time.time(), records, more)
     base = _config()[0]
     result["leads"] = [_lead(rec, base) for rec in records]
     result["truncated"] = more
     return result
+
+
+def forget_leads():
+    """Drop the cached lead lists, e.g. after moving an opportunity to another stage."""
+    with _cache_lock:
+        _leads_cache.clear()
+
+
+# --- Operations: what the call desk reads and writes back -----------------------------------------
+
+DEFAULT_STAGES = [("NEW", "New"), ("TO_CALL", "To Call"), ("ATTEMPTED", "Attempted"), ("IN_TALK", "In Talk"),
+                  ("WAITING_REPLY", "Waiting Reply"), ("ACCEPTED", "Accepted"), ("ACCOUNT_MADE", "Account Made"),
+                  ("INSTALLING", "Installing"), ("ACTIVE", "Active"), ("REJECTED", "Rejected")]
+STAGES_CACHE_SECONDS = 600
+_stages_cache: tuple[float, list[dict]] | None = None
+
+
+def opportunity_stages() -> list[dict]:
+    """The opportunity stages as set up in the CRM ([{value, label}], in pipeline order); the usual ones if the
+    CRM's metadata can't be read."""
+    global _stages_cache
+    if _stages_cache and time.time() - _stages_cache[0] < STAGES_CACHE_SECONDS:
+        return _stages_cache[1]
+    stages = [{"value": v, "label": label} for v, label in DEFAULT_STAGES]
+    if is_configured():
+        base, key, verify = _config()
+        try:
+            res = requests.get(f"{base}/rest/metadata/objects", params={"limit": 200}, timeout=TIMEOUT,
+                               headers={"Authorization": f"Bearer {key}"}, verify=verify)
+            objects = res.json().get("data") or [] if res.ok else []
+            opportunity = next((o for o in objects if o.get("nameSingular") == "opportunity"), {})
+            field = next((f for f in opportunity.get("fields") or [] if f.get("name") == "stage"), {})
+            options = sorted(field.get("options") or [], key=lambda o: o.get("position") or 0)
+            if options:
+                stages = [{"value": o["value"], "label": o.get("label") or o["value"]} for o in options]
+        except (requests.RequestException, ValueError, KeyError):
+            pass
+    _stages_cache = (time.time(), stages)
+    return stages
+
+
+def _send(method: str, path: str, body: dict) -> dict:
+    """Create or update a record; returns it. Raises CrmError."""
+    base, key, verify = _config()
+    try:
+        res = requests.request(method, f"{base}/rest/{path}", json=body, timeout=TIMEOUT, verify=verify,
+                               headers={"Authorization": f"Bearer {key}"})
+    except requests.RequestException as exc:
+        raise CrmError(f"Couldn't reach the CRM at {base}: {exc.__class__.__name__}") from exc
+    if res.status_code in (401, 403):
+        raise CrmError("The CRM refused the change. Check that CRM_API_KEY may edit records.")
+    if not res.ok:
+        detail = ""
+        try:
+            detail = (res.json().get("messages") or [res.json().get("message") or ""])[0]
+        except ValueError:
+            pass
+        raise CrmError(f"The CRM answered {res.status_code} for {path}{f': {detail}' if detail else ''}.")
+    data = res.json().get("data") or {}
+    return next(iter(data.values()), {}) if isinstance(data, dict) else {}
+
+
+def update_opportunity(opportunity_id: str, fields: dict) -> None:
+    _send("PATCH", f"opportunities/{opportunity_id}", fields)
+
+
+def update_person(person_id: str, fields: dict) -> None:
+    _send("PATCH", f"people/{person_id}", fields)
+
+
+def _blocknote(markdown: str) -> str:
+    """Twenty stores rich text as BlockNote JSON: one paragraph per line, "**x**" kept as bold."""
+    blocks = []
+    for line in markdown.splitlines():
+        content = []
+        for i, part in enumerate(re.split(r"\*\*", line)):
+            if part:
+                content.append({"type": "text", "text": part, "styles": {"bold": True} if i % 2 else {}})
+        blocks.append({"id": str(uuid.uuid4()), "type": "paragraph", "content": content, "children": [],
+                       "props": {"textColor": "default", "backgroundColor": "default", "textAlignment": "left"}})
+    return json.dumps(blocks, ensure_ascii=False)
+
+
+def add_note(title: str, markdown: str, opportunity_id: str | None = None, person_id: str | None = None) -> str:
+    """Write a note in the CRM, attached to the opportunity and/or the person. Returns the note's id."""
+    note = _send("POST", "notes", {"title": title,
+                                   "bodyV2": {"markdown": markdown, "blocknote": _blocknote(markdown)}})
+    for field, target in (("targetOpportunityId", opportunity_id), ("targetPersonId", person_id)):
+        if target:
+            _send("POST", "noteTargets", {"noteId": note["id"], field: target})
+    return note["id"]
+
+
+def _note_text(body: dict | None) -> str:
+    body = body or {}
+    if body.get("markdown"):
+        return body["markdown"].strip()
+    try:
+        blocks = json.loads(body.get("blocknote") or "[]")
+    except ValueError:
+        return ""
+    lines = ["".join(c.get("text", "") for c in b.get("content") or [] if isinstance(c, dict)) for b in blocks]
+    return "\n".join(lines).strip()
+
+
+def notes(opportunity_id: str | None, person_id: str | None, limit: int = 20) -> list[dict]:
+    """Notes written in the CRM about this opportunity or person, newest first: [{id, title, text, created_at,
+    author}]. Raises CrmError."""
+    targets = [f"{field}[eq]:{value}" for field, value in
+               (("targetOpportunityId", opportunity_id), ("targetPersonId", person_id)) if value]
+    if not targets or not is_configured():
+        return []
+    filt = targets[0] if len(targets) == 1 else f"or({','.join(targets)})"
+    seen, found = set(), []
+    for t in _get("noteTargets", {"filter": filt, "depth": 1, "limit": 60, "order_by": "createdAt[DescNullsLast]"}):
+        note = t.get("note") or {}
+        if not note.get("id") or note["id"] in seen or note.get("deletedAt"):
+            continue
+        seen.add(note["id"])
+        text = _note_text(note.get("bodyV2"))
+        if text or note.get("title"):
+            found.append({"id": note["id"], "title": note.get("title") or "", "text": text,
+                          "created_at": note.get("createdAt"), "author": (note.get("createdBy") or {}).get("name")})
+    found.sort(key=lambda n: n["created_at"] or "", reverse=True)
+    return found[:limit]
+
+
+def opportunity(opportunity_id: str) -> dict:
+    """One opportunity with its point of contact, shaped like a lead (see leads()). Raises CrmError."""
+    body = _get_json(f"opportunities/{opportunity_id}", {"depth": 1})
+    rec = next(iter((body.get("data") or {}).values()), None)
+    if not rec:
+        raise CrmError("That opportunity isn't in the CRM anymore.")
+    return _lead(rec, _config()[0])
+
+
+def _phones(number: str) -> dict:
+    """A phone number the way the CRM keeps them: Tunisian ones as 8 digits with +216, others as typed."""
+    cleaned = re.sub(r"[^\d+]", "", number)
+    if re.fullmatch(r"(\+216|00216|216)?\d{8}", cleaned):
+        return {"primaryPhoneNumber": cleaned[-8:], "primaryPhoneCountryCode": "TN", "primaryPhoneCallingCode": "+216",
+                "additionalPhones": []}
+    return {"primaryPhoneNumber": cleaned, "additionalPhones": []}
+
+
+def create_person(name: str, phone: str, city: str = "", email: str = "") -> dict:
+    """Add a contact (the full name in firstName, like the CRM's other sources). Returns the record. Raises CrmError."""
+    body = {"name": {"firstName": name, "lastName": ""}, "phones": _phones(phone)}
+    if city:
+        body["city"] = city
+    if email:
+        body["emails"] = {"primaryEmail": email, "additionalEmails": []}
+    rec = _send("POST", "people", body)
+    with _cache_lock:
+        _cache.pop(match_key(phone) or "", None)
+    return rec
+
+
+def create_opportunity(name: str, person_id: str, stage: str = LEAD_STAGE, owner_id: str | None = None) -> dict:
+    """Add an opportunity for a contact, owned by the workspace member `owner_id`. Returns the record. Raises
+    CrmError."""
+    body = {"name": name, "stage": stage, "pointOfContactId": person_id}
+    if owner_id:
+        body["ownerId"] = owner_id
+    rec = _send("POST", "opportunities", body)
+    with _cache_lock:
+        _cache.clear()  # the contact's lookup lists their opportunities
+    forget_leads()
+    return rec
+
+
+_members_cache: tuple[float, list[dict]] | None = None
+
+
+def workspace_members() -> list[dict]:
+    """The CRM's users ([{id, name, email}], by name), to link app accounts to. Raises CrmError."""
+    global _members_cache
+    if _members_cache and time.time() - _members_cache[0] < STAGES_CACHE_SECONDS:
+        return _members_cache[1]
+    members = [{"id": m["id"], "name": _full_name(m.get("name")) or m.get("userEmail") or m["id"],
+                "email": m.get("userEmail") or None}
+               for m in _get("workspaceMembers", {"limit": 200})]
+    members.sort(key=lambda m: m["name"].lower())
+    _members_cache = (time.time(), members)
+    return members

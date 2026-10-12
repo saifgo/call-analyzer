@@ -1,6 +1,7 @@
 import {
   CheckIcon,
   CircleAlertIcon,
+  HeadsetIcon,
   BriefcaseIcon,
   ClockIcon,
   CopyIcon,
@@ -198,6 +199,29 @@ function Feedback({ call, onReanalyze }: { call: CallDetail; onReanalyze?: () =>
         {a.customer_interest && <Badge variant="outline">Interest: {humanize(a.customer_interest)}</Badge>}
         {a.customer_sentiment && <Badge variant="outline">Customer: {humanize(a.customer_sentiment)}</Badge>}
       </div>
+
+      {call.desk && (
+        <Alert variant={call.desk.success ? "success" : "info"}>
+          <HeadsetIcon aria-hidden="true" />
+          <AlertTitle>
+            Call desk: {call.desk.outcome_label ?? humanize(call.desk.outcome)}
+          </AlertTitle>
+          <AlertDescription>
+            <span>
+              {call.desk.campaign} · closed by {call.desk.agent_name} · {fmtDateTime(call.desk.finished_at)}
+              {call.desk.lead_url && (
+                <>
+                  {" · "}
+                  <a className="underline" href={call.desk.lead_url} rel="noreferrer" target="_blank">
+                    Open in CRM
+                  </a>
+                </>
+              )}
+            </span>
+            {call.desk.note && <Bidi className="w-full whitespace-pre-line text-foreground" text={call.desk.note} />}
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Section title="Summary">
         <Bidi className="text-sm leading-relaxed" text={a.summary} />

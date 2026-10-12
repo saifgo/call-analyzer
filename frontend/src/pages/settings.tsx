@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { JobLog } from "@/components/job-log";
+import { WhatsAppActions } from "@/components/whatsapp-actions";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -423,6 +424,12 @@ export function SettingsPage(): React.ReactElement {
                       </Field>
                     </React.Fragment>
                   ))}
+                {section === "WhatsApp" && (
+                  <>
+                    <Separator className="my-4" />
+                    <WhatsAppActions refreshKey={saving} />
+                  </>
+                )}
               </CardPanel>
             </Card>
           ))}

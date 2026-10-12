@@ -1,7 +1,6 @@
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  CalendarIcon,
   ChevronsUpDownIcon,
   FileAudioIcon,
   InfoIcon,
@@ -14,11 +13,10 @@ import {
   XIcon,
 } from "lucide-react";
 import * as React from "react";
-import type { DateRange } from "@daypicker/react";
 import { KIND_LABEL, KindBadge, OutcomeBadge, ScoreBadge, StatusBadge } from "@/components/call-badges";
+import { DateRangeFilter } from "@/components/date-range-filter";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
-import { Calendar } from "@/components/ui/calendar";
 import { CardFrame, CardFrameFooter, CardFrameHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -29,6 +27,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/c
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTab } from "@/components/ui/tabs";
 import { useApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
@@ -38,9 +37,7 @@ import {
   fmtRelative,
   fmtTime,
   humanize,
-  isoDay,
   numberFmt,
-  parseDate,
 } from "@/lib/format";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
 import { useMe } from "@/lib/me";
@@ -49,7 +46,8 @@ import type { CallDetail, CallList } from "@/lib/types";
 import { CallSheet } from "./call-detail";
 
 const PAGE_SIZE = 50;
-const FILTER_KEYS = ["q", "agent", "status", "kind", "outcome", "since", "until", "min"] as const;
+// agent, status, outcome and len hold several comma-separated choices.
+const FILTER_KEYS = ["q", "agent", "status", "kind", "outcome", "since", "until", "len"] as const;
 // Everything kept in the URL: the filters plus the table sort ("duration", "-duration", …).
 const QUERY_KEYS = [...FILTER_KEYS, "sort"] as const;
 type Filters = Record<(typeof QUERY_KEYS)[number], string>;
@@ -95,7 +93,6 @@ function SortableHead({
 }
 
 const STATUS_ITEMS = [
-  { label: "Any status", value: "all" },
   { label: "Not downloaded", value: "new" },
   { label: "Downloaded", value: "downloaded" },
   { label: "Transcribed", value: "transcribed" },
@@ -106,67 +103,78 @@ const STATUS_ITEMS = [
 ];
 
 const KIND_ITEMS = [
-  { label: "Sales and service", value: "all" },
+  { label: "All calls", value: "all" },
   ...["sales", "service", "other"].map((value) => ({ label: KIND_LABEL[value], value })),
 ];
 
 // Same values as CallAnalysis.outcome and ServiceAnalysis.resolution_status in analyze.py.
-const OUTCOME_ITEMS = [
-  { label: "Any outcome", value: "all" },
-  ...[
-    "sale",
-    "appointment_or_next_step",
-    "callback_requested",
-    "not_interested",
-    "no_decision",
-    "not_applicable",
-    "resolved",
-    "escalated",
-    "pending_customer",
-    "unresolved",
-  ].map((value) => ({ label: humanize(value), value })),
-];
+const SALES_OUTCOMES = ["sale", "appointment_or_next_step", "callback_requested", "not_interested", "no_decision", "not_applicable"];
+const SERVICE_OUTCOMES = ["resolved", "escalated", "pending_customer", "unresolved"];
 
+// Only offer the outcomes that exist for the selected kind of call.
+function outcomeItems(kind: string) {
+  const values = kind === "sales" ? SALES_OUTCOMES : kind === "service" ? SERVICE_OUTCOMES : [...SALES_OUTCOMES, ...SERVICE_OUTCOMES];
+  return values.map((value) => ({ label: humanize(value), value }));
+}
+
+// Length buckets as "min-max" seconds (max exclusive), the format of the API's `length` parameter.
 const LENGTH_ITEMS = [
-  { label: "Any length", value: "all" },
-  { label: "30 s or more", value: "30" },
-  { label: "1 min or more", value: "60" },
-  { label: "2 min or more", value: "120" },
-  { label: "5 min or more", value: "300" },
+  { label: "Under 30 s", value: "-30" },
+  { label: "30 s – 1 min", value: "30-60" },
+  { label: "1 – 2 min", value: "60-120" },
+  { label: "2 – 5 min", value: "120-300" },
+  { label: "5 min or more", value: "300-" },
 ];
 
-const rangeFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const splitList = (value: string) => (value ? value.split(",") : []);
 
-function DateRangeFilter({ since, until, onChange }: { since: string; until: string; onChange: (since: string, until: string) => void }) {
-  const from = parseDate(since) ?? undefined;
-  // `until` is exclusive in the API; show the inclusive last day.
-  const untilDate = parseDate(until);
-  const to = untilDate ? new Date(untilDate.getTime() - 86400000) : undefined;
-  const label = from ? (to && +to !== +from ? `${rangeFmt.format(from)} – ${rangeFmt.format(to)}` : rangeFmt.format(from)) : "Any date";
-
-  const select = (range: DateRange | undefined) => {
-    if (!range?.from) return onChange("", "");
-    const end = new Date((range.to ?? range.from).getTime() + 86400000);
-    onChange(isoDay(range.from), isoDay(end));
-  };
-
+// Select allowing several values; the trigger shows the single choice, or "<label> · n".
+function MultiSelectFilter({
+  label,
+  allLabel,
+  items,
+  value,
+  onChange,
+}: {
+  label: string;
+  allLabel: string;
+  items: { label: string; value: string }[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const selected = splitList(value);
   return (
-    <Popover>
-      <PopoverTrigger render={<Button className="justify-start font-normal" variant="outline" />}>
-        <CalendarIcon aria-hidden="true" />
-        <span className={from ? "" : "text-muted-foreground"}>{label}</span>
-      </PopoverTrigger>
-      <PopoverPopup align="start" className="*:p-2">
-        <div className="flex flex-col gap-2">
-          <Calendar defaultMonth={from} mode="range" onSelect={select} selected={{ from, to }} />
-          {from && (
-            <Button onClick={() => onChange("", "")} size="sm" variant="ghost">
-              Clear dates
-            </Button>
-          )}
-        </div>
-      </PopoverPopup>
-    </Popover>
+    <Select
+      items={items}
+      multiple
+      onValueChange={(v) => {
+        // Keep the list order so the URL stays stable.
+        const chosen = new Set(v as string[]);
+        onChange(items.filter((i) => chosen.has(i.value)).map((i) => i.value).join(","));
+      }}
+      value={selected}
+    >
+      <SelectTrigger aria-label={label} className="w-auto">
+        <SelectValue>
+          {(v: string[]) =>
+            !v.length ? (
+              <span className="text-muted-foreground">{allLabel}</span>
+            ) : v.length === 1 ? (
+              (items.find((i) => i.value === v[0])?.label ?? v[0])
+            ) : (
+              `${label} · ${v.length}`
+            )
+          }
+        </SelectValue>
+      </SelectTrigger>
+      <SelectPopup alignItemWithTrigger={false}>
+        {items.map((item) => (
+          <SelectItem key={item.value} value={item.value}>
+            {item.label}
+          </SelectItem>
+        ))}
+      </SelectPopup>
+    </Select>
   );
 }
 
@@ -260,7 +268,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
   if (filters.outcome) params.set("outcome", filters.outcome);
   if (filters.since) params.set("since", filters.since);
   if (filters.until) params.set("until", filters.until);
-  if (filters.min) params.set("min_duration", filters.min);
+  if (filters.len) params.set("length", filters.len);
   params.set("sort", sort);
   const { data, loading, reload } = useApi<CallList>(`/api/calls?${params}`);
   useOnJobFinished(reload);
@@ -290,7 +298,8 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
     if (await job.start(commands, { ids: [...checked].join(","), redo, workers: 4 })) setChecked(new Set());
   };
 
-  const agentItems = [{ label: "All agents", value: "all" }, ...(data?.agents ?? []).map((a) => ({ label: `Agent ${a}`, value: a }))];
+  const outcomes = outcomeItems(filters.kind);
+  const agentItems = (data?.agents ?? []).map((a) => ({ label: `Agent ${a}`, value: a }));
   const hasFilters = FILTER_KEYS.some((k) => filters[k]);
   const total = data?.total ?? 0;
   const first = total ? (page - 1) * PAGE_SIZE + 1 : 0;
@@ -311,6 +320,24 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
         title={isAdmin ? "Calls" : "My calls"}
       />
 
+      <Tabs
+        onValueChange={(v) => {
+          const kind = v === "all" ? "" : (v as string);
+          // Drop outcomes that don't exist for the newly selected kind.
+          const valid = new Set(outcomeItems(kind).map((i) => i.value));
+          setQuery({ kind, outcome: splitList(filters.outcome).filter((o) => valid.has(o)).join(",") });
+        }}
+        value={filters.kind || "all"}
+      >
+        <TabsList aria-label="Kind of call">
+          {KIND_ITEMS.map((item) => (
+            <TabsTab key={item.value} value={item.value}>
+              {item.label}
+            </TabsTab>
+          ))}
+        </TabsList>
+      </Tabs>
+
       <div className="flex flex-wrap items-center gap-2">
         <InputGroup className="w-full sm:w-72">
           <InputGroupInput
@@ -324,88 +351,36 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
             <SearchIcon aria-hidden="true" />
           </InputGroupAddon>
         </InputGroup>
-        {(isAdmin || agentItems.length > 2) && (
-          <Select
+        {(isAdmin || agentItems.length > 1) && (
+          <MultiSelectFilter
+            allLabel="All agents"
             items={agentItems}
-            onValueChange={(v) => setQuery({ agent: v === "all" ? "" : (v as string) })}
-            value={filters.agent || "all"}
-          >
-            <SelectTrigger aria-label="Agent" className="w-auto">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectPopup>
-              {agentItems.map((item) => (
-                <SelectItem key={item.value} value={item.value}>
-                  {item.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
+            label="Agents"
+            onChange={(agent) => setQuery({ agent })}
+            value={filters.agent}
+          />
         )}
-        <Select
+        <MultiSelectFilter
+          allLabel="Any status"
           items={STATUS_ITEMS}
-          onValueChange={(v) => setQuery({ status: v === "all" ? "" : (v as string) })}
-          value={filters.status || "all"}
-        >
-          <SelectTrigger aria-label="Status" className="w-auto">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectPopup>
-            {STATUS_ITEMS.map((item) => (
-              <SelectItem key={item.value} value={item.value}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-        <Select
-          items={KIND_ITEMS}
-          onValueChange={(v) => setQuery({ kind: v === "all" ? "" : (v as string) })}
-          value={filters.kind || "all"}
-        >
-          <SelectTrigger aria-label="Kind of call" className="w-auto">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectPopup>
-            {KIND_ITEMS.map((item) => (
-              <SelectItem key={item.value} value={item.value}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-        <Select
-          items={OUTCOME_ITEMS}
-          onValueChange={(v) => setQuery({ outcome: v === "all" ? "" : (v as string) })}
-          value={filters.outcome || "all"}
-        >
-          <SelectTrigger aria-label="Outcome" className="w-auto">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectPopup>
-            {OUTCOME_ITEMS.map((item) => (
-              <SelectItem key={item.value} value={item.value}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-        <Select
+          label="Statuses"
+          onChange={(status) => setQuery({ status })}
+          value={filters.status}
+        />
+        <MultiSelectFilter
+          allLabel="Any outcome"
+          items={outcomes}
+          label="Outcomes"
+          onChange={(outcome) => setQuery({ outcome })}
+          value={filters.outcome}
+        />
+        <MultiSelectFilter
+          allLabel="Any length"
           items={LENGTH_ITEMS}
-          onValueChange={(v) => setQuery({ min: v === "all" ? "" : (v as string) })}
-          value={LENGTH_ITEMS.some((i) => i.value === filters.min) ? filters.min : "all"}
-        >
-          <SelectTrigger aria-label="Minimum length" className="w-auto">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectPopup>
-            {LENGTH_ITEMS.map((item) => (
-              <SelectItem key={item.value} value={item.value}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
+          label="Lengths"
+          onChange={(len) => setQuery({ len })}
+          value={filters.len}
+        />
         <DateRangeFilter
           onChange={(since, until) => setQuery({ since, until })}
           since={filters.since}

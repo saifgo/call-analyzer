@@ -4,6 +4,8 @@ python-dotenv>=1.0
 markdown>=3.5
 fastapi>=0.115
 uvicorn[standard]>=0.30
+# Encrypts the softphone passwords saved in the database (vault.py)
+cryptography>=42
 faster-whisper>=1.2
 av<16  # faster-whisper 1.2 is not compatible with PyAV 16+
 # Only needed for CLAUDE_BACKEND=api

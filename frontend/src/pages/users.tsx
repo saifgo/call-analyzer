@@ -1,4 +1,13 @@
-import { CircleAlertIcon, EllipsisIcon, PencilIcon, PlusIcon, Trash2Icon, UserPlusIcon, UsersIcon } from "lucide-react";
+import {
+  CircleAlertIcon,
+  EllipsisIcon,
+  PencilIcon,
+  PhoneIcon,
+  PlusIcon,
+  Trash2Icon,
+  UserPlusIcon,
+  UsersIcon,
+} from "lucide-react";
 import * as React from "react";
 import { MIN_PASSWORD_LENGTH } from "@/components/change-password-dialog";
 import { PageHeader } from "@/components/page-header";
@@ -39,7 +48,7 @@ import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
 import { fmtDate, numberFmt } from "@/lib/format";
 import { useMe } from "@/lib/me";
-import type { Account, AgentInfo, Role } from "@/lib/types";
+import type { Account, AgentInfo, CrmMembers, Role } from "@/lib/types";
 
 const ROLE_ITEMS: { label: string; value: Role; help: string }[] = [
   { help: "Sees only the calls, feedback and reports of the extensions below. Read-only.", label: "Agent", value: "agent" },
@@ -113,13 +122,19 @@ function AgentPicker({
 }
 
 /** Create an account (account = null) or edit one. */
+/** An account's softphone: its GoVoice extension and the GoVoice login its SIP password is fetched with. */
+type Phone = { extension: string; govoice_user: string };
+
 function UserDialog({
   account,
+  phone,
   open,
   onOpenChange,
   onSaved,
 }: {
   account: Account | null;
+  /** The account's softphone, null for none. */
+  phone: Phone | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
@@ -128,21 +143,83 @@ function UserDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogPopup className="sm:max-w-lg">
         {/* Mounted on every open, so the form starts from the account's current values. */}
-        <UserForm account={account} onDone={() => onOpenChange(false)} onSaved={onSaved} />
+        <UserForm account={account} onDone={() => onOpenChange(false)} onSaved={onSaved} phone={phone} />
       </DialogPopup>
     </Dialog>
   );
 }
 
-function UserForm({ account, onDone, onSaved }: { account: Account | null; onDone: () => void; onSaved: () => void }) {
+const NO_CRM_USER = "__none";
+
+/** Which CRM user the account is: the leads they add from the call desk are theirs in the CRM. */
+function CrmUserField({
+  members,
+  error,
+  value,
+  onChange,
+}: {
+  members: CrmMembers | undefined;
+  error: string | undefined;
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  if (members && !members.configured) return null;
+  const items = [
+    { label: "Not linked", value: NO_CRM_USER },
+    ...(members?.members ?? []).map((m) => ({ label: m.email ? `${m.name} (${m.email})` : m.name, value: m.id })),
+  ];
+  // A linked user the CRM no longer lists still shows, so saving doesn't silently unlink them.
+  if (members && !items.some((i) => i.value === value)) items.push({ label: "Unknown CRM user", value });
+  return (
+    <Field>
+      <FieldLabel>CRM user</FieldLabel>
+      {error ? (
+        <p className="text-destructive-foreground text-sm">Couldn't load the CRM users: {error}</p>
+      ) : members ? (
+        <Select items={items} onValueChange={(v) => onChange(v as string)} value={value}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            {items.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      ) : (
+        <Skeleton className="h-9 w-full rounded-lg" />
+      )}
+      <FieldDescription>Contacts this account adds from the call desk are owned by this CRM user.</FieldDescription>
+    </Field>
+  );
+}
+
+function UserForm({
+  account,
+  phone,
+  onDone,
+  onSaved,
+}: {
+  account: Account | null;
+  phone: Phone | null;
+  onDone: () => void;
+  onSaved: () => void;
+}) {
   const me = useMe();
   const { data: known } = useApi<AgentInfo[]>("/api/agents");
+  const { data: crmMembers, error: crmError } = useApi<CrmMembers>("/api/crm/members");
   const editing = account !== null;
   const [username, setUsername] = React.useState(account?.username ?? "");
   const [displayName, setDisplayName] = React.useState(account?.display_name ?? "");
   const [role, setRole] = React.useState<Role>(account?.role ?? "agent");
   const [agents, setAgents] = React.useState<string[]>(account?.agents ?? []);
+  const [crmMember, setCrmMember] = React.useState(account?.crm_member_id ?? NO_CRM_USER);
   const [password, setPassword] = React.useState("");
+  const [phoneExt, setPhoneExt] = React.useState(phone?.extension ?? "");
+  const [govoiceUser, setGovoiceUser] = React.useState(phone?.govoice_user ?? "");
+  const [accountPassword, setAccountPassword] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
 
@@ -157,7 +234,7 @@ function UserForm({ account, onDone, onSaved }: { account: Account | null; onDon
     setSaving(true);
     setError(null);
     try {
-      const body = { agents, display_name: displayName, role };
+      const body = { agents, crm_member_id: crmMember === NO_CRM_USER ? "" : crmMember, display_name: displayName, role };
       if (editing) {
         await api(`/api/users/${encodeURIComponent(account.username)}`, {
           body: { ...body, password: password || null },
@@ -165,6 +242,21 @@ function UserForm({ account, onDone, onSaved }: { account: Account | null; onDon
         });
       } else {
         await api("/api/users", { body: { ...body, password, username: username.trim() }, method: "POST" });
+      }
+      const phonePath = `/api/softphones/${encodeURIComponent(editing ? account.username : username.trim())}`;
+      const phoneChanged =
+        phoneExt.trim() !== phone?.extension || govoiceUser.trim() !== phone?.govoice_user || accountPassword !== "";
+      if (phoneExt.trim() && phoneChanged) {
+        await api(phonePath, {
+          body: {
+            account_password: accountPassword || null,
+            extension: phoneExt.trim(),
+            govoice_user: govoiceUser.trim(),
+          },
+          method: "PUT",
+        });
+      } else if (!phoneExt.trim() && phone) {
+        await api(phonePath, { method: "DELETE" });
       }
       toastManager.add({
         description: password && editing ? "They were signed out everywhere." : undefined,
@@ -254,6 +346,57 @@ function UserForm({ account, onDone, onSaved }: { account: Account | null; onDon
             )}
           </div>
         )}
+        <CrmUserField error={crmError?.message} members={crmMembers} onChange={setCrmMember} value={crmMember} />
+        <div className="flex flex-col gap-2">
+          <span className="font-medium text-sm">Phone</span>
+          <p className="text-muted-foreground text-xs">
+            The GoVoice extension this account makes and takes calls with in the browser, and the GoVoice account
+            (My Account on otn.govoice.tn) its SIP password is fetched with. Leave the extension empty for no phone.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel>Extension</FieldLabel>
+              <Input
+                autoComplete="off"
+                inputMode="numeric"
+                onChange={(e) => {
+                  // GoVoice accounts are named after their extension (user100), unless the admin typed another one.
+                  if (!govoiceUser || govoiceUser === `user${phoneExt.trim()}`) setGovoiceUser(`user${e.target.value.trim()}`);
+                  setPhoneExt(e.target.value);
+                }}
+                pattern="\d{1,6}"
+                placeholder={`e.g. ${agents[0] ?? "100"}`}
+                type="text"
+                value={phoneExt}
+              />
+            </Field>
+            <Field>
+              <FieldLabel>GoVoice username</FieldLabel>
+              <Input
+                autoComplete="off"
+                disabled={!phoneExt.trim()}
+                onChange={(e) => setGovoiceUser(e.target.value)}
+                placeholder={`e.g. user${phoneExt.trim() || "100"}`}
+                required={!!phoneExt.trim()}
+                type="text"
+                value={govoiceUser}
+              />
+            </Field>
+          </div>
+          <Field>
+            <FieldLabel>GoVoice account password</FieldLabel>
+            <Input
+              autoComplete="new-password"
+              disabled={!phoneExt.trim()}
+              onChange={(e) => setAccountPassword(e.target.value)}
+              placeholder={phone?.govoice_user ? "Leave empty to keep it" : undefined}
+              required={!!phoneExt.trim() && !phone?.govoice_user}
+              type="password"
+              value={accountPassword}
+            />
+            <FieldDescription>The SIP password is fetched from GoVoice with it when you save.</FieldDescription>
+          </Field>
+        </div>
         <Field>
           <FieldLabel>{editing ? "New password" : "Password"}</FieldLabel>
           <Input
@@ -328,6 +471,8 @@ export function UsersPage(): React.ReactElement {
   const me = useMe();
   const { data: accounts, reload } = useApi<Account[]>("/api/users");
   const { data: known, reload: reloadAgents } = useApi<AgentInfo[]>("/api/agents");
+  const { data: phones, reload: reloadPhones } = useApi<Record<string, Phone>>("/api/softphones");
+  const { data: crmMembers } = useApi<CrmMembers>("/api/crm/members");
   const [editing, setEditing] = React.useState<Account | null>(null);
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState<Account | null>(null);
@@ -335,6 +480,7 @@ export function UsersPage(): React.ReactElement {
   const refresh = () => {
     reload();
     reloadAgents();
+    reloadPhones();
   };
   const openNew = () => {
     setEditing(null);
@@ -407,6 +553,8 @@ export function UsersPage(): React.ReactElement {
                 <TableHead>User</TableHead>
                 <TableHead>Role</TableHead>
                 <TableHead>Extensions</TableHead>
+                <TableHead className="max-sm:hidden">Phone</TableHead>
+                <TableHead className="max-lg:hidden">CRM user</TableHead>
                 <TableHead className="max-md:hidden">Created</TableHead>
                 <TableHead className="w-10">
                   <span className="sr-only">Actions</span>
@@ -441,6 +589,25 @@ export function UsersPage(): React.ReactElement {
                       <Badge variant="warning">None linked</Badge>
                     )}
                   </TableCell>
+                  <TableCell className="max-sm:hidden">
+                    {phones?.[a.username] ? (
+                      <Badge className="tabular-nums" variant="outline">
+                        <PhoneIcon aria-hidden="true" />
+                        {phones[a.username].extension}
+                      </Badge>
+                    ) : (
+                      <span className="text-muted-foreground text-sm">None</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="max-lg:hidden">
+                    {a.crm_member_id ? (
+                      <span className="text-sm" dir="auto">
+                        {crmMembers?.members.find((m) => m.id === a.crm_member_id)?.name ?? "Linked"}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground text-sm">None</span>
+                    )}
+                  </TableCell>
                   <TableCell className="text-muted-foreground max-md:hidden">{fmtDate(a.created_at)}</TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <Menu>
@@ -467,7 +634,13 @@ export function UsersPage(): React.ReactElement {
         </CardFrame>
       )}
 
-      <UserDialog account={editing} onOpenChange={setDialogOpen} onSaved={refresh} open={dialogOpen} />
+      <UserDialog
+        account={editing}
+        onOpenChange={setDialogOpen}
+        onSaved={refresh}
+        open={dialogOpen}
+        phone={editing ? (phones?.[editing.username] ?? null) : null}
+      />
       <DeleteUserDialog account={deleting} onDeleted={refresh} onOpenChange={(open) => !open && setDeleting(null)} />
     </>
   );

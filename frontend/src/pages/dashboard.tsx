@@ -6,9 +6,11 @@ import {
   PhoneIcon,
   PlayIcon,
   RefreshCwIcon,
+  XIcon,
 } from "lucide-react";
 import type * as React from "react";
 import { OUTCOME_COLOR, ScoreBadge } from "@/components/call-badges";
+import { DateRangeFilter } from "@/components/date-range-filter";
 import { PageHeader } from "@/components/page-header";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -31,7 +33,7 @@ import { useApi } from "@/lib/api";
 import { fmtDateTime, fmtRelative, humanize, numberFmt } from "@/lib/format";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
 import { useMe } from "@/lib/me";
-import { href, navigate } from "@/lib/router";
+import { href, navigate, type Route } from "@/lib/router";
 import type { Stats } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -82,8 +84,13 @@ function DashboardSkeleton() {
   );
 }
 
-export function DashboardPage(): React.ReactElement {
-  const { data: s, reload } = useApi<Stats>("/api/stats");
+export function DashboardPage({ route }: { route: Route }): React.ReactElement {
+  // Date range kept in the URL like the calls filters; `until` is exclusive.
+  const since = route.query.get("since") ?? "";
+  const until = route.query.get("until") ?? "";
+  const range = { since, until };
+  const params = new URLSearchParams(Object.entries(range).filter(([, v]) => v));
+  const { data: s, reload } = useApi<Stats>(`/api/stats${params.size ? `?${params}` : ""}`);
   const job = useJob();
   const { isAdmin } = useMe();
   useOnJobFinished(reload);
@@ -128,8 +135,34 @@ export function DashboardPage(): React.ReactElement {
         title={isAdmin ? "Dashboard" : "My performance"}
       />
 
+      <div className="flex flex-wrap items-center gap-2">
+        <DateRangeFilter
+          onChange={(since, until) => navigate(href("dashboard", null, { since, until }), { replace: true })}
+          since={since}
+          until={until}
+        />
+        {since && (
+          <Button onClick={() => navigate(href("dashboard"), { replace: true })} variant="ghost">
+            <XIcon aria-hidden="true" />
+            Reset
+          </Button>
+        )}
+      </div>
+
       {!s ? (
         <DashboardSkeleton />
+      ) : s.total === 0 && since ? (
+        <Card>
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <PhoneIcon />
+              </EmptyMedia>
+              <EmptyTitle>No calls in this period</EmptyTitle>
+              <EmptyDescription>Pick another date range.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        </Card>
       ) : s.total === 0 ? (
         <Card>
           <Empty>
@@ -166,7 +199,7 @@ export function DashboardPage(): React.ReactElement {
                   </AlertTitle>
                   <AlertDescription>The transcript was edited after the feedback was written.</AlertDescription>
                   <AlertAction>
-                    <Button render={<a href={href("calls", null, { status: "stale" })} />} size="sm" variant="outline">
+                    <Button render={<a href={href("calls", null, { ...range, status: "stale" })} />} size="sm" variant="outline">
                       Review
                     </Button>
                   </AlertAction>
@@ -180,7 +213,7 @@ export function DashboardPage(): React.ReactElement {
                   </AlertTitle>
                   <AlertDescription>Open them to see the error, then retry.</AlertDescription>
                   <AlertAction>
-                    <Button render={<a href={href("calls", null, { status: "error" })} />} size="sm" variant="outline">
+                    <Button render={<a href={href("calls", null, { ...range, status: "error" })} />} size="sm" variant="outline">
                       View errors
                     </Button>
                   </AlertAction>
@@ -280,7 +313,7 @@ export function DashboardPage(): React.ReactElement {
                   <TableRow
                     className="cursor-pointer"
                     key={a.agent}
-                    onClick={() => navigate(href("calls", null, { agent: a.agent }))}
+                    onClick={() => navigate(href("calls", null, { ...range, agent: a.agent }))}
                   >
                     <TableCell>
                       <span className="font-medium tabular-nums">{a.agent}</span>

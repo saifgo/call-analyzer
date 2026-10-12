@@ -108,6 +108,24 @@ export type CallDetail = CallSummary & {
   /** What the recording sounds like; null until it was measured. */
   voice: VoiceData | null;
   has_audio: boolean;
+  /** The call desk call this recording is, when it was made from the desk. */
+  desk: DeskLink | null;
+};
+
+/** A recording's call desk call (call_analyzer/desk_stats.py desk_call_for_recording). */
+export type DeskLink = {
+  id: number;
+  outcome: string | null;
+  outcome_label: string | null;
+  reached: boolean;
+  success: boolean;
+  campaign: string;
+  agent_name: string;
+  finished_at: string | null;
+  note: string | null;
+  stage_before: string | null;
+  stage_after: string | null;
+  lead_url: string | null;
 };
 
 export type CallList = { total: number; calls: CallSummary[]; agents: string[] };
@@ -190,7 +208,12 @@ export type Account = {
   created_at: string;
   /** Agent extensions linked to the account. */
   agents: string[];
+  /** The CRM user (Twenty workspace member) the account is; owns the leads they add from the call desk. */
+  crm_member_id: string | null;
 };
+
+export type CrmMember = { id: string; name: string; email: string | null };
+export type CrmMembers = { configured: boolean; members: CrmMember[] };
 
 /** An agent extension seen in calls, and the accounts linked to it. */
 export type AgentInfo = { agent: string; calls: number; accounts: string[] };
@@ -335,4 +358,325 @@ export type AgentInstaller = {
   kind: "cpu" | "gpu";
   version: string | null;
   modified: string;
+};
+
+// --- Operations (call desk): call_analyzer/operations.py ---
+
+export type OpQuestionType = "select" | "multi" | "number" | "text" | "textarea" | "boolean";
+
+/** A question the agent asks during the call. `crm` copies the answer to that field of the CRM contact. */
+export type OpQuestion = {
+  key: string;
+  section: string;
+  label: string;
+  type: OpQuestionType;
+  /** [value, label] pairs, for select and multi. */
+  options?: [string, string][];
+  help?: string;
+  unit?: string;
+  step?: number;
+  /** Only asked when another answer is one of these values. */
+  show_if?: Record<string, string[]>;
+  crm?: string;
+};
+
+export type OpAnswers = Record<string, string | number | boolean | string[]>;
+
+export type OpOutcome = {
+  value: string;
+  label: string;
+  /** Stage suggested for the contact (null when the CRM has no such stage). */
+  stage: string | null;
+  /** The agent spoke with the contact. */
+  reached?: boolean;
+  /** A win: what the conversion KPIs count. */
+  success?: boolean;
+  /** Booking a callback is suggested. */
+  callback?: boolean;
+};
+
+/** A call desk campaign (call_analyzer/campaigns.py): its queue, questions, outcomes and calling rules. */
+export type OpCampaign = {
+  id: number;
+  name: string;
+  description: string | null;
+  /** The CRM stages the queue is made of. */
+  stages: string[];
+  questions: OpQuestion[];
+  outcomes: OpOutcome[];
+  /** Unanswered calls in a row before giving up; 0: no limit. */
+  max_attempts: number;
+  /** When to try again after an unanswered call. */
+  retry_minutes: number;
+  exhausted_stage: string | null;
+  call_start: string | null;
+  call_end: string | null;
+  /** ISO weekdays (1 = Monday); null: every day. */
+  call_days: number[] | null;
+  active: boolean;
+  position: number;
+  /** e.g. "Mon, Tue 09:00–18:00". */
+  hours?: string;
+};
+
+export type OpStage = { value: string; label: string };
+
+export type OpConfig = {
+  /** Every campaign, archived ones too (to read their calls). */
+  campaigns: OpCampaign[];
+  /** All campaigns' outcomes by value, to label any call. */
+  outcomes: OpOutcome[];
+  stages: OpStage[];
+  crm_configured: boolean;
+};
+
+export type OpStatus = "scheduled" | "assigned" | "in_call" | "done" | "released" | "cancelled";
+
+/** A contact served on the desk, or a callback waiting to be. */
+export type OpCall = {
+  id: number;
+  opportunity_id: string;
+  person_id: string | null;
+  /** The opportunity and its contact as the CRM had them when served. */
+  lead: CrmLead | null;
+  /** direct: a sales call the agent started themselves, outside the queue. */
+  source: "queue" | "callback" | "direct" | "test";
+  /** A test call (or a callback booked from one): a made-up contact, never written to the CRM. */
+  test: boolean;
+  status: OpStatus;
+  agent: string | null;
+  agent_name?: string | null;
+  due_at: string | null;
+  assign_to: string | null;
+  assign_to_name?: string | null;
+  scheduled_by: string | null;
+  scheduled_by_name?: string | null;
+  callback_note: string | null;
+  assigned_at: string | null;
+  call_started_at: string | null;
+  call_ended_at: string | null;
+  finished_at: string | null;
+  answers: OpAnswers;
+  outcome: string | null;
+  note: string | null;
+  stage_before: string | null;
+  stage_after: string | null;
+  crm_error: string | null;
+  campaign_id: number | null;
+  /** The number dialed. */
+  phone: string | null;
+  /** The GoVoice recording of the call, once linked. */
+  call_id: string | null;
+  /** Set by finish: that was the campaign's last try at an unanswered contact. */
+  attempts_exhausted?: boolean;
+};
+
+export type OpQueue = {
+  campaign_id?: number;
+  campaign?: string;
+  hours?: string;
+  /** Within the campaign's calling hours. */
+  open?: boolean;
+  due_callbacks: number;
+  scheduled: number;
+  /** New contacts with a phone number nobody has had yet; null when the CRM couldn't be read. */
+  waiting: number | null;
+  no_phone: number | null;
+  error: string | null;
+  truncated: boolean;
+};
+
+export type OpDesk = {
+  ready: boolean;
+  current: OpCall | null;
+  /** The campaign the agent works. */
+  campaign_id: number;
+  today: { done: number; reached: number; success: number; talk_seconds: number };
+  /** Callbacks the agent booked or that are kept for them. */
+  callbacks: OpCall[];
+  queue: OpQueue;
+};
+
+export type OpContext = {
+  history: OpCall[];
+  previous_answers: OpAnswers;
+  callback_from: OpCall | null;
+  recorded_calls: {
+    id: string;
+    date_call: string;
+    duration: number;
+    agent: string;
+    type: string;
+    summary: string | null;
+    outcome: string | null;
+  }[];
+  notes: { id: string; title: string; text: string; created_at: string | null; author: string | null }[];
+  notes_error: string | null;
+  /** Unanswered calls in a row before this one. */
+  attempts: number;
+  max_attempts: number;
+  /** This is the campaign's last try if it goes unanswered. */
+  last_try: boolean;
+  /** When to try again if unanswered (within calling hours); null: no retry. */
+  retry_at: string | null;
+};
+
+export type OpAgentState = "on_call" | "wrap_up" | "serving" | "ready" | "paused" | "offline";
+
+export type OpBoard = {
+  agents: {
+    username: string;
+    name: string;
+    state: OpAgentState;
+    ready: boolean;
+    online: boolean;
+    since: string | null;
+    last_seen: string | null;
+    current: OpCall | null;
+    done_today: number;
+    campaign: string | null;
+  }[];
+  /** All campaigns together. */
+  queue: OpQueue;
+  queues: OpQueue[];
+  callbacks: OpCall[];
+  recent: OpCall[];
+  outcomes_today: Record<string, number>;
+};
+
+/** A WhatsApp template approved on the account (see call_analyzer/whatsapp.py). */
+export type WaTemplate = {
+  name: string;
+  language: string;
+  category: string | null;
+  status: string | null;
+  named: boolean;
+  /** TEXT, DOCUMENT, IMAGE, VIDEO or LOCATION; null when it has no header. */
+  header_format: string | null;
+  header_text: string | null;
+  body: string;
+  footer: string | null;
+  buttons: { type: string; text: string; url: string | null }[];
+  /** What has to be filled in: "body.1", "header.name", "button.0.1"... */
+  variables: string[];
+};
+
+/** A call desk quick action: a template sent in one click. `params` maps a variable to a source key or "text:...". */
+export type WaAction = {
+  id: number;
+  label: string;
+  template: string;
+  language: string;
+  params: Record<string, string>;
+  header_link: string | null;
+  header_filename: string | null;
+  position: number;
+};
+
+export type WaActions = { configured: boolean; actions: WaAction[]; sources: Record<string, string> };
+
+export type WaMessage = {
+  id: number;
+  op_id: number;
+  action_id: number;
+  label: string;
+  to_number: string;
+  status: "sent" | "failed";
+  error: string | null;
+  sent_by: string;
+  sent_at: string;
+};
+
+// --- Call desk figures: call_analyzer/desk_stats.py ---
+
+export type OpKpiRow = {
+  username: string | null;
+  name: string;
+  calls: number;
+  reached: number;
+  success: number;
+  outcomes: Record<string, number>;
+  contact_rate: number | null;
+  /** Wins out of reached contacts. */
+  conversion_rate: number | null;
+  success_rate: number | null;
+  talk_seconds: number;
+  avg_talk_seconds: number | null;
+  avg_wrap_seconds: number | null;
+  /** Time spent taking calls on the desk. */
+  desk_seconds: number;
+  calls_per_hour: number | null;
+  success_per_hour: number | null;
+  /** Talk time out of desk time. */
+  talk_share: number | null;
+  callbacks_booked: number;
+  given_back: number;
+  linked: number;
+  scored: number;
+  avg_score: number | null;
+};
+
+export type OpKpis = {
+  since: string;
+  until: string;
+  team: OpKpiRow;
+  agents: OpKpiRow[];
+  days: { day: string; calls: number; reached: number; success: number }[];
+};
+
+export type OpInsights = {
+  since: string;
+  until: string;
+  total: number;
+  linked: number;
+  rated: number;
+  won_rated: number;
+  other_rated: number;
+  overall: { criterion: string; won: number | null; other: number | null; gap: number | null };
+  outcomes: {
+    outcome: string;
+    label: string;
+    reached: boolean;
+    success: boolean;
+    calls: number;
+    linked: number;
+    rated: number;
+    avg_score: number | null;
+    avg_voice: number | null;
+    criteria: Record<string, number | null>;
+    avg_talk_seconds: number | null;
+    avg_recording_seconds: number | null;
+    /** What the AI said the call's outcome was. */
+    ai_outcomes: Record<string, number>;
+  }[];
+  /** Score card criteria: won calls vs the other reached calls, biggest gap first. */
+  drivers: { criterion: string; won: number | null; other: number | null; gap: number | null }[];
+  bands: { band: string; calls: number; success: number; success_rate: number | null }[];
+  agents: {
+    username: string;
+    name: string;
+    calls: number;
+    reached: number;
+    success: number;
+    conversion_rate: number | null;
+    rated: number;
+    avg_score: number | null;
+    avg_score_won: number | null;
+    avg_score_other: number | null;
+  }[];
+  calls: {
+    op_id: number;
+    call_id: string;
+    finished_at: string;
+    agent_name: string;
+    contact: string | null;
+    outcome: string;
+    outcome_label: string;
+    success: boolean;
+    reached: boolean;
+    score: number;
+    kind: string;
+    ai_outcome: string | null;
+    summary: string | null;
+  }[];
 };
