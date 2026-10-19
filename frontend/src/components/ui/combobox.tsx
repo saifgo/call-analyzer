@@ -6,6 +6,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { t } from "@/lib/i18n";
 
 export const ComboboxContext: React.Context<{
   chipsRef: React.RefObject<Element | null> | null;
@@ -423,7 +424,7 @@ export function ComboboxChipRemove(
 ): React.ReactElement {
   return (
     <ComboboxPrimitive.ChipRemove
-      aria-label="Remove"
+      aria-label={t("common.remove")}
       className="h-full shrink-0 cursor-pointer px-1.5 opacity-80 hover:opacity-100 [&_svg:not([class*='size-'])]:size-4 sm:[&_svg:not([class*='size-'])]:size-3.5"
       data-slot="combobox-chip-remove"
       {...props}

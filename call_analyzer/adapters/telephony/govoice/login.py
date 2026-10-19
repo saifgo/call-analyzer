@@ -10,57 +10,21 @@ import json
 import secrets
 import threading
 import time
-from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from ..config import settings
-from ..govoice import GoVoiceClient, SessionExpired, cookie_header, current_cookie, new_session, save_cookie
+from ....config import settings
+from .client import GoVoiceClient, cookie_header, new_session, save_cookie
 
 router = APIRouter()
 PREFIX = "/govoice-login"
 LOGIN_COOKIE = "govoice_login"  # identifies this browser's pending login session
 PENDING_TTL = 30 * 60
-KEEPALIVE_SECONDS = 10 * 60  # GoVoice sessions expire after 2 hours without activity
 
 _pending: dict[str, tuple[float, object]] = {}  # login id -> (created, requests.Session)
 _lock = threading.Lock()
-_status = {"connected": None, "total": None, "message": "Not checked yet", "checked_at": None}
-
-
-# --- Connection status ------------------------------------------------------------------------
-
-def check_connection() -> dict:
-    """Test the saved cookie against GoVoice (also saves a rotated cookie)."""
-    cookie = current_cookie()
-    if not cookie:
-        result = {"connected": False, "total": None, "message": "Not connected to GoVoice yet"}
-    else:
-        try:
-            total = GoVoiceClient(cookie).check()
-            result = {"connected": True, "total": total, "message": f"Connected · {total} recordings"}
-        except SessionExpired:
-            result = {"connected": False, "total": None, "message": "GoVoice session expired"}
-        except Exception as exc:  # network problems: not an auth issue, don't ask to log in again
-            result = {"connected": None, "total": None, "message": f"Can't reach GoVoice: {exc}"}
-    _status.update(result, checked_at=datetime.now().isoformat(timespec="seconds"))
-    return dict(_status)
-
-
-@router.get("/api/govoice/status")
-def govoice_status(refresh: bool = False):
-    if refresh or _status["checked_at"] is None:
-        return check_connection()
-    return dict(_status)
-
-
-def keepalive_loop(stop: threading.Event):
-    """Use the session regularly so GoVoice doesn't expire it while the app is running."""
-    while not stop.wait(KEEPALIVE_SECONDS):
-        if current_cookie():
-            check_connection()
 
 
 # --- Login proxy ------------------------------------------------------------------------------
@@ -151,8 +115,8 @@ def _finish_login(session, content: bytes) -> bytes:
         result.update(error_login=1, messages=f"Signed in, but the recordings list is not accessible: {exc}")
         return json.dumps(result).encode()
     save_cookie(cookie)
-    _status.update(connected=True, total=total, message=f"Connected · {total} recordings",
-                   checked_at=datetime.now().isoformat(timespec="seconds"))
+    from .... import telephony
+    telephony.record_status(connected=True, total=total)
     result["redirect_module"] = f"{PREFIX}/done"
     return json.dumps(result).encode()
 

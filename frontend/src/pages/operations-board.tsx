@@ -1,5 +1,7 @@
 import { CircleAlertIcon, RefreshCwIcon, Undo2Icon, XIcon } from "lucide-react";
 import * as React from "react";
+import { DeskAlerts } from "@/components/desk-alerts";
+import { GoalBars, PauseBadge } from "@/components/goal-progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,25 +11,41 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { toastManager } from "@/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, useApi } from "@/lib/api";
+import { campaignText, useOpConfig } from "@/lib/campaign-text";
 import { Bidi } from "@/lib/bidi";
-import { fmtDateTime, fmtRelative, humanize, numberFmt, parseDate } from "@/lib/format";
-import { outcomeVariant, STAGE_VARIANT, useNow } from "@/lib/operations";
-import type { OpAgentState, OpBoard, OpCall, OpConfig } from "@/lib/types";
+import { fmtDateTime, fmtDuration, fmtRelative, humanize, numberFmt, parseDate } from "@/lib/format";
+import { pct } from "@/components/desk-charts";
+import { t } from "@/lib/i18n";
+import { contactName, fmtGoalValue, goalStatus, METRIC_LABELS, outcomeVariant, secondsFrom, STAGE_VARIANT, STATE, useNow } from "@/lib/operations";
+import type { OpBoard, OpProgress } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const REFRESH_MS = 10_000;
 
-const STATE: Record<OpAgentState, { label: string; variant: "success" | "info" | "warning" | "secondary" | "outline" }> = {
-  offline: { label: "Offline", variant: "outline" },
-  on_call: { label: "On a call", variant: "success" },
-  paused: { label: "Paused", variant: "secondary" },
-  ready: { label: "Waiting for a contact", variant: "info" },
-  serving: { label: "About to call", variant: "info" },
-  wrap_up: { label: "Closing a call", variant: "warning" },
-};
-
-function contactName(op: OpCall | null): string {
-  const name = op?.lead?.contact?.name ?? op?.lead?.name ?? "Contact";
-  return op?.test ? `${name} (test)` : name;
+/** "Calls 12/40 · Wins 1/3", each coloured by whether it keeps pace. */
+function ProgressLine({ progress }: { progress: OpProgress[] }) {
+  if (!progress.length) return <span className="text-muted-foreground">–</span>;
+  return (
+    <span className="flex flex-wrap justify-end gap-x-3 gap-y-0.5 text-xs">
+      {progress.map((p) => {
+        const status = goalStatus(p);
+        return (
+          <span className="whitespace-nowrap" key={p.metric}>
+            <span className="text-muted-foreground">{METRIC_LABELS[p.metric]} </span>
+            <span
+              className={cn(
+                "font-medium tabular-nums",
+                status === "behind" && "text-warning-foreground",
+                status === "done" && "text-success-foreground",
+              )}
+            >
+              {fmtGoalValue(p.metric, p.value)}/{fmtGoalValue(p.metric, p.target)}
+            </span>
+          </span>
+        );
+      })}
+    </span>
+  );
 }
 
 function Stat({ label, value, hint }: { label: string; value: React.ReactNode; hint?: React.ReactNode }) {
@@ -43,12 +61,12 @@ function Stat({ label, value, hint }: { label: string; value: React.ReactNode; h
 }
 
 export function OperationsBoard(): React.ReactElement {
-  const { data: config } = useApi<OpConfig>("/api/operations/config");
+  const { data: config } = useOpConfig();
   const { data, error, reload } = useApi<OpBoard>("/api/operations/board");
-  const now = useNow(true, REFRESH_MS);
+  const now = useNow(true, 1000);
   React.useEffect(() => {
-    const t = window.setInterval(reload, REFRESH_MS);
-    return () => window.clearInterval(t);
+    const timer = window.setInterval(reload, REFRESH_MS);
+    return () => window.clearInterval(timer);
   }, [reload]);
 
   const run = async (path: string, method: string, success: string) => {
@@ -56,7 +74,7 @@ export function OperationsBoard(): React.ReactElement {
       await api(path, { method });
       toastManager.add({ title: success, type: "success" });
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "That didn't work", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("common.didntWork"), type: "error" });
     }
     reload();
   };
@@ -65,7 +83,7 @@ export function OperationsBoard(): React.ReactElement {
     return (
       <Alert variant="error">
         <CircleAlertIcon aria-hidden="true" />
-        <AlertTitle>Couldn't load the team board</AlertTitle>
+        <AlertTitle>{t("board.loadFailed")}</AlertTitle>
         <AlertDescription>{error.message}</AlertDescription>
       </Alert>
     );
@@ -89,58 +107,80 @@ export function OperationsBoard(): React.ReactElement {
   const onCall = data.agents.filter((a) => a.state === "on_call").length;
   const doneToday = Object.values(data.outcomes_today).reduce((a, b) => a + b, 0);
   const q = data.queue;
+  const inb = data.inbound_today;
 
   return (
     <>
+      <DeskAlerts />
       {q.error && (
         <Alert variant="error">
           <CircleAlertIcon aria-hidden="true" />
-          <AlertTitle>Couldn't read the queue from the CRM</AlertTitle>
+          <AlertTitle>{t("board.queueFailed")}</AlertTitle>
           <AlertDescription>{q.error}</AlertDescription>
         </Alert>
       )}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat hint={`${onCall} on a call right now`} label="Agents taking calls" value={working.length} />
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <Stat hint={t("board.onCallNow", { count: onCall })} label={t("board.agentsTaking")} value={working.length} />
         <Stat
-          hint={q.no_phone ? `${numberFmt.format(q.no_phone)} more have no phone number` : "Contacts with a phone number"}
-          label="Waiting in the queue"
+          hint={q.no_phone ? t("board.noPhone", { count: q.no_phone }) : t("board.withPhone")}
+          label={t("board.waitingInQueue")}
           value={q.waiting === null ? "–" : numberFmt.format(q.waiting)}
         />
-        <Stat hint={`${q.scheduled} scheduled in total`} label="Callbacks due" value={q.due_callbacks} />
+        <Stat hint={t("board.scheduledTotal", { count: q.scheduled })} label={t("board.callbacksDue")} value={q.due_callbacks} />
         <Stat
           hint={
             Object.entries(data.outcomes_today)
               .sort((a, b) => b[1] - a[1])
               .slice(0, 3)
-              .map(([o, n]) => `${n} ${(outcomes[o]?.label ?? humanize(o)).toLowerCase()}`)
-              .join(" · ") || "No call closed yet"
+              .map(([o, n]) => `${n} ${(outcomes[o]?.label ?? humanize(o)).toLocaleLowerCase()}`)
+              .join(" · ") || t("wall.noCallClosed")
           }
-          label="Calls closed today"
+          label={t("board.closedToday")}
           value={doneToday}
         />
+        <Stat
+          hint={t("inbound.todayHint", {
+            missed: inb.missed,
+            rate: pct(inb.answer_rate),
+            waiting: inb.waiting,
+          })}
+          label={t("inbound.todayLabel")}
+          value={`${inb.answered}/${inb.calls}`}
+        />
       </div>
+
+      {data.team_progress.length > 0 && (
+        <Card>
+          <CardPanel className="flex flex-col gap-2 p-4">
+            <span className="text-muted-foreground text-xs">
+              {t("board.teamTargetsToday", { end: data.workday.end, start: data.workday.start })}
+            </span>
+            <GoalBars progress={data.team_progress} />
+          </CardPanel>
+        </Card>
+      )}
 
       {data.queues.length > 1 && (
         <CardFrame>
           <CardFrameHeader>
-            <CardFrameTitle>Queues</CardFrameTitle>
+            <CardFrameTitle>{t("board.queues")}</CardFrameTitle>
           </CardFrameHeader>
           <Table variant="card">
             <TableHeader>
               <TableRow>
-                <TableHead>Campaign</TableHead>
-                <TableHead>Calling hours</TableHead>
-                <TableHead className="text-end">Waiting</TableHead>
-                <TableHead className="text-end">Callbacks due</TableHead>
-                <TableHead className="text-end">Scheduled</TableHead>
+                <TableHead>{t("board.campaign")}</TableHead>
+                <TableHead>{t("board.callingHours")}</TableHead>
+                <TableHead className="text-end">{t("board.waiting")}</TableHead>
+                <TableHead className="text-end">{t("board.callbacksDue")}</TableHead>
+                <TableHead className="text-end">{t("board.scheduled")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {data.queues.map((queue) => (
                 <TableRow key={queue.campaign_id}>
-                  <TableCell className="font-medium">{queue.campaign}</TableCell>
+                  <TableCell className="font-medium">{campaignText(queue.campaign)}</TableCell>
                   <TableCell>
-                    <Badge variant={queue.open ? "success" : "secondary"}>{queue.open ? "Open" : "Closed"}</Badge>
+                    <Badge variant={queue.open ? "success" : "secondary"}>{queue.open ? t("board.open") : t("board.closed")}</Badge>
                     <span className="ms-2 text-muted-foreground text-xs">{queue.hours}</span>
                   </TableCell>
                   <TableCell className="text-end tabular-nums">
@@ -164,17 +204,17 @@ export function OperationsBoard(): React.ReactElement {
 
       <CardFrame>
         <CardFrameHeader>
-          <CardFrameTitle>Agents</CardFrameTitle>
+          <CardFrameTitle>{t("board.agents")}</CardFrameTitle>
         </CardFrameHeader>
         <Table variant="card">
           <TableHeader>
             <TableRow>
-              <TableHead>Agent</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Contact</TableHead>
-              <TableHead className="text-end">Closed today</TableHead>
+              <TableHead>{t("shell.agent")}</TableHead>
+              <TableHead>{t("board.status")}</TableHead>
+              <TableHead>{t("ops.contact")}</TableHead>
+              <TableHead className="text-end">{t("dates.today")}</TableHead>
               <TableHead className="w-10">
-                <span className="sr-only">Actions</span>
+                <span className="sr-only">{t("board.actions")}</span>
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -182,7 +222,7 @@ export function OperationsBoard(): React.ReactElement {
             {data.agents.length === 0 && (
               <TableRow>
                 <TableCell className="text-muted-foreground" colSpan={5}>
-                  Nobody has opened the call desk yet.
+                  {t("board.nobodyYet")}
                 </TableCell>
               </TableRow>
             )}
@@ -191,13 +231,24 @@ export function OperationsBoard(): React.ReactElement {
                 <TableCell>
                   <div className="flex flex-col">
                     <span className="font-medium">{a.name}</span>
-                    {data.queues.length > 1 && a.campaign && <span className="text-muted-foreground text-xs">{a.campaign}</span>}
+                    {data.queues.length > 1 && a.campaign && <span className="text-muted-foreground text-xs">{campaignText(a.campaign)}</span>}
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={STATE[a.state].variant}>{STATE[a.state].label}</Badge>
-                  {a.state === "offline" && a.last_seen && (
-                    <span className="ms-2 text-muted-foreground text-xs">seen {fmtRelative(a.last_seen)}</span>
+                  {a.state === "paused" && a.pause ? (
+                    <PauseBadge now={now} pause={a.pause} />
+                  ) : (
+                    <Badge variant={STATE[a.state].variant}>{STATE[a.state].label}</Badge>
+                  )}
+                  {a.state === "offline" && a.last_seen ? (
+                    <span className="ms-2 text-muted-foreground text-xs">{t("board.seen", { time: fmtRelative(a.last_seen) })}</span>
+                  ) : (
+                    !(a.state === "paused" && a.pause) &&
+                    secondsFrom(a.state_since, now) !== null && (
+                      <span className="ms-2 text-muted-foreground text-xs tabular-nums">
+                        {fmtDuration(secondsFrom(a.state_since, now) ?? 0)}
+                      </span>
+                    )
                   )}
                 </TableCell>
                 <TableCell className="whitespace-normal">
@@ -205,33 +256,44 @@ export function OperationsBoard(): React.ReactElement {
                     <div className="flex flex-col">
                       <Bidi as="span" text={contactName(a.current)} />
                       <span className="text-muted-foreground text-xs">
-                        {a.current.source === "callback" ? "Callback · " : a.current.source === "direct" ? "Sales call · " : ""}
-                        since {fmtRelative(a.current.call_started_at ?? a.current.assigned_at)}
+                        {a.current.source === "callback"
+                          ? `${t("board.callback")} · `
+                          : a.current.source === "direct"
+                            ? `${t("board.salesCall")} · `
+                            : ""}
+                        {t("wall.since", { time: fmtRelative(a.current.call_started_at ?? a.current.assigned_at) })}
                       </span>
                     </div>
                   ) : (
                     <span className="text-muted-foreground">–</span>
                   )}
                 </TableCell>
-                <TableCell className="text-end tabular-nums">{a.done_today}</TableCell>
+                <TableCell className="text-end tabular-nums">
+                  {a.progress.length ? (
+                    <ProgressLine progress={a.progress} />
+                  ) : (
+                    <span>{t("board.closedWon", { done: a.today.done, won: a.today.success })}</span>
+                  )}
+                  {a.today.pause_seconds > 0 && (
+                    <span className="block text-muted-foreground text-xs">{t("board.pausedFor", { time: fmtDuration(a.today.pause_seconds) })}</span>
+                  )}
+                </TableCell>
                 <TableCell>
                   {a.current && (
                     <Tooltip>
                       <TooltipTrigger
                         render={
                           <Button
-                            aria-label="Give the contact back to the queue"
-                            onClick={() =>
-                              run(`/api/operations/${a.current?.id}/release`, "POST", "Contact given back to the queue")
-                            }
+                            aria-label={t("board.giveBack")}
+                            onClick={() => run(`/api/operations/${a.current?.id}/release`, "POST", t("board.givenBack"))}
                             size="icon-sm"
                             variant="ghost"
                           />
                         }
                       >
-                        <Undo2Icon aria-hidden="true" />
+                        <Undo2Icon aria-hidden="true" className="rtl:-scale-x-100" />
                       </TooltipTrigger>
-                      <TooltipPopup>Give the contact back to the queue</TooltipPopup>
+                      <TooltipPopup>{t("board.giveBack")}</TooltipPopup>
                     </Tooltip>
                   )}
                 </TableCell>
@@ -243,18 +305,91 @@ export function OperationsBoard(): React.ReactElement {
 
       <CardFrame>
         <CardFrameHeader>
-          <CardFrameTitle>Scheduled callbacks</CardFrameTitle>
+          <CardFrameTitle className="flex items-center gap-2">
+            {t("inbound.missedTitle")}
+            {data.missed.length > 0 && <Badge variant="warning">{data.missed.length}</Badge>}
+          </CardFrameTitle>
         </CardFrameHeader>
         <Table variant="card">
           <TableHeader>
             <TableRow>
-              <TableHead>Due</TableHead>
-              <TableHead>Contact</TableHead>
-              <TableHead>Booked by</TableHead>
-              <TableHead>For</TableHead>
-              <TableHead>Note</TableHead>
+              <TableHead>{t("inbound.waiting")}</TableHead>
+              <TableHead>{t("ops.contact")}</TableHead>
+              <TableHead>{t("inbound.tries")}</TableHead>
+              <TableHead>{t("inbound.rangFor")}</TableHead>
+              <TableHead>{t("inbound.callsBack")}</TableHead>
               <TableHead className="w-10">
-                <span className="sr-only">Cancel</span>
+                <span className="sr-only">{t("inbound.dismiss")}</span>
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.missed.length === 0 && (
+              <TableRow>
+                <TableCell className="text-muted-foreground" colSpan={6}>
+                  {t("inbound.noMissed")}
+                </TableCell>
+              </TableRow>
+            )}
+            {data.missed.map((m) => (
+              <TableRow key={m.key}>
+                <TableCell className="whitespace-nowrap">
+                  <Badge variant={m.waiting_minutes >= 10 ? "error" : "warning"}>{fmtDuration(m.waiting_minutes * 60)}</Badge>
+                  <span className="ms-2 text-muted-foreground text-xs">{fmtDateTime(m.first_rang_at)}</span>
+                </TableCell>
+                <TableCell className="whitespace-normal">
+                  <Bidi as="span" text={m.contact_name ?? m.number} />
+                  {m.contact_name && (
+                    <span className="ms-2 text-muted-foreground text-xs tabular-nums" dir="ltr">
+                      {m.number}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell className="tabular-nums">
+                  {m.tries}
+                  {m.busy && <span className="ms-1 text-muted-foreground text-xs">{t("inbound.someBusy")}</span>}
+                </TableCell>
+                <TableCell className="whitespace-normal text-muted-foreground">{m.agents.join(", ")}</TableCell>
+                <TableCell>
+                  {m.serving ? (
+                    <Badge variant="info">{t("inbound.callingBack", { name: m.serving.agent_name })}</Badge>
+                  ) : (
+                    <span>
+                      {m.prefer_name}
+                      {m.knows && <span className="ms-1 text-muted-foreground text-xs">{t("inbound.knowsThem")}</span>}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <Button
+                    aria-label={t("inbound.dismiss")}
+                    onClick={() => run(`/api/operations/missed/${encodeURIComponent(m.key)}/dismiss`, "POST", t("inbound.dismissed"))}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <XIcon aria-hidden="true" />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardFrame>
+
+      <CardFrame>
+        <CardFrameHeader>
+          <CardFrameTitle>{t("board.scheduledCallbacks")}</CardFrameTitle>
+        </CardFrameHeader>
+        <Table variant="card">
+          <TableHeader>
+            <TableRow>
+              <TableHead>{t("board.due")}</TableHead>
+              <TableHead>{t("ops.contact")}</TableHead>
+              <TableHead>{t("board.bookedBy")}</TableHead>
+              <TableHead>{t("board.for")}</TableHead>
+              <TableHead>{t("board.note")}</TableHead>
+              <TableHead className="w-10">
+                <span className="sr-only">{t("common.cancel")}</span>
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -262,7 +397,7 @@ export function OperationsBoard(): React.ReactElement {
             {data.callbacks.length === 0 && (
               <TableRow>
                 <TableCell className="text-muted-foreground" colSpan={6}>
-                  No callback scheduled.
+                  {t("board.noCallbacks")}
                 </TableCell>
               </TableRow>
             )}
@@ -271,21 +406,21 @@ export function OperationsBoard(): React.ReactElement {
               return (
                 <TableRow key={cb.id}>
                   <TableCell className="whitespace-nowrap">
-                    <Badge variant={due ? "warning" : "secondary"}>{due ? "Due" : fmtRelative(cb.due_at)}</Badge>
+                    <Badge variant={due ? "warning" : "secondary"}>{due ? t("board.due") : fmtRelative(cb.due_at)}</Badge>
                     <span className="ms-2 text-muted-foreground text-xs">{fmtDateTime(cb.due_at)}</span>
                   </TableCell>
                   <TableCell className="whitespace-normal">
                     <Bidi as="span" text={contactName(cb)} />
                   </TableCell>
                   <TableCell>{cb.scheduled_by_name ?? "–"}</TableCell>
-                  <TableCell>{cb.assign_to_name ?? "Anyone"}</TableCell>
+                  <TableCell>{cb.assign_to_name ?? t("board.anyone")}</TableCell>
                   <TableCell className="max-w-64 whitespace-normal text-muted-foreground">
                     {cb.callback_note && <Bidi as="span" text={cb.callback_note} />}
                   </TableCell>
                   <TableCell>
                     <Button
-                      aria-label="Cancel callback"
-                      onClick={() => run(`/api/operations/callbacks/${cb.id}`, "DELETE", "Callback cancelled")}
+                      aria-label={t("board.cancelCallback")}
+                      onClick={() => run(`/api/operations/callbacks/${cb.id}`, "DELETE", t("board.callbackCancelled"))}
                       size="icon-sm"
                       variant="ghost"
                     >
@@ -301,25 +436,25 @@ export function OperationsBoard(): React.ReactElement {
 
       <CardFrame>
         <CardFrameHeader>
-          <CardFrameTitle>Latest results</CardFrameTitle>
+          <CardFrameTitle>{t("board.latestResults")}</CardFrameTitle>
         </CardFrameHeader>
         <Table variant="card">
           <TableHeader>
             <TableRow>
-              <TableHead>Closed</TableHead>
-              <TableHead>Agent</TableHead>
-              <TableHead>Contact</TableHead>
-              <TableHead>Outcome</TableHead>
-              <TableHead>Stage</TableHead>
-              <TableHead className="min-w-56">Note</TableHead>
-              <TableHead>CRM</TableHead>
+              <TableHead>{t("insights.closed")}</TableHead>
+              <TableHead>{t("shell.agent")}</TableHead>
+              <TableHead>{t("ops.contact")}</TableHead>
+              <TableHead>{t("insights.outcome")}</TableHead>
+              <TableHead>{t("board.stage")}</TableHead>
+              <TableHead className="min-w-56">{t("board.note")}</TableHead>
+              <TableHead>{t("nav.group.crm")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {data.recent.length === 0 && (
               <TableRow>
                 <TableCell className="text-muted-foreground" colSpan={7}>
-                  No call closed from the desk yet.
+                  {t("board.noResults")}
                 </TableCell>
               </TableRow>
             )}
@@ -347,7 +482,7 @@ export function OperationsBoard(): React.ReactElement {
                       {stages[r.stage_after] ?? humanize(r.stage_after)}
                     </Badge>
                   ) : (
-                    <span className="text-muted-foreground text-xs">Unchanged</span>
+                    <span className="text-muted-foreground text-xs">{t("board.unchanged")}</span>
                   )}
                 </TableCell>
                 <TableCell className="whitespace-normal text-sm">
@@ -355,25 +490,25 @@ export function OperationsBoard(): React.ReactElement {
                 </TableCell>
                 <TableCell>
                   {r.test ? (
-                    <Badge variant="outline">Test, not sent</Badge>
+                    <Badge variant="outline">{t("board.testNotSent")}</Badge>
                   ) : r.crm_error ? (
                     <Tooltip>
                       <TooltipTrigger
                         render={
                           <Button
-                            onClick={() => run(`/api/operations/${r.id}/sync`, "POST", "Sent to the CRM again")}
+                            onClick={() => run(`/api/operations/${r.id}/sync`, "POST", t("board.resent"))}
                             size="xs"
                             variant="destructive-outline"
                           />
                         }
                       >
                         <RefreshCwIcon aria-hidden="true" />
-                        Retry
+                        {t("common.retry")}
                       </TooltipTrigger>
                       <TooltipPopup className="max-w-sm">{r.crm_error}</TooltipPopup>
                     </Tooltip>
                   ) : (
-                    <Badge variant="success">Saved</Badge>
+                    <Badge variant="success">{t("board.saved")}</Badge>
                   )}
                 </TableCell>
               </TableRow>

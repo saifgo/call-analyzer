@@ -15,9 +15,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, useApi } from "@/lib/api";
 import { Bidi } from "@/lib/bidi";
-import { fmtDate, fmtDateTime, fmtRelative, numberFmt } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtRelative } from "@/lib/format";
 import { href, navigate, type Route } from "@/lib/router";
 import type { CrmLead, CrmLeads } from "@/lib/types";
+import { t } from "@/lib/i18n";
 
 /** Digits only, for matching a search against phone numbers however they are written. */
 const digits = (text: string) => text.replace(/\D/g, "");
@@ -26,7 +27,7 @@ function CopyNumber({ number }: { number: string }) {
   const [copied, setCopied] = React.useState(false);
   return (
     <Button
-      aria-label={`Copy ${number}`}
+      aria-label={t("leads.copyNumber", { number })}
       onClick={async () => {
         await navigator.clipboard.writeText(number.replace(/\s/g, ""));
         setCopied(true);
@@ -42,13 +43,11 @@ function CopyNumber({ number }: { number: string }) {
 
 function OurCalls({ lead }: { lead: CrmLead }) {
   const { count, match, last_date } = lead.calls;
-  if (!count) return <Badge variant="info">Not called yet</Badge>;
+  if (!count) return <Badge variant="info">{t("leads.notCalledYet")}</Badge>;
   return (
     <a className="flex flex-col hover:underline" href={href("calls", null, { q: match ?? "" })}>
-      <Badge variant="secondary">
-        {count} {count === 1 ? "call" : "calls"}
-      </Badge>
-      {last_date && <span className="text-muted-foreground text-xs">last {fmtDate(last_date)}</span>}
+      <Badge variant="secondary">{t("desk.nCalls", { count })}</Badge>
+      {last_date && <span className="text-muted-foreground text-xs">{t("leads.lastCall", { date: fmtDate(last_date) })}</span>}
     </a>
   );
 }
@@ -65,8 +64,8 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
   React.useEffect(() => setSearch(q), [q]);
   React.useEffect(() => {
     if (search === q) return;
-    const t = window.setTimeout(() => setQuery({ q: search }), 250);
-    return () => window.clearTimeout(t);
+    const timer = window.setTimeout(() => setQuery({ q: search }), 250);
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
@@ -83,7 +82,7 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
 
   const leads = data?.leads ?? [];
   const owners = [...new Set(leads.map((l) => l.owner).filter((o): o is string => !!o))].sort();
-  const ownerItems = [{ label: "All owners", value: "all" }, ...owners.map((o) => ({ label: o, value: o }))];
+  const ownerItems = [{ label: t("leads.allOwners"), value: "all" }, ...owners.map((o) => ({ label: o, value: o }))];
   const needle = q.trim().toLowerCase();
   const needleDigits = digits(q);
   const shown = leads.filter((l) => {
@@ -105,16 +104,16 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
         actions={
           <Button disabled={refreshing || loading} onClick={refresh} variant="outline">
             <RefreshCwIcon aria-hidden="true" className={refreshing ? "animate-spin" : undefined} />
-            Refresh
+            {t("common.refresh")}
           </Button>
         }
-        description="Opportunities at the New stage in the CRM, newest first, with the number of their point of contact."
-        title="Leads to call"
+        description={t("leads.description")}
+        title={t("nav.leads")}
       />
 
       {error && (
         <Alert variant="error">
-          <AlertTitle>Couldn't load the leads</AlertTitle>
+          <AlertTitle>{t("leads.loadFailed")}</AlertTitle>
           <AlertDescription>{error.message}</AlertDescription>
         </Alert>
       )}
@@ -125,12 +124,12 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
             <EmptyMedia variant="icon">
               <PhoneOutgoingIcon />
             </EmptyMedia>
-            <EmptyTitle>The CRM isn't connected</EmptyTitle>
-            <EmptyDescription>Add your Twenty API key (CRM_API_KEY) in Settings to list the leads.</EmptyDescription>
+            <EmptyTitle>{t("leads.crmNotConnected")}</EmptyTitle>
+            <EmptyDescription>{t("leads.crmNotConnectedHint")}</EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
             <Button render={<a href={href("settings")} />} variant="outline">
-              Open Settings
+              {t("common.openSettings")}
             </Button>
           </EmptyContent>
         </Empty>
@@ -139,9 +138,9 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
           <div className="flex flex-wrap items-center gap-2">
             <InputGroup className="w-full sm:w-72">
               <InputGroupInput
-                aria-label="Search leads"
+                aria-label={t("leads.search")}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search name, number or city"
+                placeholder={t("leads.searchPlaceholder")}
                 type="search"
                 value={search}
               />
@@ -155,7 +154,7 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
                 onValueChange={(v) => setQuery({ owner: v === "all" ? "" : (v as string) })}
                 value={owner || "all"}
               >
-                <SelectTrigger aria-label="Owner" className="w-auto">
+                <SelectTrigger aria-label={t("leads.owner")} className="w-auto">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectPopup>
@@ -169,12 +168,12 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
             )}
             <Label className="flex items-center gap-2 px-1 font-normal text-sm">
               <Switch checked={uncalled} onCheckedChange={(on) => setQuery({ uncalled: on ? "1" : "" })} />
-              Not called yet
+              {t("leads.notCalledYet")}
             </Label>
             {hasFilters && (
               <Button onClick={() => navigate(href("leads"), { replace: true })} variant="ghost">
                 <XIcon aria-hidden="true" />
-                Reset
+                {t("common.reset")}
               </Button>
             )}
           </div>
@@ -183,20 +182,20 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
             <CardFrameHeader className="flex min-h-14 flex-row items-center py-3">
               <div className="text-muted-foreground text-sm">
                 {data
-                  ? `${numberFmt.format(shown.length)} of ${numberFmt.format(leads.length)} new ${leads.length === 1 ? "lead" : "leads"} · ${numberFmt.format(notCalled)} not called yet`
-                  : "Loading leads from the CRM…"}
+                  ? `${t("leads.countOf", { count: leads.length, shown: shown.length })} · ${t("leads.notCalledCount", { count: notCalled })}`
+                  : t("leads.loading")}
               </div>
             </CardFrameHeader>
             <Table variant="card">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="min-w-56">Lead</TableHead>
-                  <TableHead>Number</TableHead>
-                  <TableHead>Owner</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead>Our calls</TableHead>
+                  <TableHead className="min-w-56">{t("leads.lead")}</TableHead>
+                  <TableHead>{t("phone.number")}</TableHead>
+                  <TableHead>{t("leads.owner")}</TableHead>
+                  <TableHead>{t("leads.created")}</TableHead>
+                  <TableHead>{t("leads.ourCalls")}</TableHead>
                   <TableHead className="w-10">
-                    <span className="sr-only">Open in CRM</span>
+                    <span className="sr-only">{t("leads.openInCrm")}</span>
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -212,7 +211,7 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
                   : shown.map((lead) => (
                       <TableRow className="align-top" key={lead.id}>
                         <TableCell className="whitespace-normal">
-                          <Bidi className="font-medium" text={lead.contact?.name ?? "No point of contact"} />
+                          <Bidi className="font-medium" text={lead.contact?.name ?? t("leads.noContact")} />
                           <Bidi className="text-muted-foreground text-xs" text={lead.name} />
                           {lead.contact?.city && <div className="text-muted-foreground text-xs">{lead.contact.city}</div>}
                         </TableCell>
@@ -233,7 +232,7 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
                               ))}
                             </div>
                           ) : (
-                            <span className="text-muted-foreground">No number</span>
+                            <span className="text-muted-foreground">{t("leads.noNumber")}</span>
                           )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap">{lead.owner ?? "–"}</TableCell>
@@ -252,7 +251,7 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
                         </TableCell>
                         <TableCell>
                           <Button
-                            aria-label="Open in CRM"
+                            aria-label={t("leads.openInCrm")}
                             render={<a href={lead.url} rel="noreferrer" target="_blank" />}
                             size="icon-sm"
                             variant="ghost"
@@ -270,11 +269,11 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
                           <EmptyMedia variant="icon">
                             <PhoneOutgoingIcon />
                           </EmptyMedia>
-                          <EmptyTitle>{hasFilters ? "No lead matches" : "No new leads"}</EmptyTitle>
+                          <EmptyTitle>{hasFilters ? t("leads.noMatch") : t("leads.noNew")}</EmptyTitle>
                           <EmptyDescription>
                             {hasFilters
-                              ? "Try a different search or filter."
-                              : "Every opportunity in the CRM has moved past the New stage."}
+                              ? t("common.tryDifferentFilter")
+                              : t("leads.allMovedOn")}
                           </EmptyDescription>
                         </EmptyHeader>
                       </Empty>
@@ -286,7 +285,7 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
             {data?.truncated && (
               <CardFrameFooter className="py-3">
                 <p className="text-muted-foreground text-sm">
-                  Showing the newest {numberFmt.format(leads.length)} new leads; the CRM has more.
+                  {t("leads.truncated", { count: leads.length })}
                 </p>
               </CardFrameFooter>
             )}

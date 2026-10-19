@@ -4,6 +4,7 @@ import { toastManager } from "@/components/ui/toast";
 import { api } from "@/lib/api";
 import { useGoVoice } from "@/lib/govoice";
 import type { JobArgs, JobState } from "@/lib/types";
+import { labels, t } from "@/lib/i18n";
 
 type JobContextValue = {
   state: JobState | null;
@@ -37,18 +38,18 @@ export function useOnJobFinished(fn: () => void): void {
   }, [finishedCount]);
 }
 
-export const STEP_LABELS: Record<string, string> = {
-  check: "Setup check",
-  sync: "Sync",
-  download: "Download",
-  transcribe: "Transcribe",
-  voice: "Voice",
-  analyze: "Analyze",
-  report: "Report",
-  run: "Run",
-  "install-model": "Install Whisper model",
-  "install-voice-model": "Install voice model",
-};
+export const STEP_LABELS: Record<string, string> = labels({
+  check: "jobs.step.check",
+  sync: "jobs.step.sync",
+  download: "jobs.step.download",
+  transcribe: "jobs.step.transcribe",
+  voice: "jobs.step.voice",
+  analyze: "jobs.step.analyze",
+  report: "jobs.step.report",
+  run: "jobs.step.run",
+  "install-model": "jobs.step.installModel",
+  "install-voice-model": "jobs.step.installVoiceModel",
+});
 
 /** Steps that talk to GoVoice and need a valid GoVoice session. */
 const GOVOICE_STEPS = new Set(["sync", "download", "run"]);
@@ -105,7 +106,7 @@ export function JobProvider({
         if (next.exit_code === EXIT_GOVOICE_LOGIN) {
           const job = lastJob.current?.label === next.label ? lastJob.current : null;
           govoiceRef.current.promptLogin(
-            "The GoVoice session expired during the job",
+            t("jobs.govoiceExpired"),
             job ? () => startRef.current(job.commands, job.args) : undefined,
           );
           timer.current = window.setTimeout(poll, 4000);
@@ -118,7 +119,7 @@ export function JobProvider({
           return;
         }
         toastManager.add({
-          title: ok ? "Job finished" : next.exit_code === -1 ? "Job stopped" : "Job failed",
+          title: ok ? t("jobs.finished") : next.exit_code === -1 ? t("jobs.stopped") : t("jobs.failed"),
           description: next.label,
           type: ok ? "success" : next.exit_code === -1 ? "warning" : "error",
         });
@@ -145,14 +146,14 @@ export function JobProvider({
         const res = await api<{ label?: string }>("/api/jobs", { method: "POST", body: { commands, args } });
         lastJob.current = { args, commands, label: res?.label ?? "" };
         toastManager.add({
-          title: "Job started",
+          title: t("jobs.started"),
           description: commands.map((c) => STEP_LABELS[c] ?? c).join(" → "),
           type: "info",
         });
         poll();
         return true;
       } catch (err) {
-        toastManager.add({ title: "Couldn't start the job", description: (err as Error).message, type: "error" });
+        toastManager.add({ title: t("jobs.couldntStart"), description: (err as Error).message, type: "error" });
         return false;
       }
     },
@@ -164,7 +165,7 @@ export function JobProvider({
 
   const stop = React.useCallback(async () => {
     await api("/api/jobs/stop", { method: "POST" });
-    toastManager.add({ title: "Stopping job…", type: "warning" });
+    toastManager.add({ title: t("jobs.stopping"), type: "warning" });
     poll();
   }, [poll]);
 

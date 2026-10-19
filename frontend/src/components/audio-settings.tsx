@@ -12,11 +12,12 @@ import { toastManager } from "@/components/ui/toast";
 import { CallAudio, GATE_RANGE, type MicLevel, type NoiseMode } from "@/lib/call-audio";
 import { useSoftphone } from "@/lib/softphone";
 import { cn } from "@/lib/utils";
+import { type TKey, useT } from "@/lib/i18n";
 
-const NOISE: { value: NoiseMode; label: string; hint: string }[] = [
-  { hint: "Only the browser's own noise reduction.", label: "Off", value: "off" },
-  { hint: "Removes keyboards, fans, street noise and most chatter. Light on the PC.", label: "Standard", value: "standard" },
-  { hint: "Cleaner voice, removes more background voices. Uses more of the PC.", label: "Strong", value: "strong" },
+const NOISE: { value: NoiseMode; label: TKey; hint: TKey }[] = [
+  { hint: "audio.noise.offHint", label: "audio.noise.off", value: "off" },
+  { hint: "audio.noise.standardHint", label: "audio.noise.standard", value: "standard" },
+  { hint: "audio.noise.strongHint", label: "audio.noise.strong", value: "strong" },
 ];
 
 const METER_FLOOR = -70; // dB at the meter's left edge
@@ -34,6 +35,7 @@ function useLevel(audio: CallAudio | null): MicLevel | null {
 /** The voice level after noise reduction, the gate threshold, and whether the gate lets the voice through. */
 function LevelMeter({ audio, threshold, gate }: { audio: CallAudio; threshold: number; gate: boolean }) {
   const level = useLevel(audio);
+  const { t } = useT();
   const open = level?.open ?? false;
   return (
     <div className="flex flex-col gap-1">
@@ -46,17 +48,17 @@ function LevelMeter({ audio, threshold, gate }: { audio: CallAudio; threshold: n
           style={{ width: `${level ? meterPercent(level.level) : 0}%` }}
         />
         {gate && (
-          <div className="absolute inset-y-0 w-0.5 bg-foreground" style={{ left: `${meterPercent(threshold)}%` }} />
+          <div className="absolute inset-y-0 w-0.5 bg-foreground" style={{ insetInlineStart: `${meterPercent(threshold)}%` }} />
         )}
       </div>
       <p aria-live="off" className="text-muted-foreground text-xs">
         {!audio.processing
-          ? "This browser can't clean the microphone: it's sent as is."
+          ? t("audio.noProcessing")
           : !gate
-            ? "Your microphone level"
+            ? t("audio.micLevel")
             : open
-              ? "Your voice goes through"
-              : "Line lowered: speak to open it"}
+              ? t("audio.voiceThrough")
+              : t("audio.lineLowered")}
       </p>
     </div>
   );
@@ -68,6 +70,7 @@ function MicTest() {
   const [test, setTest] = React.useState<CallAudio | null>(null);
   const [starting, setStarting] = React.useState(false);
   const [monitor, setMonitor] = React.useState(false);
+  const { t } = useT();
   const testRef = React.useRef<CallAudio | null>(null);
 
   React.useEffect(() => () => testRef.current?.close(), []);
@@ -88,7 +91,7 @@ function MicTest() {
       testRef.current = audio;
       setTest(audio);
     } catch (err) {
-      toastManager.add({ description: String(err), title: "The microphone didn't start", type: "error" });
+      toastManager.add({ description: String(err), title: t("audio.micDidntStart"), type: "error" });
     } finally {
       setStarting(false);
     }
@@ -98,7 +101,7 @@ function MicTest() {
     return (
       <Button disabled={starting} onClick={start} size="sm" variant="outline">
         <MicIcon aria-hidden="true" />
-        Test my microphone
+        {t("audio.testMic")}
       </Button>
     );
   return (
@@ -106,7 +109,7 @@ function MicTest() {
       <LevelMeter audio={test} key="test" gate={sp.audio.gate} threshold={sp.audio.gateDb} />
       <div className="flex items-center gap-2">
         <Toggle
-          aria-label="Hear yourself"
+          aria-label={t("audio.hearMyself")}
           onPressedChange={(on) => {
             test.setMonitor(on);
             setMonitor(on);
@@ -116,13 +119,13 @@ function MicTest() {
           variant="outline"
         >
           <HeadphonesIcon aria-hidden="true" />
-          Hear myself
+          {t("audio.hearMyself")}
         </Toggle>
         <Button className="ms-auto" onClick={stop} size="sm" variant="ghost">
-          Stop test
+          {t("audio.stopTest")}
         </Button>
       </div>
-      {monitor && <p className="text-muted-foreground text-xs">Use headphones, or the speakers feed back into the microphone.</p>}
+      {monitor && <p className="text-muted-foreground text-xs">{t("audio.useHeadphones")}</p>}
     </div>
   );
 }
@@ -131,13 +134,14 @@ export function AudioSettings({ className }: { className?: string }) {
   const sp = useSoftphone();
   const { audio, setAudio } = sp;
   const id = React.useId();
+  const { t } = useT();
   const noise = NOISE.find((n) => n.value === audio.noise) ?? NOISE[1];
   return (
     <div className={cn("flex flex-col gap-4 text-sm", className)}>
       <div className="flex flex-col gap-2">
-        <span className="font-medium">Noise reduction</span>
+        <span className="font-medium">{t("audio.noiseReduction")}</span>
         <ToggleGroup
-          aria-label="Noise reduction"
+          aria-label={t("audio.noiseReduction")}
           className="w-full"
           onValueChange={(v) => {
             if (v[0]) setAudio({ noise: v[0] as NoiseMode });
@@ -148,31 +152,31 @@ export function AudioSettings({ className }: { className?: string }) {
         >
           {NOISE.map((n) => (
             <ToggleGroupItem className="flex-1" key={n.value} value={n.value}>
-              {n.label}
+              {t(n.label)}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
-        <p className="text-muted-foreground text-xs">{noise.hint}</p>
+        <p className="text-muted-foreground text-xs">{t(noise.hint)}</p>
       </div>
 
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <Label className="flex-1" htmlFor={`${id}-gate`}>
-            Cut background voices
+            {t("audio.cutVoices")}
           </Label>
           <Switch checked={audio.gate} id={`${id}-gate`} onCheckedChange={(on) => setAudio({ gate: on })} />
         </div>
         <p className="text-muted-foreground text-xs">
-          Lowers your line while you're not speaking, so colleagues near you aren't heard between your sentences.
+          {t("audio.cutVoicesHint")}
         </p>
         {audio.gate && (
           <div className="flex flex-col gap-1.5">
             <div className="flex justify-between text-muted-foreground text-xs">
-              <span>More sensitive</span>
-              <span>Stricter</span>
+              <span>{t("audio.moreSensitive")}</span>
+              <span>{t("audio.stricter")}</span>
             </div>
             <Slider
-              aria-label="Voice gate threshold"
+              aria-label={t("audio.gateThreshold")}
               max={GATE_RANGE.max}
               min={GATE_RANGE.min}
               onValueChange={(v) => setAudio({ gateDb: Array.isArray(v) ? v[0] : v })}
@@ -180,7 +184,7 @@ export function AudioSettings({ className }: { className?: string }) {
               value={audio.gateDb}
             />
             <p className="text-muted-foreground text-xs">
-              Speak normally: the bar should turn green on your voice and stay grey when only the room is heard.
+              {t("audio.gateHint")}
             </p>
           </div>
         )}
@@ -195,7 +199,7 @@ export function AudioSettings({ className }: { className?: string }) {
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-2">
           <Label className="flex-1" htmlFor={`${id}-incoming`}>
-            Clean the customer's audio
+            {t("audio.cleanIncoming")}
           </Label>
           <Switch
             checked={audio.cleanIncoming}
@@ -204,7 +208,7 @@ export function AudioSettings({ className }: { className?: string }) {
           />
         </div>
         <p className="text-muted-foreground text-xs">
-          Removes noise around the customer (street, car). Best with a headset.
+          {t("audio.cleanIncomingHint")}
         </p>
       </div>
     </div>

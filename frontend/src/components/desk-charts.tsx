@@ -5,14 +5,15 @@ import { DateRangeFilter } from "@/components/date-range-filter";
 import { Card, CardDescription, CardPanel } from "@/components/ui/card";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
-import { isoDay, numberFmt, parseDate } from "@/lib/format";
+import { dateTimeFormat, isoDay, numberFmt, parseDate } from "@/lib/format";
+import { t } from "@/lib/i18n";
 import { href, navigate, type Route } from "@/lib/router";
 import type { OpConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const DAY = 86_400_000;
-const dayFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-const weekdayFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", weekday: "short" });
+const dayFmt = dateTimeFormat({ day: "numeric", month: "short" });
+const weekdayFmt = dateTimeFormat({ day: "numeric", month: "short", weekday: "short" });
 
 export function pct(value: number | null | undefined): string {
   return value === null || value === undefined ? "–" : `${Math.round(value * 100)}%`;
@@ -27,8 +28,8 @@ export function fmtHours(seconds: number | null | undefined): string {
   if (!seconds) return "–";
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
-  return m ? `${m}m` : `${Math.round(seconds)}s`;
+  if (h) return t("time.hm", { h, m: String(m).padStart(2, "0") });
+  return m ? t("time.m", { m }) : t("time.s", { s: Math.round(seconds) });
 }
 
 /** The page's date range and campaign, from the URL: the last 7 days and every campaign by default. */
@@ -48,8 +49,8 @@ export function useFilters(route: Route) {
 
 export function FilterBar({ config, filters }: { config: OpConfig | undefined; filters: ReturnType<typeof useFilters> }) {
   const items = [
-    { label: "All campaigns", value: "" },
-    ...(config?.campaigns ?? []).map((c) => ({ label: c.active ? c.name : `${c.name} (archived)`, value: String(c.id) })),
+    { label: t("desk.allCampaigns"), value: "" },
+    ...(config?.campaigns ?? []).map((c) => ({ label: c.active ? c.name : t("desk.archivedName", { name: c.name }), value: String(c.id) })),
   ];
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -86,9 +87,9 @@ export function Stat({ label, value, hint }: { label: string; value: React.React
 
 // Nested counts (wins are reached contacts, which are calls) drawn as one hue, light to dark, on a shared baseline.
 const SERIES = [
-  { className: "bg-chart-1/25", key: "calls", label: "Calls" },
-  { className: "bg-chart-1/60", key: "reached", label: "Reached" },
-  { className: "bg-chart-1", key: "success", label: "Wins" },
+  { className: "bg-chart-1/25", key: "calls", label: "ops.metric.calls" },
+  { className: "bg-chart-1/60", key: "reached", label: "ops.metric.reached" },
+  { className: "bg-chart-1", key: "success", label: "ops.metric.wins" },
 ] as const;
 
 export function DailyBars({ days }: { days: { day: string; calls: number; reached: number; success: number }[] }) {
@@ -100,7 +101,7 @@ export function DailyBars({ days }: { days: { day: string; calls: number; reache
         {SERIES.map((s) => (
           <span className="flex items-center gap-1.5" key={s.key}>
             <span aria-hidden="true" className={cn("size-2.5 rounded-sm", s.className)} />
-            {s.label}
+            {t(s.label)}
           </span>
         ))}
       </figcaption>
@@ -108,7 +109,7 @@ export function DailyBars({ days }: { days: { day: string; calls: number; reache
         {days.map((d) => (
           <Tooltip key={d.day}>
             <TooltipTrigger
-              render={<div aria-label={`${d.day}: ${d.calls} calls, ${d.reached} reached, ${d.success} wins`} className="relative h-full min-w-1 flex-1" role="img" />}
+              render={<div aria-label={t("desk.dayAria", { calls: d.calls, day: d.day, reached: d.reached, wins: d.success })} className="relative h-full min-w-1 flex-1" role="img" />}
             >
               {SERIES.map((s) => (
                 <span
@@ -120,10 +121,10 @@ export function DailyBars({ days }: { days: { day: string; calls: number; reache
             </TooltipTrigger>
             <TooltipPopup>
               <div className="flex flex-col gap-0.5 text-xs">
-                <span className="font-medium">{weekdayFmt.format(parseDate(d.day) ?? new Date())}</span>
+                <span className="font-medium">{weekdayFmt().format(parseDate(d.day) ?? new Date())}</span>
                 {SERIES.map((s) => (
                   <span className="flex justify-between gap-4" key={s.key}>
-                    {s.label}
+                    {t(s.label)}
                     <span className="tabular-nums">{numberFmt.format(d[s.key])}</span>
                   </span>
                 ))}
@@ -135,7 +136,7 @@ export function DailyBars({ days }: { days: { day: string; calls: number; reache
       <div className="flex gap-0.5 text-muted-foreground text-xs">
         {days.map((d, i) => (
           <span className="min-w-1 flex-1 truncate text-center" key={d.day}>
-            {i % every === 0 ? dayFmt.format(parseDate(d.day) ?? new Date()) : ""}
+            {i % every === 0 ? dayFmt().format(parseDate(d.day) ?? new Date()) : ""}
           </span>
         ))}
       </div>
@@ -162,7 +163,7 @@ export function RateBars({ bars }: { bars: { label: string; rate: number | null;
         {bars.map((b) => (
           <span className="flex flex-1 flex-col items-center" key={b.label}>
             <span className="font-medium text-foreground">{b.label}</span>
-            <span>{b.n ? `${numberFmt.format(b.n)} calls` : "no calls"}</span>
+            <span>{b.n ? t("desk.nCalls", { count: b.n }) : t("desk.noCalls")}</span>
           </span>
         ))}
       </div>
@@ -177,13 +178,13 @@ export function GapBar({ gap, range = 5 }: { gap: number | null; range?: number 
   return (
     <span className="flex items-center gap-2">
       <span aria-hidden="true" className="relative h-2 w-24 rounded-full bg-muted">
-        <span className="absolute inset-y-0 left-1/2 w-px bg-border" />
+        <span className="absolute inset-y-0 start-1/2 w-px bg-border" />
         <span
           className={cn("absolute inset-y-0 rounded-full", gap >= 0 ? "bg-chart-2" : "bg-muted-foreground/50")}
-          style={gap >= 0 ? { left: "50%", width: `${width}%` } : { right: "50%", width: `${width}%` }}
+          style={gap >= 0 ? { insetInlineStart: "50%", width: `${width}%` } : { insetInlineEnd: "50%", width: `${width}%` }}
         />
       </span>
-      <span className="tabular-nums">{gap > 0 ? `+${gap.toFixed(1)}` : gap.toFixed(1)}</span>
+      <span className="tabular-nums" dir="ltr">{gap > 0 ? `+${gap.toFixed(1)}` : gap.toFixed(1)}</span>
     </span>
   );
 }

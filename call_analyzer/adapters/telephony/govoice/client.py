@@ -10,16 +10,11 @@ from dotenv import dotenv_values
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .config import ENV_PATH, settings
+from ....config import ENV_PATH, settings
+from ..base import SessionExpired
 
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
-# Exit code of CLI commands when GoVoice rejects the session, so the UI can offer to log in again.
-EXIT_AUTH = 3
-
-
-class SessionExpired(RuntimeError):
-    pass
 
 
 # --- Cookie storage ---------------------------------------------------------------------------

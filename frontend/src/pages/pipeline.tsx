@@ -34,18 +34,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { toastManager } from "@/components/ui/toast";
 import { useApi } from "@/lib/api";
 import { fmtDateTime, fmtRelative } from "@/lib/format";
-import { useJob } from "@/lib/jobs";
+import { t, type TKey } from "@/lib/i18n";
+import { STEP_LABELS, useJob } from "@/lib/jobs";
 import { href } from "@/lib/router";
 import { liveAgents, RUNS_ON_LABELS, STEP_NAMES, useWorkers, WORKER_STEPS } from "@/lib/workers";
 import type { Stats } from "@/lib/types";
 
-const STEPS = [
-  { description: "Fetch the list of recordings from GoVoice", key: "sync", label: "Sync" },
-  { description: "Download the mp3 files", key: "download", label: "Download" },
-  { description: "Listen to the recordings: voice tone from an emotion model", key: "voice", label: "Voice" },
-  { description: "Speech-to-text (local Whisper by default)", key: "transcribe", label: "Transcribe" },
-  { description: "Per-call feedback from Claude or Cursor", key: "analyze", label: "Analyze" },
-  { description: "Coaching reports for the team and each agent", key: "report", label: "Report" },
+const STEPS: { description: TKey; key: string }[] = [
+  { description: "pipeline.step.sync", key: "sync" },
+  { description: "pipeline.step.download", key: "download" },
+  { description: "pipeline.step.voice", key: "voice" },
+  { description: "pipeline.step.transcribe", key: "transcribe" },
+  { description: "pipeline.step.analyze", key: "analyze" },
+  { description: "pipeline.step.report", key: "report" },
 ];
 
 type Form = {
@@ -113,18 +114,18 @@ function ProcessingNotice() {
     <Alert variant={online ? "info" : "warning"}>
       <MonitorSmartphoneIcon aria-hidden="true" />
       <AlertTitle>
-        {steps.map((s) => `${STEP_NAMES[s]}: ${RUNS_ON_LABELS[state.runs_on[s]].toLowerCase()}`).join(" · ")}
+        {steps.map((s) => `${STEP_NAMES[s]}: ${RUNS_ON_LABELS[state.runs_on[s]].toLocaleLowerCase()}`).join(" · ")}
       </AlertTitle>
       <AlertDescription>
         {online
-          ? `${online} ${online === 1 ? "agent is" : "agents are"} online. The job waits for them and shows their progress in the log.`
+          ? t("pipeline.agentsOnline", { count: online })
           : steps.some((s) => state.runs_on[s] === "agent")
-            ? "No agent is online: the calls are queued and processed when one connects."
-            : "No agent is online, so this server does the work."}
+            ? t("pipeline.noAgentQueued")
+            : t("pipeline.noAgentHost")}
       </AlertDescription>
       <AlertAction>
         <Button render={<a href={href("agents")} />} size="sm" variant="outline">
-          Agents
+          {t("board.agents")}
         </Button>
       </AlertAction>
     </Alert>
@@ -132,9 +133,9 @@ function ProcessingNotice() {
 }
 
 function JobResultBadge({ code }: { code: number }) {
-  if (code === 0) return <Badge variant="success">Succeeded</Badge>;
-  if (code === -1) return <Badge variant="warning">Stopped</Badge>;
-  return <Badge variant="error">Failed</Badge>;
+  if (code === 0) return <Badge variant="success">{t("shell.job.succeeded")}</Badge>;
+  if (code === -1) return <Badge variant="warning">{t("shell.job.stopped")}</Badge>;
+  return <Badge variant="error">{t("shell.job.failed")}</Badge>;
 }
 
 export function PipelinePage(): React.ReactElement {
@@ -149,12 +150,15 @@ export function PipelinePage(): React.ReactElement {
 
   const state = job.state;
   const running = !!state?.running;
-  const agents = [{ label: "All agents", value: "all" }, ...(stats?.agents ?? []).map((a) => ({ label: `Agent ${a.agent}`, value: a.agent }))];
+  const agents = [
+    { label: t("pipeline.allAgents"), value: "all" },
+    ...(stats?.agents ?? []).map((a) => ({ label: t("shell.agentExt", { ext: a.agent }), value: a.agent })),
+  ];
 
   const start = () => {
     const steps = STEPS.map((s) => s.key).filter((k) => form.steps.includes(k));
     if (!steps.length) {
-      toastManager.add({ title: "Pick at least one step", type: "warning" });
+      toastManager.add({ title: t("pipeline.pickStep"), type: "warning" });
       return;
     }
     const { steps: _, ...args } = form;
@@ -167,19 +171,19 @@ export function PipelinePage(): React.ReactElement {
         actions={
           <Button disabled={running} onClick={() => job.start(["check"])} variant="outline">
             <StethoscopeIcon aria-hidden="true" />
-            Check setup
+            {t("pipeline.checkSetup")}
           </Button>
         }
-        description="Run any part of the pipeline with filters. One job runs at a time."
-        title="Pipeline"
+        description={t("pipeline.description")}
+        title={t("nav.pipeline")}
       />
 
       <ProcessingNotice />
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Steps</CardTitle>
-          <CardDescription>Each step only processes calls that still need it, unless “Redo” is on.</CardDescription>
+          <CardTitle className="text-base">{t("pipeline.steps")}</CardTitle>
+          <CardDescription>{t("pipeline.stepsHint")}</CardDescription>
         </CardHeader>
         <CardPanel className="flex flex-col gap-6">
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
@@ -196,9 +200,9 @@ export function PipelinePage(): React.ReactElement {
                 />
                 <div className="flex flex-col gap-1">
                   <p>
-                    <span className="text-muted-foreground tabular-nums">{i + 1}.</span> {step.label}
+                    <span className="text-muted-foreground tabular-nums">{i + 1}.</span> {STEP_LABELS[step.key]}
                   </p>
-                  <p className="font-normal text-muted-foreground text-xs">{step.description}</p>
+                  <p className="font-normal text-muted-foreground text-xs">{t(step.description)}</p>
                 </div>
               </Label>
             ))}
@@ -206,15 +210,15 @@ export function PipelinePage(): React.ReactElement {
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Field>
-              <FieldLabel>From date</FieldLabel>
+              <FieldLabel>{t("pipeline.fromDate")}</FieldLabel>
               <Input onChange={(e) => setForm({ since: e.target.value })} type="date" value={form.since} />
             </Field>
             <Field>
-              <FieldLabel>Until date</FieldLabel>
+              <FieldLabel>{t("pipeline.untilDate")}</FieldLabel>
               <Input onChange={(e) => setForm({ until: e.target.value })} type="date" value={form.until} />
             </Field>
             <Field>
-              <FieldLabel>Agent</FieldLabel>
+              <FieldLabel>{t("shell.agent")}</FieldLabel>
               <Select
                 items={agents}
                 onValueChange={(v) => setForm({ agent: v === "all" ? "" : (v as string) })}
@@ -233,20 +237,20 @@ export function PipelinePage(): React.ReactElement {
               </Select>
             </Field>
             <NumberInput
-              label="Minimum length (seconds)"
+              label={t("pipeline.minLength")}
               min={0}
               onChange={(v) => setForm({ min_duration: v })}
               value={form.min_duration}
             />
             <NumberInput
-              label="Max calls"
+              label={t("pipeline.maxCalls")}
               min={1}
               onChange={(v) => setForm({ limit: v })}
-              placeholder="All"
+              placeholder={t("pipeline.all")}
               value={form.limit}
             />
             <NumberInput
-              label="Parallel workers"
+              label={t("pipeline.workers")}
               max={8}
               min={1}
               onChange={(v) => setForm({ workers: v })}
@@ -258,15 +262,15 @@ export function PipelinePage(): React.ReactElement {
             <Field>
               <Label>
                 <Switch checked={form.redo} onCheckedChange={(redo) => setForm({ redo })} />
-                Redo calls that were already measured, transcribed or analyzed
+                {t("pipeline.redo")}
               </Label>
             </Field>
             <Field>
               <Label>
                 <Switch checked={form.team_only} onCheckedChange={(team_only) => setForm({ team_only })} />
-                Team report only
+                {t("pipeline.teamOnly")}
               </Label>
-              <FieldDescription className="ps-11">Skip the per-agent reports in the Report step.</FieldDescription>
+              <FieldDescription className="ps-11">{t("pipeline.teamOnlyHint")}</FieldDescription>
             </Field>
           </div>
         </CardPanel>
@@ -274,12 +278,12 @@ export function PipelinePage(): React.ReactElement {
           {running && (
             <Button onClick={job.stop} variant="destructive-outline">
               <SquareIcon aria-hidden="true" />
-              Stop
+              {t("shell.job.stop")}
             </Button>
           )}
           <Button disabled={running} onClick={start}>
-            <PlayIcon aria-hidden="true" />
-            Start job
+            <PlayIcon aria-hidden="true" className="rtl:-scale-x-100" />
+            {t("pipeline.startJob")}
           </Button>
         </CardFooter>
       </Card>
@@ -288,14 +292,14 @@ export function PipelinePage(): React.ReactElement {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             {running ? <Spinner className="size-4" /> : state?.started_at && <CircleCheckIcon aria-hidden="true" className="size-4 text-muted-foreground" />}
-            {state?.label ? state.label : "Log"}
+            {state?.label ? state.label : t("pipeline.log")}
           </CardTitle>
           <CardDescription>
             {running
-              ? `Running since ${fmtDateTime(state?.started_at)}`
+              ? t("shell.job.runningSince", { time: fmtDateTime(state?.started_at) })
               : state?.finished_at
-                ? `Finished ${fmtRelative(state.finished_at)}`
-                : "Output of the current or last job appears here."}
+                ? t("shell.job.finishedAgo", { time: fmtRelative(state.finished_at) })
+                : t("shell.job.empty")}
           </CardDescription>
         </CardHeader>
         <CardPanel>
@@ -306,15 +310,15 @@ export function PipelinePage(): React.ReactElement {
       {!!state?.history.length && (
         <CardFrame>
           <CardFrameHeader>
-            <CardFrameTitle>Recent jobs</CardFrameTitle>
+            <CardFrameTitle>{t("pipeline.recentJobs")}</CardFrameTitle>
           </CardFrameHeader>
           <Table variant="card">
             <TableHeader>
               <TableRow>
-                <TableHead>Job</TableHead>
-                <TableHead>Started</TableHead>
-                <TableHead>Finished</TableHead>
-                <TableHead>Result</TableHead>
+                <TableHead>{t("pipeline.job")}</TableHead>
+                <TableHead>{t("pipeline.started")}</TableHead>
+                <TableHead>{t("pipeline.finished")}</TableHead>
+                <TableHead>{t("pipeline.result")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

@@ -2,6 +2,12 @@
 import {
   ArrowLeftIcon,
   AudioLinesIcon,
+  CalendarClockIcon,
+  ExternalLinkIcon,
+  HistoryIcon,
+  PhoneMissedIcon,
+  UserIcon,
+  UserPlusIcon,
   DeleteIcon,
   GripIcon,
   MicIcon,
@@ -19,18 +25,24 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
 import { Toggle } from "@/components/ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
+import { Bidi } from "@/lib/bidi";
+import { fmtDateTime, fmtRelative } from "@/lib/format";
+import { type IncomingCall, useIncoming } from "@/lib/inbound";
+import { href, useRoute } from "@/lib/router";
+import { campaignText } from "@/lib/campaign-text";
 import { type PhoneStatus, useSoftphone } from "@/lib/softphone";
 import { cn } from "@/lib/utils";
+import { type TKey, useT } from "@/lib/i18n";
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 
-const STATUS: Record<PhoneStatus, { label: string; dot: string }> = {
-  connecting: { dot: "bg-warning", label: "Connecting to GoVoice…" },
-  elsewhere: { dot: "bg-muted-foreground", label: "The phone is open in another tab" },
-  failed: { dot: "bg-destructive", label: "Not connected" },
-  off: { dot: "bg-muted-foreground", label: "Starting…" },
-  registered: { dot: "bg-success", label: "Ready" },
-  unsupported: { dot: "bg-destructive", label: "Open the app over HTTPS to use the phone" },
+const STATUS: Record<PhoneStatus, { label: TKey; dot: string }> = {
+  connecting: { dot: "bg-warning", label: "phone.status.connecting" },
+  elsewhere: { dot: "bg-muted-foreground", label: "phone.status.elsewhere" },
+  failed: { dot: "bg-destructive", label: "phone.status.failed" },
+  off: { dot: "bg-muted-foreground", label: "shell.job.starting" },
+  registered: { dot: "bg-success", label: "phone.status.ready" },
+  unsupported: { dot: "bg-destructive", label: "phone.status.unsupported" },
 };
 
 function useSeconds(since: number | null): number {
@@ -65,7 +77,8 @@ function Dialer() {
   const [open, setOpen] = React.useState(false);
   const [number, setNumber] = React.useState("");
   const [sound, setSound] = React.useState(false);
-  const status = STATUS[sp.status];
+  const { t } = useT();
+  const status = { dot: STATUS[sp.status].dot, label: t(STATUS[sp.status].label) };
   const extension = sp.config?.enabled ? sp.config.extension : "";
   const dial = () => {
     if (sp.call(number)) {
@@ -87,7 +100,7 @@ function Dialer() {
             <PopoverTrigger
               render={
                 <Button
-                  aria-label={`Phone: ${status.label}`}
+                  aria-label={t("phone.ariaStatus", { status: status.label })}
                   className="fixed end-4 bottom-4 z-40 size-12 rounded-full shadow-lg sm:size-12"
                   size="icon-xl"
                 />
@@ -101,32 +114,32 @@ function Dialer() {
             className={cn("absolute end-0.5 top-0.5 size-3 rounded-full ring-2 ring-background", status.dot)}
           />
         </TooltipTrigger>
-        <TooltipPopup side="left">{status.label}</TooltipPopup>
+        <TooltipPopup side="inline-start">{status.label}</TooltipPopup>
       </Tooltip>
       <PopoverPopup align="end" className="w-72" side="top" sideOffset={8}>
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2 text-sm">
             {sound ? (
               <>
-                <Button aria-label="Back to the dialer" onClick={() => setSound(false)} size="icon-sm" variant="ghost">
-                  <ArrowLeftIcon aria-hidden="true" />
+                <Button aria-label={t("phone.backToDialer")} onClick={() => setSound(false)} size="icon-sm" variant="ghost">
+                  <ArrowLeftIcon aria-hidden="true" className="rtl:rotate-180" />
                 </Button>
-                <span className="font-medium">Sound</span>
+                <span className="font-medium">{t("phone.sound")}</span>
               </>
             ) : (
               <>
                 <span aria-hidden="true" className={cn("size-2 rounded-full", status.dot)} />
-                <span className="font-medium">Extension {extension}</span>
-                <span className="ms-auto text-muted-foreground">{sp.status === "registered" ? "Ready" : ""}</span>
+                <span className="font-medium">{t("phone.extension", { extension })}</span>
+                <span className="ms-auto text-muted-foreground">{sp.status === "registered" ? t("phone.status.ready") : ""}</span>
                 <Tooltip>
                   <TooltipTrigger
                     render={
-                      <Button aria-label="Sound settings" onClick={() => setSound(true)} size="icon-sm" variant="ghost" />
+                      <Button aria-label={t("phone.soundSettings")} onClick={() => setSound(true)} size="icon-sm" variant="ghost" />
                     }
                   >
                     <AudioLinesIcon aria-hidden="true" />
                   </TooltipTrigger>
-                  <TooltipPopup>Sound settings</TooltipPopup>
+                  <TooltipPopup>{t("phone.soundSettings")}</TooltipPopup>
                 </Tooltip>
               </>
             )}
@@ -146,18 +159,18 @@ function Dialer() {
                 }}
               >
                 <Input
-                  aria-label="Number to call"
+                  aria-label={t("phone.numberToCall")}
                   autoFocus
                   className="text-lg tabular-nums"
                   dir="ltr"
                   inputMode="tel"
                   onChange={(e) => setNumber(e.target.value)}
-                  placeholder="Number"
+                  placeholder={t("phone.number")}
                   size="lg"
                   value={number}
                 />
                 <Button
-                  aria-label="Delete last digit"
+                  aria-label={t("phone.deleteDigit")}
                   disabled={!number}
                   onClick={() => setNumber((n) => n.slice(0, -1))}
                   size="icon-lg"
@@ -169,7 +182,7 @@ function Dialer() {
               <Keypad onKey={(key) => setNumber((n) => n + key)} />
               <Button className="bg-success hover:bg-success/90" disabled={!sp.ready || !number.trim()} onClick={dial} size="lg">
                 <PhoneIcon aria-hidden="true" />
-                Call
+                {t("phone.call")}
               </Button>
             </>
           )}
@@ -179,28 +192,95 @@ function Dialer() {
   );
 }
 
+function InfoRow({ icon: Icon, children, tone }: { icon: typeof UserIcon; children: React.ReactNode; tone?: "warning" }) {
+  return (
+    <li className={cn("flex items-start gap-1.5", tone === "warning" && "text-warning-foreground")}>
+      <Icon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+      <span className="min-w-0">{children}</span>
+    </li>
+  );
+}
+
+/** Who's calling: what the CRM and the desk know about them, so the agent picks up knowing. */
+function CallerInfo({ incoming }: { incoming: IncomingCall }) {
+  const { t } = useT();
+  const route = useRoute();
+  const caller = incoming.caller;
+  if (!caller) return <p className="text-muted-foreground text-xs">{t("inbound.lookingUp")}</p>;
+  const person = caller.people[0];
+  const opportunity = person?.opportunities[0];
+  const onDesk = route.page === "operations" && !route.query.get("tab");
+  return (
+    <div className="flex flex-col gap-2 rounded-xl bg-muted/50 p-3 text-sm">
+      <ul className="flex flex-col gap-1 text-muted-foreground text-xs">
+        {person ? (
+          <InfoRow icon={UserIcon}>
+            <Bidi as="span" className="font-medium text-foreground" text={person.name} />
+            {person.city && ` · ${person.city}`}
+            {opportunity?.owner && ` · ${t("inbound.owner", { name: opportunity.owner })}`}
+          </InfoRow>
+        ) : (
+          <InfoRow icon={UserPlusIcon}>{caller.crm_error ? t("inbound.crmUnreachable") : t("inbound.notInCrm")}</InfoRow>
+        )}
+        {caller.last_call && (
+          <InfoRow icon={HistoryIcon}>
+            {t("inbound.lastCall", {
+              agent: caller.last_call.agent_name,
+              outcome: campaignText(caller.last_call.outcome_label),
+              when: fmtRelative(caller.last_call.finished_at),
+            })}
+          </InfoRow>
+        )}
+        {caller.knows && <InfoRow icon={UserIcon}>{t("inbound.knows", { name: caller.knows.name })}</InfoRow>}
+        {caller.callback && (
+          <InfoRow icon={CalendarClockIcon}>
+            {caller.callback.assign_to_name
+              ? t("inbound.callbackFor", { name: caller.callback.assign_to_name, time: fmtDateTime(caller.callback.due_at) })
+              : t("inbound.callbackAt", { time: fmtDateTime(caller.callback.due_at) })}
+          </InfoRow>
+        )}
+        {caller.missed > 0 && (
+          <InfoRow icon={PhoneMissedIcon} tone="warning">
+            {t("inbound.calledBefore", { count: caller.missed })}
+          </InfoRow>
+        )}
+      </ul>
+      {incoming.op && !onDesk && (
+        <Button render={<a href={href("operations")} />} size="sm" variant="outline">
+          <ExternalLinkIcon aria-hidden="true" />
+          {t("inbound.openOnDesk")}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function CallCard() {
   const sp = useSoftphone();
+  const incoming = useIncoming();
   const [keypad, setKeypad] = React.useState(false);
   const [tones, setTones] = React.useState("");
   const [sound, setSound] = React.useState(false);
+  const { t } = useT();
   const call = sp.active;
   const seconds = useSeconds(call?.answeredAt ?? null);
   if (!call) return null;
   const ringing = call.state === "ringing";
+  const known = incoming?.callId === call.id ? incoming : null;
+  const name = known?.caller?.people[0]?.name || call.name;
   const label = ringing
-    ? "Incoming call"
+    ? t("phone.incoming")
     : call.state === "calling"
-      ? "Calling…"
+      ? t("phone.calling")
       : call.held
-        ? `On hold · ${fmtDuration(seconds)}`
+        ? t("phone.onHold", { time: fmtDuration(seconds) })
         : fmtDuration(seconds);
   return (
     <div
       aria-live="polite"
       className="fixed end-4 bottom-4 z-40 flex w-76 flex-col gap-4 rounded-2xl border bg-popover p-4 text-popover-foreground shadow-lg"
       role="region"
-      aria-label="Call"
+      aria-label={t("phone.call")}
     >
       <div className="flex items-center gap-3">
         <span
@@ -216,11 +296,12 @@ function CallCard() {
             {call.number}
           </div>
           <div className="truncate text-muted-foreground text-sm tabular-nums">
-            {call.name ? `${call.name} · ` : ""}
+            {name ? `${name} · ` : ""}
             {label}
           </div>
         </div>
       </div>
+      {known && <CallerInfo incoming={known} />}
       {keypad && !ringing && (
         <div className="flex flex-col gap-2">
           <div className="h-6 truncate text-center font-mono text-lg tracking-widest" dir="ltr">
@@ -229,7 +310,7 @@ function CallCard() {
           <Keypad
             onKey={(key) => {
               sp.sendDtmf(key);
-              setTones((t) => (t + key).slice(-16));
+              setTones((prev) => (prev + key).slice(-16));
             }}
           />
         </div>
@@ -239,20 +320,20 @@ function CallCard() {
         <div className="grid grid-cols-2 gap-2">
           <Button onClick={sp.hangup} size="lg" variant="destructive">
             <PhoneOffIcon aria-hidden="true" />
-            Decline
+            {t("phone.decline")}
           </Button>
           <Button className="bg-success hover:bg-success/90" onClick={sp.answer} size="lg">
             <PhoneIcon aria-hidden="true" />
-            Answer
+            {t("phone.answer")}
           </Button>
         </div>
       ) : (
         <div className="flex items-center gap-2">
-          <Toggle aria-label="Mute" onPressedChange={sp.toggleMute} pressed={call.muted} variant="outline">
+          <Toggle aria-label={t("phone.mute")} onPressedChange={sp.toggleMute} pressed={call.muted} variant="outline">
             {call.muted ? <MicOffIcon aria-hidden="true" /> : <MicIcon aria-hidden="true" />}
           </Toggle>
           <Toggle
-            aria-label="Hold"
+            aria-label={t("phone.hold")}
             disabled={call.state !== "active"}
             onPressedChange={sp.toggleHold}
             pressed={call.held}
@@ -260,15 +341,15 @@ function CallCard() {
           >
             {call.held ? <PlayIcon aria-hidden="true" /> : <PauseIcon aria-hidden="true" />}
           </Toggle>
-          <Toggle aria-label="Keypad" onPressedChange={setKeypad} pressed={keypad} variant="outline">
+          <Toggle aria-label={t("phone.keypad")} onPressedChange={setKeypad} pressed={keypad} variant="outline">
             <GripIcon aria-hidden="true" />
           </Toggle>
-          <Toggle aria-label="Sound settings" onPressedChange={setSound} pressed={sound} variant="outline">
+          <Toggle aria-label={t("phone.soundSettings")} onPressedChange={setSound} pressed={sound} variant="outline">
             <AudioLinesIcon aria-hidden="true" />
           </Toggle>
           <Button className="ms-auto" onClick={sp.hangup} variant="destructive">
             <PhoneOffIcon aria-hidden="true" />
-            Hang up
+            {t("phone.hangUp")}
           </Button>
         </div>
       )}

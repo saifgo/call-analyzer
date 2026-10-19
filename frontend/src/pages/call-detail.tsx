@@ -63,29 +63,31 @@ import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
 import { Bidi, textDir } from "@/lib/bidi";
 import { fmtDate, fmtDateTime, fmtDuration, fmtRelative, humanize, numberFmt } from "@/lib/format";
+import { labels, t, tx, useT } from "@/lib/i18n";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
+import { campaignText } from "@/lib/campaign-text";
 import { useMe } from "@/lib/me";
 import type { Analysis, CallDetail, CrmLookup, CrmOpportunity, CrmPerson, HumanFeedback, Share } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // Sales calls and customer service calls are judged on different score cards (ServiceScores in analyze.py).
-const SALES_SCORE_NAMES: Record<string, string> = {
-  closing: "Closing",
-  discovery: "Discovery",
-  objection_handling: "Objections",
-  opening: "Opening",
-  pitch: "Pitch",
-  tone_and_listening: "Tone & listening",
-};
+const SALES_SCORE_NAMES: Record<string, string> = labels({
+  closing: "value.closing",
+  discovery: "value.discovery",
+  objection_handling: "value.objection_handling",
+  opening: "value.opening",
+  pitch: "value.pitch",
+  tone_and_listening: "value.tone_and_listening",
+});
 
-const SERVICE_SCORE_NAMES: Record<string, string> = {
-  greeting: "Greeting",
-  understanding: "Understanding the issue",
-  solution: "Solution",
-  clarity: "Clarity",
-  empathy_and_tone: "Empathy & tone",
-  resolution: "Resolution",
-};
+const SERVICE_SCORE_NAMES: Record<string, string> = labels({
+  greeting: "value.greeting",
+  understanding: "value.understanding",
+  solution: "value.solution",
+  clarity: "value.clarity",
+  empathy_and_tone: "value.empathy_and_tone",
+  resolution: "value.resolution",
+});
 
 const SCORE_COLOR = { error: "bg-destructive", success: "bg-success", warning: "bg-warning" };
 
@@ -99,7 +101,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function BulletList({ items }: { items: string[] | undefined }) {
-  if (!items?.length) return <p className="text-muted-foreground text-sm">None</p>;
+  if (!items?.length) return <p className="text-muted-foreground text-sm">{t("detail.none")}</p>;
   return (
     <ul className="flex flex-col gap-2 text-sm">
       {items.map((item, i) => {
@@ -137,16 +139,14 @@ function Labeled({ label, text, tone }: { label: string; text: string; tone?: "q
 }
 
 /** "Analyzed 3 Oct, 12:52 · by Claude claude-opus-5-5 (API)" */
-function ProcessedBy({ verb, at, by }: { verb: string; at: string | null; by: string | null }) {
+function ProcessedBy({ verb, at, by }: { verb: "detail.analyzedAt" | "detail.transcribedAt"; at: string | null; by: string | null }) {
   if (!at) return null;
   return (
     <p className="flex flex-wrap items-center gap-x-1.5 text-muted-foreground text-xs">
       <ClockIcon aria-hidden="true" className="size-3.5" />
-      <span title={fmtRelative(at)}>
-        {verb} {fmtDateTime(at)}
-      </span>
+      <span title={fmtRelative(at)}>{t(verb, { time: fmtDateTime(at) })}</span>
       <span aria-hidden="true">·</span>
-      <span className={by ? "font-medium text-foreground" : undefined}>{by ? `by ${by}` : "model not recorded"}</span>
+      <span className={by ? "font-medium text-foreground" : undefined}>{by ? t("detail.by", { by }) : t("detail.modelNotRecorded")}</span>
     </p>
   );
 }
@@ -160,60 +160,57 @@ function Feedback({ call, onReanalyze }: { call: CallDetail; onReanalyze?: () =>
     // Voicemail, no answer, wrong number...: not rated, and left out of reports and average scores.
     return (
       <div className="flex flex-col gap-6">
-        <ProcessedBy at={call.analyzed_at} by={call.analyzed_by} verb="Analyzed" />
+        <ProcessedBy at={call.analyzed_at} by={call.analyzed_by} verb="detail.analyzedAt" />
         <div className="flex flex-wrap gap-1.5">
-          <Badge variant="warning">Not a sales or service call</Badge>
+          <Badge variant="warning">{t("detail.notSalesOrService")}</Badge>
         </div>
-        <Section title="Summary">
+        <Section title={t("insights.summary")}>
           <Bidi className="text-sm leading-relaxed" text={a.summary} />
         </Section>
-        <p className="text-muted-foreground text-sm">
-          Voicemails, unanswered calls, wrong numbers and internal calls are not rated: they are left out of the
-          reports and of the agents' average scores.
-        </p>
+        <p className="text-muted-foreground text-sm">{t("detail.notRatedHint")}</p>
       </div>
     );
   }
   return (
     <div className="flex flex-col gap-6">
-      <ProcessedBy at={call.analyzed_at} by={call.analyzed_by} verb="Analyzed" />
+      <ProcessedBy at={call.analyzed_at} by={call.analyzed_by} verb="detail.analyzedAt" />
       {call.status === "stale" && onReanalyze && (
         <Alert variant="warning">
           <PencilLineIcon aria-hidden="true" />
-          <AlertTitle>Transcript changed after this analysis</AlertTitle>
-          <AlertDescription>Re-analyze so the feedback uses your corrections.</AlertDescription>
+          <AlertTitle>{t("detail.transcriptChanged")}</AlertTitle>
+          <AlertDescription>{t("detail.transcriptChangedHint")}</AlertDescription>
           <AlertAction>
             <Button onClick={onReanalyze} size="sm" variant="outline">
-              Re-analyze
+              {t("calls.reanalyze")}
             </Button>
           </AlertAction>
         </Alert>
       )}
 
       <div className="flex flex-wrap gap-1.5">
-        {isService && <Badge variant="outline">Customer service</Badge>}
+        {isService && <Badge variant="outline">{t("calls.kind.service")}</Badge>}
         <OutcomeBadge outcome={a.outcome ?? a.resolution_status} />
         {(a.call_category ?? a.issue_category) && (
           <Badge variant="secondary">{humanize((a.call_category ?? a.issue_category) as string)}</Badge>
         )}
-        {a.customer_interest && <Badge variant="outline">Interest: {humanize(a.customer_interest)}</Badge>}
-        {a.customer_sentiment && <Badge variant="outline">Customer: {humanize(a.customer_sentiment)}</Badge>}
+        {a.customer_interest && <Badge variant="outline">{t("detail.interest", { value: humanize(a.customer_interest) })}</Badge>}
+        {a.customer_sentiment && (
+          <Badge variant="outline">{t("voice.customerTone", { tone: humanize(a.customer_sentiment) })}</Badge>
+        )}
       </div>
 
       {call.desk && (
         <Alert variant={call.desk.success ? "success" : "info"}>
           <HeadsetIcon aria-hidden="true" />
-          <AlertTitle>
-            Call desk: {call.desk.outcome_label ?? humanize(call.desk.outcome)}
-          </AlertTitle>
+          <AlertTitle>{t("detail.callDesk", { outcome: campaignText(call.desk.outcome_label) ?? humanize(call.desk.outcome) })}</AlertTitle>
           <AlertDescription>
             <span>
-              {call.desk.campaign} · closed by {call.desk.agent_name} · {fmtDateTime(call.desk.finished_at)}
+              {campaignText(call.desk.campaign)} · {t("detail.closedBy", { name: call.desk.agent_name })} · {fmtDateTime(call.desk.finished_at)}
               {call.desk.lead_url && (
                 <>
                   {" · "}
                   <a className="underline" href={call.desk.lead_url} rel="noreferrer" target="_blank">
-                    Open in CRM
+                    {t("leads.openInCrm")}
                   </a>
                 </>
               )}
@@ -223,21 +220,21 @@ function Feedback({ call, onReanalyze }: { call: CallDetail; onReanalyze?: () =>
         </Alert>
       )}
 
-      <Section title="Summary">
+      <Section title={t("insights.summary")}>
         <Bidi className="text-sm leading-relaxed" text={a.summary} />
       </Section>
 
       {a.top_coaching_tip && (
         <Alert variant="info">
           <LightbulbIcon aria-hidden="true" />
-          <AlertTitle>Top coaching tip</AlertTitle>
+          <AlertTitle>{t("detail.topTip")}</AlertTitle>
           <AlertDescription>
             <Bidi className="w-full text-foreground" text={a.top_coaching_tip} />
           </AlertDescription>
         </Alert>
       )}
 
-      <Section title="Scores">
+      <Section title={t("detail.scores")}>
         <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
           {Object.entries(scoreNames).map(([key, name]) => {
             const value = a.scores?.[key];
@@ -261,49 +258,49 @@ function Feedback({ call, onReanalyze }: { call: CallDetail; onReanalyze?: () =>
 
       <VoicePanel data={call.voice} tone={a.voice} />
 
-      <Section title="Strengths">
+      <Section title={t("detail.strengths")}>
         <BulletList items={a.strengths} />
       </Section>
 
-      <Section title="Mistakes and what to say instead">
+      <Section title={t("detail.mistakes")}>
         {a.mistakes?.length ? (
           a.mistakes.map((m, i) => (
             <Card className="rounded-xl" key={i}>
               <CardPanel className="flex flex-col gap-3 p-4">
-                <Labeled label="Said" text={m.quote} tone="quote" />
-                <Labeled label="Why it hurt" text={m.problem} />
-                <Labeled label="Say instead" text={m.better_version} tone="better" />
+                <Labeled label={t("detail.said")} text={m.quote} tone="quote" />
+                <Labeled label={t("detail.whyItHurt")} text={m.problem} />
+                <Labeled label={t("detail.sayInstead")} text={m.better_version} tone="better" />
               </CardPanel>
             </Card>
           ))
         ) : (
-          <p className="text-muted-foreground text-sm">None</p>
+          <p className="text-muted-foreground text-sm">{t("detail.none")}</p>
         )}
       </Section>
 
       {!isService && (
-        <Section title="Objections">
+        <Section title={t("detail.objections")}>
           {a.objections?.length ? (
             a.objections.map((o, i) => (
               <Card className="rounded-xl" key={i}>
                 <CardPanel className="flex flex-col gap-3 p-4">
-                  <Labeled label="Objection" text={o.objection} />
-                  <Labeled label="How it was handled" text={o.how_handled} tone="muted" />
-                  <Labeled label="Better answer" text={o.better_answer} tone="better" />
+                  <Labeled label={t("detail.objection")} text={o.objection} />
+                  <Labeled label={t("detail.howHandled")} text={o.how_handled} tone="muted" />
+                  <Labeled label={t("detail.betterAnswer")} text={o.better_answer} tone="better" />
                 </CardPanel>
               </Card>
             ))
           ) : (
-            <p className="text-muted-foreground text-sm">None</p>
+            <p className="text-muted-foreground text-sm">{t("detail.none")}</p>
           )}
         </Section>
       )}
 
-      <Section title="Missed opportunities">
+      <Section title={t("detail.missed")}>
         <BulletList items={a.missed_opportunities} />
       </Section>
 
-      <Section title="Follow-up">
+      <Section title={t("detail.followUp")}>
         <Bidi className="text-sm" text={a.follow_up_action} />
       </Section>
 
@@ -319,15 +316,15 @@ function TranscriptView({ call }: { call: CallDetail }) {
           <EmptyMedia variant="icon">
             <MicIcon />
           </EmptyMedia>
-          <EmptyTitle>No transcript yet</EmptyTitle>
-          <EmptyDescription>This call hasn't been transcribed yet.</EmptyDescription>
+          <EmptyTitle>{t("detail.noTranscript")}</EmptyTitle>
+          <EmptyDescription>{t("detail.notTranscribed")}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
   }
   return (
     <div className="flex flex-col gap-3">
-      <ProcessedBy at={call.transcribed_at} by={call.transcribed_by} verb="Transcribed" />
+      <ProcessedBy at={call.transcribed_at} by={call.transcribed_by} verb="detail.transcribedAt" />
       <div
         className="whitespace-pre-wrap rounded-xl border bg-muted/40 p-4 text-sm leading-relaxed"
         dir={textDir(call.transcript)}
@@ -349,7 +346,7 @@ function TranscriptEditor({ call, onSaved }: { call: CallDetail; onSaved: () => 
 
   const save = async () => {
     await api(`/api/calls/${encodeURIComponent(call.id)}/transcript`, { body: { text }, method: "PUT" });
-    toastManager.add({ title: "Transcript saved", type: "success" });
+    toastManager.add({ title: t("detail.transcriptSaved"), type: "success" });
   };
 
   const run = async (reanalyze: boolean) => {
@@ -359,7 +356,7 @@ function TranscriptEditor({ call, onSaved }: { call: CallDetail; onSaved: () => 
       if (reanalyze) await job.start(["analyze"], { ids: call.id, redo: true });
       onSaved();
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't save", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("common.couldntSave"), type: "error" });
     } finally {
       setSaving(false);
     }
@@ -372,10 +369,8 @@ function TranscriptEditor({ call, onSaved }: { call: CallDetail; onSaved: () => 
           <EmptyMedia variant="icon">
             <MicIcon />
           </EmptyMedia>
-          <EmptyTitle>No transcript yet</EmptyTitle>
-          <EmptyDescription>
-            {call.has_audio ? "Transcribe this call to read and correct it here." : "Download and transcribe this call first."}
-          </EmptyDescription>
+          <EmptyTitle>{t("detail.noTranscript")}</EmptyTitle>
+          <EmptyDescription>{call.has_audio ? t("detail.transcribeToEdit") : t("detail.downloadFirst")}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
@@ -383,12 +378,10 @@ function TranscriptEditor({ call, onSaved }: { call: CallDetail; onSaved: () => 
 
   return (
     <div className="flex flex-col gap-3">
-      <ProcessedBy at={call.transcribed_at} by={call.transcribed_by} verb="Transcribed" />
-      <p className="text-muted-foreground text-sm">
-        Fix misheard words or speaker names, then save and re-analyze so the feedback uses your corrections.
-      </p>
+      <ProcessedBy at={call.transcribed_at} by={call.transcribed_by} verb="detail.transcribedAt" />
+      <p className="text-muted-foreground text-sm">{t("detail.editHint")}</p>
       <Textarea
-        aria-label="Transcript"
+        aria-label={t("detail.transcript")}
         className="min-h-[50vh] leading-relaxed"
         dir={textDir(text)}
         onChange={(e) => setText(e.target.value)}
@@ -396,19 +389,19 @@ function TranscriptEditor({ call, onSaved }: { call: CallDetail; onSaved: () => 
       />
       <div className="flex flex-wrap items-center justify-end gap-2">
         <span className="me-auto text-muted-foreground text-xs">
-          {dirty && <Badge variant="warning">Unsaved changes</Badge>}
+          {dirty && <Badge variant="warning">{t("common.unsavedChanges")}</Badge>}
         </span>
         {dirty && (
           <Button onClick={() => setText(original)} variant="ghost">
-            Discard
+            {t("common.discard")}
           </Button>
         )}
         <Button disabled={!dirty} loading={saving && !canReanalyze} onClick={() => run(false)} variant="outline">
-          Save
+          {t("common.save")}
         </Button>
         <Button disabled={!canReanalyze || !!job.state?.running} loading={saving} onClick={() => run(true)}>
           <SparklesIcon aria-hidden="true" />
-          Save & re-analyze
+          {t("detail.saveReanalyze")}
         </Button>
       </div>
     </div>
@@ -432,7 +425,7 @@ function ShareDialog({ callId, open, onOpenChange }: { callId: string; open: boo
   const revoke = async () => {
     await api(base, { method: "DELETE" });
     setData({ lan: share?.lan ?? false, token: null, url: null });
-    toastManager.add({ title: "Share link revoked", type: "success" });
+    toastManager.add({ title: t("share.revoked"), type: "success" });
   };
   const copy = async () => {
     if (!share?.url) return;
@@ -445,10 +438,8 @@ function ShareDialog({ callId, open, onOpenChange }: { callId: string; open: boo
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogPopup className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Share link</DialogTitle>
-          <DialogDescription>
-            A private link to a review page with an audio player. Anyone with the link can open it without signing in.
-          </DialogDescription>
+          <DialogTitle>{t("share.title")}</DialogTitle>
+          <DialogDescription>{t("detail.shareDescription")}</DialogDescription>
         </DialogHeader>
         <DialogPanel className="flex flex-col gap-4">
           {!share ? (
@@ -456,9 +447,9 @@ function ShareDialog({ callId, open, onOpenChange }: { callId: string; open: boo
           ) : share.url ? (
             <>
               <InputGroup>
-                <InputGroupInput aria-label="Share link" readOnly type="text" value={share.url} />
+                <InputGroupInput aria-label={t("share.title")} dir="ltr" readOnly type="text" value={share.url} />
                 <InputGroupAddon align="inline-end">
-                  <Button aria-label="Copy link" onClick={copy} size="icon-xs" variant="ghost">
+                  <Button aria-label={t("share.copy")} onClick={copy} size="icon-xs" variant="ghost">
                     {copied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
                   </Button>
                 </InputGroupAddon>
@@ -466,36 +457,33 @@ function ShareDialog({ callId, open, onOpenChange }: { callId: string; open: boo
               {!share.lan && (
                 <Alert variant="warning">
                   <CircleAlertIcon aria-hidden="true" />
-                  <AlertTitle>Only works on this computer</AlertTitle>
-                  <AlertDescription>
-                    To share with others, set PUBLIC_URL (hosted) or SHARE_ON_LAN=true (local network) in Settings and
-                    restart the app. To send it to anyone, export a PDF or HTML file instead.
-                  </AlertDescription>
+                  <AlertTitle>{t("share.localOnly")}</AlertTitle>
+                  <AlertDescription>{t("detail.localOnlyHint")}</AlertDescription>
                 </Alert>
               )}
             </>
           ) : (
-            <p className="text-muted-foreground text-sm">No link exists for this call yet.</p>
+            <p className="text-muted-foreground text-sm">{t("detail.noLink")}</p>
           )}
         </DialogPanel>
         <DialogFooter>
           {share?.url ? (
             <>
               <Button className="sm:me-auto" onClick={revoke} variant="destructive-outline">
-                Revoke link
+                {t("share.revoke")}
               </Button>
               <Button render={<a href={share.url} rel="noreferrer" target="_blank" />} variant="outline">
                 <ExternalLinkIcon aria-hidden="true" />
-                Open
+                {t("share.open")}
               </Button>
-              <DialogClose render={<Button />}>Done</DialogClose>
+              <DialogClose render={<Button />}>{t("common.done")}</DialogClose>
             </>
           ) : (
             <>
-              <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+              <DialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</DialogClose>
               <Button disabled={!share} loading={busy} onClick={create}>
                 <Link2Icon aria-hidden="true" />
-                Create link
+                {t("share.create")}
               </Button>
             </>
           )}
@@ -538,10 +526,10 @@ function CrmOpportunityRow({ o }: { o: CrmOpportunity }) {
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-muted-foreground text-xs">
         {amount && <span className="tabular-nums">{amount}</span>}
-        {o.owner && <span>Owner: {o.owner}</span>}
+        {o.owner && <span>{t("detail.owner", { name: o.owner })}</span>}
         {o.company && <span>{o.company}</span>}
-        {o.close_date && <span>Close date: {fmtDate(o.close_date)}</span>}
-        {o.created_at && <span>Created {fmtDate(o.created_at)}</span>}
+        {o.close_date && <span>{t("detail.closeDate", { date: fmtDate(o.close_date) })}</span>}
+        {o.created_at && <span>{t("detail.createdOn", { date: fmtDate(o.created_at) })}</span>}
       </div>
     </li>
   );
@@ -567,7 +555,9 @@ function CrmPersonCard({ person }: { person: CrmPerson }) {
           <div className="flex flex-col gap-1 text-muted-foreground text-sm">
             {person.phones.length > 0 && (
               <CrmField icon={PhoneIcon}>
-                <span className="tabular-nums">{person.phones.join(" · ")}</span>
+                <span className="tabular-nums" dir="ltr">
+                  {person.phones.join(" · ")}
+                </span>
               </CrmField>
             )}
             {person.email && <CrmField icon={MailIcon}>{person.email}</CrmField>}
@@ -575,14 +565,14 @@ function CrmPersonCard({ person }: { person: CrmPerson }) {
             {person.city && <CrmField icon={MapPinIcon}>{person.city}</CrmField>}
           </div>
           <p className="text-muted-foreground text-xs">
-            {person.created_at && `In the CRM since ${fmtDate(person.created_at)}`}
-            {person.last_contact_at && ` · Last contact ${fmtRelative(person.last_contact_at)}`}
+            {person.created_at && t("detail.inCrmSince", { date: fmtDate(person.created_at) })}
+            {person.last_contact_at && ` · ${t("detail.lastContact", { time: fmtRelative(person.last_contact_at) })}`}
           </p>
         </div>
         <Separator />
         <div className="flex flex-col gap-2">
           <h4 className="font-medium text-sm">
-            Opportunities
+            {t("detail.opportunities")}
             <span className="ms-1.5 font-normal text-muted-foreground tabular-nums">{person.opportunities.length}</span>
           </h4>
           {person.opportunities.length ? (
@@ -592,7 +582,7 @@ function CrmPersonCard({ person }: { person: CrmPerson }) {
               ))}
             </ul>
           ) : (
-            <p className="text-muted-foreground text-sm">No opportunities for this contact.</p>
+            <p className="text-muted-foreground text-sm">{t("detail.noOpportunities")}</p>
           )}
         </div>
       </CardPanel>
@@ -607,7 +597,7 @@ function CrmTab({ call, isAdmin }: { call: CallDetail; isAdmin: boolean }) {
     return (
       <Alert variant="error">
         <CircleAlertIcon aria-hidden="true" />
-        <AlertTitle>Couldn’t load the CRM</AlertTitle>
+        <AlertTitle>{t("detail.crmFailed")}</AlertTitle>
         <AlertDescription>{error.message}</AlertDescription>
       </Alert>
     );
@@ -633,23 +623,26 @@ function CrmTab({ call, isAdmin }: { call: CallDetail; isAdmin: boolean }) {
     </Empty>
   );
   if (!data.configured) {
-    return empty(
-      "CRM not connected",
-      isAdmin ? "Add CRM_API_KEY in Settings to see the customer’s CRM details here." : "The CRM isn’t connected yet.",
-    );
+    return empty(t("detail.crmNotConnected"), isAdmin ? t("detail.crmNotConnectedAdmin") : t("detail.crmNotConnectedAgent"));
   }
   if (!data.searched) {
-    return empty("No customer number", "This call has no customer phone number to look up in the CRM.");
+    return empty(t("detail.noCustomerNumber"), t("detail.noCustomerNumberHint"));
   }
   if (!data.people.length) {
-    return empty("Not in the CRM", `No contact with the number ${data.number} was found in the CRM.`);
+    return empty(t("detail.notInCrm"), t("detail.notInCrmHint", { number: data.number }));
   }
 
   return (
     <div className="flex flex-col gap-4">
       <p className="text-muted-foreground text-sm">
-        {data.people.length === 1 ? "1 contact" : `${data.people.length} contacts`} in the CRM with the number{" "}
-        <span className="tabular-nums">{data.number}</span>.
+        {tx("detail.contactsWithNumber", {
+          count: data.people.length,
+          number: (
+            <span className="tabular-nums" dir="ltr">
+              {data.number}
+            </span>
+          ),
+        })}
       </p>
       {data.people.map((p) => (
         <CrmPersonCard key={p.id} person={p} />
@@ -658,8 +651,8 @@ function CrmTab({ call, isAdmin }: { call: CallDetail; isAdmin: boolean }) {
   );
 }
 
-const SCORE_ITEMS = [
-  { label: "No score", value: "none" },
+const scoreItems = () => [
+  { label: t("detail.noScore"), value: "none" },
   ...Array.from({ length: 10 }, (_, i) => ({ label: `${i + 1} / 10`, value: String(i + 1) })),
 ];
 
@@ -688,7 +681,7 @@ function FeedbackForm({
         setScore("none");
       }
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't save feedback", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("detail.feedbackSaveFailed"), type: "error" });
     } finally {
       setBusy(false);
     }
@@ -697,20 +690,20 @@ function FeedbackForm({
   return (
     <div className="flex flex-col gap-3">
       <Textarea
-        aria-label="Feedback"
+        aria-label={t("feedback.feedback")}
         className="min-h-24 leading-relaxed"
         dir={textDir(body)}
         onChange={(e) => setBody(e.target.value)}
-        placeholder="What went well, what to improve, what the customer said…"
+        placeholder={t("detail.feedbackPlaceholder")}
         value={body}
       />
       <div className="flex flex-wrap items-center justify-end gap-2">
-        <Select items={SCORE_ITEMS} onValueChange={(v) => setScore(v as string)} value={score}>
-          <SelectTrigger aria-label="Your score" className="me-auto w-auto">
+        <Select items={scoreItems()} onValueChange={(v) => setScore(v as string)} value={score}>
+          <SelectTrigger aria-label={t("detail.yourScore")} className="me-auto w-auto">
             <SelectValue />
           </SelectTrigger>
           <SelectPopup>
-            {SCORE_ITEMS.map((item) => (
+            {scoreItems().map((item) => (
               <SelectItem key={item.value} value={item.value}>
                 {item.label}
               </SelectItem>
@@ -719,7 +712,7 @@ function FeedbackForm({
         </Select>
         {onCancel && (
           <Button onClick={onCancel} variant="ghost">
-            Cancel
+            {t("common.cancel")}
           </Button>
         )}
         <Button disabled={!body.trim()} loading={busy} onClick={submit}>
@@ -748,10 +741,10 @@ function FeedbackEntry({
     setBusy(true);
     try {
       await api(`/api/feedback/${item.id}`, { method: "DELETE" });
-      toastManager.add({ title: "Feedback deleted", type: "success" });
+      toastManager.add({ title: t("detail.feedbackDeleted"), type: "success" });
       onChanged();
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't delete", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("common.couldntDelete"), type: "error" });
     } finally {
       setBusy(false);
       setDeleting(false);
@@ -764,10 +757,10 @@ function FeedbackEntry({
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground text-xs">
           <span className="font-medium text-foreground text-sm">{item.author_name}</span>
           <span title={fmtDateTime(item.created_at)}>{fmtRelative(item.created_at)}</span>
-          {edited && <span title={fmtDateTime(item.updated_at)}>· edited</span>}
+          {edited && <span title={fmtDateTime(item.updated_at)}>· {t("detail.edited")}</span>}
           {item.score !== null && (
             <Badge className="ms-auto tabular-nums" variant="outline">
-              Score {item.score}/10
+              {t("detail.scoreOf", { score: item.score })}
             </Badge>
           )}
         </div>
@@ -780,7 +773,7 @@ function FeedbackEntry({
               setEditing(false);
               onChanged();
             }}
-            submitLabel="Save"
+            submitLabel={t("common.save")}
           />
         ) : (
           <>
@@ -789,11 +782,11 @@ function FeedbackEntry({
               <div className="flex justify-end gap-1">
                 <Button onClick={() => setEditing(true)} size="xs" variant="ghost">
                   <PencilLineIcon aria-hidden="true" />
-                  Edit
+                  {t("common.edit")}
                 </Button>
                 <Button onClick={() => setDeleting(true)} size="xs" variant="ghost">
                   <Trash2Icon aria-hidden="true" />
-                  Delete
+                  {t("common.delete")}
                 </Button>
               </div>
             )}
@@ -802,13 +795,13 @@ function FeedbackEntry({
         <AlertDialog onOpenChange={setDeleting} open={deleting}>
           <AlertDialogPopup>
             <AlertDialogHeader>
-              <AlertDialogTitle>Delete this feedback?</AlertDialogTitle>
-              <AlertDialogDescription>It is removed from the call and from the Human feedback page.</AlertDialogDescription>
+              <AlertDialogTitle>{t("detail.deleteFeedback")}</AlertDialogTitle>
+              <AlertDialogDescription>{t("detail.deleteFeedbackHint")}</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogClose render={<Button variant="ghost" />}>Cancel</AlertDialogClose>
+              <AlertDialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</AlertDialogClose>
               <Button loading={busy} onClick={remove} variant="destructive">
-                Delete
+                {t("common.delete")}
               </Button>
             </AlertDialogFooter>
           </AlertDialogPopup>
@@ -837,10 +830,10 @@ function HumanFeedbackTab({
         <FeedbackForm
           onSubmit={async (value) => {
             await api(`/api/calls/${encodeURIComponent(callId)}/feedback`, { body: value, method: "POST" });
-            toastManager.add({ title: "Feedback added", type: "success" });
+            toastManager.add({ title: t("detail.feedbackAdded"), type: "success" });
             onChanged();
           }}
-          submitLabel="Add feedback"
+          submitLabel={t("detail.addFeedback")}
         />
       )}
       {items.length ? (
@@ -855,10 +848,8 @@ function HumanFeedbackTab({
             <EmptyMedia variant="icon">
               <MessageSquareTextIcon />
             </EmptyMedia>
-            <EmptyTitle>No human feedback yet</EmptyTitle>
-            <EmptyDescription>
-              {isAdmin ? "Write the first note about this call above." : "Nobody has reviewed this call yet."}
-            </EmptyDescription>
+            <EmptyTitle>{t("detail.noHuman")}</EmptyTitle>
+            <EmptyDescription>{isAdmin ? t("detail.noHumanAdmin") : t("detail.noHumanAgent")}</EmptyDescription>
           </EmptyHeader>
         </Empty>
       )}
@@ -889,7 +880,7 @@ function CallBody({
       <SheetPanel>
         <Alert variant="error">
           <CircleAlertIcon aria-hidden="true" />
-          <AlertTitle>Couldn’t load this call</AlertTitle>
+          <AlertTitle>{t("detail.loadFailed")}</AlertTitle>
           <AlertDescription>{error.message}</AlertDescription>
         </Alert>
       </SheetPanel>
@@ -922,15 +913,16 @@ function CallBody({
     <>
       <SheetHeader className="pe-12">
         <div className="flex flex-wrap items-center gap-2">
-          <SheetTitle>Call #{call.id}</SheetTitle>
+          <SheetTitle>{t("detail.title", { id: call.id })}</SheetTitle>
           <StatusBadge call={call} />
           {call.score !== null && <ScoreBadge score={call.score} />}
         </div>
         <SheetDescription>
-          {fmtDateTime(call.date_call)} · {call.type} · Agent {call.agent} ↔ {call.customer} · {fmtDuration(call.duration)}
+          {fmtDateTime(call.date_call)} · {call.type} · {t("shell.agentExt", { ext: call.agent })} ↔{" "}
+          <span dir="ltr">{call.customer}</span> · {fmtDuration(call.duration)}
           {call.updated_at && (
             <span className="block text-xs" title={fmtDateTime(call.updated_at)}>
-              Last updated {fmtRelative(call.updated_at)}
+              {t("detail.lastUpdated", { time: fmtRelative(call.updated_at) })}
             </span>
           )}
         </SheetDescription>
@@ -941,11 +933,11 @@ function CallBody({
           <audio className="h-10 w-full" controls preload="none" src={`/api/calls/${id}/audio`} />
         ) : (
           <div className="flex items-center justify-between gap-3 rounded-xl border border-dashed px-4 py-3 text-muted-foreground text-sm">
-            Audio not downloaded yet.
+            {t("detail.noAudio")}
             {isAdmin && (
               <Button disabled={running} onClick={() => job.start(["download"], ids)} size="sm" variant="outline">
                 <DownloadIcon aria-hidden="true" />
-                Download audio
+                {t("detail.downloadAudio")}
               </Button>
             )}
           </div>
@@ -957,7 +949,7 @@ function CallBody({
               {(!call.analysis || call.error) && (
                 <Button disabled={running} onClick={() => job.start(["download", "voice", "transcribe", "analyze"], ids)} size="sm">
                   <WorkflowIcon aria-hidden="true" />
-                  Process call
+                  {t("detail.processCall")}
                 </Button>
               )}
               <Button
@@ -967,7 +959,7 @@ function CallBody({
                 variant="outline"
               >
                 <MicIcon aria-hidden="true" />
-                {call.transcript !== null ? "Re-transcribe" : "Transcribe"}
+                {call.transcript !== null ? t("calls.retranscribe") : t("jobs.step.transcribe")}
               </Button>
               <Button
                 disabled={running || !call.transcript}
@@ -976,7 +968,7 @@ function CallBody({
                 variant="outline"
               >
                 <SparklesIcon aria-hidden="true" />
-                {call.analysis ? "Re-analyze" : "Analyze"}
+                {call.analysis ? t("calls.reanalyze") : t("jobs.step.analyze")}
               </Button>
               <Separator className="mx-1 h-5 max-sm:hidden" orientation="vertical" />
             </>
@@ -984,28 +976,28 @@ function CallBody({
           <Menu>
             <MenuTrigger render={<Button size="sm" variant="outline" />}>
               <ShareIcon aria-hidden="true" />
-              {isAdmin ? "Export & share" : "Export"}
+              {isAdmin ? t("detail.exportShare") : t("detail.export")}
             </MenuTrigger>
             <MenuPopup align="start">
               <MenuLinkItem
                 href={`/api/calls/${id}/export.pdf`}
                 onClick={() =>
-                  toastManager.add({ description: "The download starts in a few seconds.", title: "Creating PDF…", type: "info" })
+                  toastManager.add({ description: t("share.pdfStarting"), title: t("share.creatingPdf"), type: "info" })
                 }
               >
                 <FileTextIcon aria-hidden="true" />
-                Download PDF
+                {t("share.downloadPdf")}
               </MenuLinkItem>
               <MenuLinkItem href={`/api/calls/${id}/export.html`}>
                 <FileCodeIcon aria-hidden="true" />
-                HTML with audio
+                {t("detail.htmlWithAudio")}
               </MenuLinkItem>
               {isAdmin && (
                 <>
                   <MenuSeparator />
                   <MenuItem onClick={() => setShareOpen(true)}>
                     <Link2Icon aria-hidden="true" />
-                    Share link…
+                    {t("detail.shareLinkMenu")}
                   </MenuItem>
                 </>
               )}
@@ -1016,24 +1008,24 @@ function CallBody({
         {isAdmin && call.error && (
           <Alert variant="error">
             <CircleAlertIcon aria-hidden="true" />
-            <AlertTitle>Processing failed</AlertTitle>
+            <AlertTitle>{t("detail.processingFailed")}</AlertTitle>
             <AlertDescription className="break-words">{call.error}</AlertDescription>
           </Alert>
         )}
 
         <Tabs onValueChange={(v) => setTab(v as string)} value={tab}>
           <TabsList className="w-full sm:w-auto" variant="underline">
-            <TabsTab value="feedback">Feedback</TabsTab>
-            <TabsTab value="transcript">Transcript</TabsTab>
+            <TabsTab value="feedback">{t("feedback.feedback")}</TabsTab>
+            <TabsTab value="transcript">{t("detail.transcript")}</TabsTab>
             <TabsTab value="human">
-              Human feedback
+              {t("nav.feedback")}
               {!!human?.length && (
                 <Badge className="ms-1.5 tabular-nums" size="sm" variant="secondary">
                   {human.length}
                 </Badge>
               )}
             </TabsTab>
-            <TabsTab value="crm">CRM</TabsTab>
+            <TabsTab value="crm">{t("nav.group.crm")}</TabsTab>
           </TabsList>
           <TabsPanel className="pt-5" value="feedback">
             {call.analysis ? (
@@ -1047,18 +1039,14 @@ function CallBody({
                   <EmptyMedia variant="icon">
                     <SparklesIcon />
                   </EmptyMedia>
-                  <EmptyTitle>No feedback yet</EmptyTitle>
-                  <EmptyDescription>
-                    {isAdmin
-                      ? "Transcribe and analyze this call to get coaching."
-                      : "The AI review of this call isn't ready yet."}
-                  </EmptyDescription>
+                  <EmptyTitle>{t("detail.noFeedback")}</EmptyTitle>
+                  <EmptyDescription>{isAdmin ? t("detail.noFeedbackAdmin") : t("detail.noFeedbackAgent")}</EmptyDescription>
                 </EmptyHeader>
                 {isAdmin && (
                   <EmptyContent>
                     <Button disabled={running} onClick={() => job.start(["download", "voice", "transcribe", "analyze"], ids)} size="sm">
                       <WorkflowIcon aria-hidden="true" />
-                      Process call
+                      {t("detail.processCall")}
                     </Button>
                   </EmptyContent>
                 )}
@@ -1106,10 +1094,11 @@ export function CallSheet({
   React.useEffect(() => {
     if (callId) setShownId(callId);
   }, [callId]);
+  const { dir } = useT();
 
   return (
     <Sheet onOpenChange={(open) => !open && onClose()} open={!!callId}>
-      <SheetPopup className="max-w-3xl" side="right" variant="inset">
+      <SheetPopup className="max-w-3xl" side={dir === "rtl" ? "left" : "right"} variant="inset">
         {shownId && <CallBody callId={shownId} initialTab={initialTab} key={shownId} onChanged={onChanged} />}
       </SheetPopup>
     </Sheet>

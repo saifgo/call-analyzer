@@ -133,6 +133,23 @@ Opens http://127.0.0.1:8765 in your browser and asks you to sign in:
   extension, closest start time within 3 minutes). The call's page then shows the desk outcome, and the desk's
   history links to the recording. If GoVoice's clock differs from the server's (e.g. a server on UTC), set
   `RECORDING_CLOCK_OFFSET_MINUTES` (GoVoice's time minus the server's, e.g. 60).
+- **Real-time alerts** (admins, on every page): an agent idle too long (taking calls but no call, a contact served
+  but not dialed, or a call ended but not closed), an unusually long call, five unanswered calls in a row, a sudden
+  drop in a campaign's contact rate (the last hour against the 7 days before), and a callback overdue. Each new alert
+  pops up as a toast (and as a desktop notification while the app is in the background, once allowed from the team
+  board's Alerts card); the Call desk menu entry shows how many are open and the team board lists them. An alert turns
+  critical at twice its threshold. The thresholds are in Settings > Call desk (`ALERT_*`; 0 turns one off).
+- **Idle prompts**: an agent taking calls who stays on the desk without calling anyone (no contact dialed, no call
+  closed) for `DESK_IDLE_PROMPT_MINUTES` (5 by default, Settings > Call desk; 0 turns it off) is prompted to call,
+  again every as many minutes while it lasts. Time with the desk closed doesn't count. Each idle stretch is logged:
+  admins see it in Operations > KPIs (the agent table's Idle column, and the Idle prompts list: when, how long, what
+  the agent was doing, and whether they then called, paused or left the desk).
+- **Earned breaks** (off by default; Settings > Call desk, `DESK_EARNED_BREAK`): an agent who closes
+  `DESK_EARNED_BREAK_CALLS` calls (20 by default; test calls don't count) is offered a break of
+  `DESK_EARNED_BREAK_MINUTES` (10 by default) before their next contact. They can take it now or later from the desk
+  bar, which also counts down the calls to the next one. The count starts again after each break taken. The break is
+  logged as an "Earned break" pause with its length as the limit, so it shows on the team board, the wallboard and the
+  KPIs, and turns red if it runs over.
 - **KPIs** (Operations > KPIs; agents see their own): calls closed, contact rate, wins and conversion rate, calls
   and wins per desk hour (time spent with "Taking calls" on), talk and wrap-up time, callbacks booked, contacts
   given back, and the AI's average score of the recorded calls, per agent and day by day.
@@ -243,6 +260,52 @@ table, AES with `cryptography`'s Fernet). The key is `SECRET_KEY` if set, else a
 `data/secret.key`: **back that file up with the database**; without it the saved passwords can't be read and have to
 be entered again in Users. Passwords saved before encryption are encrypted the next time the app starts. The SIP
 password is only sent to the account's own browser; the account password never leaves the server.
+
+#### Incoming calls
+
+When a call rings, the call card shows who's calling: their CRM contact, the desk's last call with them, the agent
+who knows them, a callback planned, and how many times they called before without an answer.
+
+- **Picked up**: the desk opens a call for them (badge *Incoming call*), in the **Incoming calls** campaign: its own
+  questions (why they called, how they heard of us...) and outcomes (support solved / to follow up, complaint...),
+  edited on Operations > Campaigns like the others. It's closed like any desk call: outcome, stage, callback, note to
+  the CRM. A contact the agent was served but hadn't called yet goes back to the queue. A caller who isn't in the CRM
+  can be added during the call; until then nothing about them is written to the CRM.
+- **Missed** (nobody answered, declined, or turned away because the agent was on another call): it waits on the
+  **Missed calls** list (desk and team board), one line per number. The desk serves missed calls before anything else:
+  for 5 minutes only to the agent who last spoke with the contact (else whose phone rang), then to anyone. An agent
+  can also call one back from the list, or dismiss it (spam, dealt with elsewhere). It leaves the list once someone
+  calls the number from the desk or the caller gets through.
+- A call that rings several agents (a ring group) counts once: the agents who didn't pick it up get no missed call.
+- **Alerts**: a missed call nobody called back within `ALERT_MISSED_CALL_MINUTES` (10) shows on the team board.
+- **Figures**: Operations > KPIs > Incoming calls: answer rate, missed calls, how many were dealt with, and how fast
+  they were called back; per agent, the calls that rang them, answered, missed and called back.
+
+## Connecting another CRM or phone system
+
+The CRM and the phone system are adapters. The rest of the app (call desk, pipeline, KPIs, the UI's API) only calls
+`call_analyzer/crm.py` and `call_analyzer/telephony.py`, which hand the work to the adapter chosen in Settings:
+
+| Setting | Built in | Adapters live in | Interface |
+| --- | --- | --- | --- |
+| `CRM_PROVIDER` | `twenty` | `call_analyzer/adapters/crm/` | `adapters/crm/base.py` (`CrmAdapter`) |
+| `TELEPHONY_PROVIDER` | `govoice` | `call_analyzer/adapters/telephony/` | `adapters/telephony/base.py` (`TelephonyAdapter`) |
+
+To add one, e.g. HubSpot:
+
+1. Create `call_analyzer/adapters/crm/hubspot.py` with a `class HubSpotCrm(CrmAdapter)`. Implement its methods so
+   they return the shapes described in `base.py` (`Person`, `Lead`, `Stage`, `Note`, ...). `twenty.py` is a complete
+   example. Raise `CrmError` with a message people can act on when the CRM can't be reached. List its settings in
+   `setting_keys` and `secret_keys`, and add them to `.env.example` so they show up in Settings.
+2. Register it in `BUILTIN` in `call_analyzer/crm.py`: `"hubspot": ".crm.hubspot:HubSpotCrm"`.
+3. Set `CRM_PROVIDER=hubspot` in Settings.
+
+A phone system works the same way: subclass `TelephonyAdapter` (recordings: `check`, `iter_recordings`, `download`;
+softphone: `softphone_defaults`, `sip_login`; optional login pages: `routers`), add it to `BUILTIN` in
+`call_analyzer/telephony.py`, and set `TELEPHONY_PROVIDER`. Restart the app after changing `TELEPHONY_PROVIDER`, since
+the web routes an adapter adds are mounted at startup. Caching, phone number matching (last 8 digits), the connection
+status and the session keepalive are shared and stay out of the adapters. `GET /api/providers` shows which adapters
+exist and which are in use. `tests/test_providers.py` shows a minimal adapter of each kind.
 
 ## Hosting with Docker
 

@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
 import { textDir } from "@/lib/bidi";
+import { t } from "@/lib/i18n";
 
 export function BusinessPage(): React.ReactElement {
   const { data } = useApi<{ text: string }>("/api/business");
@@ -31,9 +32,9 @@ export function BusinessPage(): React.ReactElement {
     try {
       await api("/api/business", { body: { text }, method: "PUT" });
       setOriginal(text);
-      toastManager.add({ title: "Business context saved", type: "success" });
+      toastManager.add({ title: t("business.saved"), type: "success" });
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't save", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("common.couldntSave"), type: "error" });
     } finally {
       setSaving(false);
     }
@@ -50,13 +51,13 @@ export function BusinessPage(): React.ReactElement {
   return (
     <>
       <PageHeader
-        description="What you sell, your ideal call, common objections and who is on which extension. Analysis judges every call against this."
-        title="Business context"
+        description={t("business.description")}
+        title={t("nav.business")}
       />
       <Alert variant="info">
         <InfoIcon aria-hidden="true" />
         <AlertDescription>
-          After changing it, re-analyze calls (Pipeline → Analyze with “Redo”) so existing feedback is updated.
+          {t("business.reanalyzeHint")}
         </AlertDescription>
       </Alert>
       <Card>
@@ -65,7 +66,7 @@ export function BusinessPage(): React.ReactElement {
             <Skeleton className="h-[60vh] w-full rounded-lg" />
           ) : (
             <Textarea
-              aria-label="Business context (Markdown)"
+              aria-label={t("business.textareaLabel")}
               className="min-h-[60vh] font-mono text-sm leading-relaxed"
               dir={textDir(text)}
               onChange={(e) => setText(e.target.value)}
@@ -78,15 +79,15 @@ export function BusinessPage(): React.ReactElement {
           {dirty && (
             <>
               <Badge className="me-auto" variant="warning">
-                Unsaved changes
+                {t("common.unsavedChanges")}
               </Badge>
               <Button onClick={() => setText(original ?? "")} variant="ghost">
-                Discard
+                {t("common.discard")}
               </Button>
             </>
           )}
           <Button disabled={!dirty} loading={saving} onClick={save}>
-            Save
+            {t("common.save")}
           </Button>
         </CardFooter>
       </Card>

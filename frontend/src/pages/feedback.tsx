@@ -12,11 +12,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useApi } from "@/lib/api";
 import { Bidi } from "@/lib/bidi";
-import { fmtDate, fmtDateTime, fmtRelative, fmtTime, numberFmt } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtRelative, fmtTime } from "@/lib/format";
 import { useMe } from "@/lib/me";
 import { href, navigate, type Route } from "@/lib/router";
 import type { FeedbackList } from "@/lib/types";
 import { CallSheet } from "./call-detail";
+import { t } from "@/lib/i18n";
 
 const LIMIT = 200;
 
@@ -35,8 +36,8 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
   React.useEffect(() => setSearch(q), [q]);
   React.useEffect(() => {
     if (search === q) return;
-    const t = window.setTimeout(() => setQuery({ q: search }), 300);
-    return () => window.clearTimeout(t);
+    const timer = window.setTimeout(() => setQuery({ q: search }), 300);
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
@@ -47,7 +48,7 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
 
   const items = data?.feedback ?? [];
   const total = data?.total ?? 0;
-  const authorItems = [{ label: "All authors", value: "all" }, ...(data?.authors ?? []).map((a) => ({ label: a, value: a }))];
+  const authorItems = [{ label: t("feedback.allAuthors"), value: "all" }, ...(data?.authors ?? []).map((a) => ({ label: a, value: a }))];
   const hasFilters = !!(q || author);
   const callHref = (id: string) => href("feedback", id, { author, q });
 
@@ -56,18 +57,18 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
       <PageHeader
         description={
           isAdmin
-            ? "Everything the team wrote about calls. Open a row to see the call, and add or edit feedback there."
-            : "What reviewers wrote about your calls."
+            ? t("feedback.descriptionAdmin")
+            : t("feedback.descriptionAgent")
         }
-        title="Human feedback"
+        title={t("nav.feedback")}
       />
 
       <div className="flex flex-wrap items-center gap-2">
         <InputGroup className="w-full sm:w-72">
           <InputGroupInput
-            aria-label="Search feedback"
+            aria-label={t("feedback.search")}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search feedback, number or call ID"
+            placeholder={t("feedback.searchPlaceholder")}
             type="search"
             value={search}
           />
@@ -81,7 +82,7 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
             onValueChange={(v) => setQuery({ author: v === "all" ? "" : (v as string) })}
             value={author || "all"}
           >
-            <SelectTrigger aria-label="Author" className="w-auto">
+            <SelectTrigger aria-label={t("feedback.author")} className="w-auto">
               <SelectValue />
             </SelectTrigger>
             <SelectPopup>
@@ -96,7 +97,7 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
         {hasFilters && (
           <Button onClick={() => navigate(href("feedback", selectedId), { replace: true })} variant="ghost">
             <XIcon aria-hidden="true" />
-            Reset
+            {t("common.reset")}
           </Button>
         )}
       </div>
@@ -104,17 +105,17 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
       <CardFrame>
         <CardFrameHeader className="flex min-h-14 flex-row items-center py-3">
           <div className="text-muted-foreground text-sm">
-            {data ? `${numberFmt.format(total)} ${total === 1 ? "note" : "notes"}` : "Loading feedback…"}
+            {data ? t("feedback.notes", { count: total }) : t("feedback.loading")}
           </div>
         </CardFrameHeader>
         <Table variant="card">
           <TableHeader>
             <TableRow>
-              <TableHead>Added</TableHead>
-              <TableHead>Author</TableHead>
-              <TableHead className="min-w-64">Feedback</TableHead>
-              <TableHead>Score</TableHead>
-              <TableHead>Call</TableHead>
+              <TableHead>{t("feedback.added")}</TableHead>
+              <TableHead>{t("feedback.author")}</TableHead>
+              <TableHead className="min-w-64">{t("feedback.feedback")}</TableHead>
+              <TableHead>{t("feedback.score")}</TableHead>
+              <TableHead>{t("feedback.call")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -142,7 +143,7 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
                       <Bidi className="line-clamp-3 whitespace-pre-wrap" text={f.body} />
                       {f.updated_at !== f.created_at && (
                         <span className="text-muted-foreground text-xs" title={fmtDateTime(f.updated_at)}>
-                          edited {fmtRelative(f.updated_at)}
+                          {t("feedback.edited", { time: fmtRelative(f.updated_at) })}
                         </span>
                       )}
                     </TableCell>
@@ -150,14 +151,14 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
                       <div className="flex flex-col items-start gap-1">
                         {f.score !== null ? (
                           <Badge className="tabular-nums" variant="outline">
-                            Human {f.score}/10
+                            {t("feedback.humanScore", { score: f.score })}
                           </Badge>
                         ) : (
                           <span className="text-muted-foreground">–</span>
                         )}
                         {f.call.score !== null && (
                           <span className="flex items-center gap-1 text-muted-foreground text-xs">
-                            AI <ScoreBadge score={f.call.score} />
+                            {t("feedback.ai")} <ScoreBadge score={f.call.score} />
                           </span>
                         )}
                       </div>
@@ -167,7 +168,7 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
                         #{f.call.id} · {f.call.customer}
                       </div>
                       <div className="text-muted-foreground text-xs">
-                        Agent {f.call.agent} · {fmtDate(f.call.date_call)}
+                        {t("shell.agentExt", { ext: f.call.agent })} · {fmtDate(f.call.date_call)}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -180,13 +181,13 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
                       <EmptyMedia variant="icon">
                         <MessageSquareTextIcon />
                       </EmptyMedia>
-                      <EmptyTitle>No feedback found</EmptyTitle>
+                      <EmptyTitle>{t("feedback.noneFound")}</EmptyTitle>
                       <EmptyDescription>
                         {hasFilters
-                          ? "Try a different search."
+                          ? t("common.tryDifferentSearch")
                           : isAdmin
-                            ? "Open a call and use its Human feedback tab to write the first note."
-                            : "Nobody has written feedback on your calls yet."}
+                            ? t("feedback.emptyAdmin")
+                            : t("feedback.emptyAgent")}
                       </EmptyDescription>
                     </EmptyHeader>
                   </Empty>
@@ -198,7 +199,7 @@ export function FeedbackPage({ route }: { route: Route }): React.ReactElement {
         {total > items.length && (
           <CardFrameFooter className="py-3">
             <p className="text-muted-foreground text-sm tabular-nums">
-              Showing the latest {numberFmt.format(items.length)} of {numberFmt.format(total)}. Search to narrow it down.
+              {t("feedback.showingLatest", { shown: items.length, total })}
             </p>
           </CardFrameFooter>
         )}

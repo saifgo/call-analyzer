@@ -1,0 +1,22 @@
+import { agents } from "./ar/agents";
+import { board } from "./ar/board";
+import { callDesk } from "./ar/callDesk";
+import { calls } from "./ar/calls";
+import { campaigns } from "./ar/campaigns";
+import { common } from "./ar/common";
+import { components } from "./ar/components";
+import { desk } from "./ar/desk";
+import { leads } from "./ar/leads";
+import { inbound } from "./ar/inbound";
+import { lib } from "./ar/lib";
+import { overview } from "./ar/overview";
+import { pages } from "./ar/pages";
+import { phone } from "./ar/phone";
+import { settings } from "./ar/settings";
+import { shell } from "./ar/shell";
+import { ui } from "./ar/ui";
+import { users } from "./ar/users";
+import { values } from "./ar/values";
+import { wall } from "./ar/wall";
+
+export const ar = { ...agents, ...board, ...callDesk, ...calls, ...campaigns, ...common, ...components, ...desk, ...inbound, ...leads, ...lib, ...overview, ...pages, ...phone, ...settings, ...shell, ...ui, ...users, ...values, ...wall };

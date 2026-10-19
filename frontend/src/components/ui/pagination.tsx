@@ -10,6 +10,7 @@ import {
 import type * as React from "react";
 import { cn } from "@/lib/utils";
 import { type Button, buttonVariants } from "@/components/ui/button";
+import { t } from "@/lib/i18n";
 
 export function Pagination({
   className,
@@ -84,13 +85,13 @@ export function PaginationPrevious({
 }: React.ComponentProps<typeof PaginationLink>): React.ReactElement {
   return (
     <PaginationLink
-      aria-label="Go to previous page"
+      aria-label={t("ui.previousPage")}
       className={cn("max-sm:aspect-square max-sm:p-0", className)}
       size="default"
       {...props}
     >
-      <ChevronLeftIcon className="sm:-ms-1" />
-      <span className="max-sm:hidden">Previous</span>
+      <ChevronLeftIcon className="sm:-ms-1 rtl:rotate-180" />
+      <span className="max-sm:hidden">{t("ui.previous")}</span>
     </PaginationLink>
   );
 }
@@ -101,13 +102,13 @@ export function PaginationNext({
 }: React.ComponentProps<typeof PaginationLink>): React.ReactElement {
   return (
     <PaginationLink
-      aria-label="Go to next page"
+      aria-label={t("ui.nextPage")}
       className={cn("max-sm:aspect-square max-sm:p-0", className)}
       size="default"
       {...props}
     >
-      <span className="max-sm:hidden">Next</span>
-      <ChevronRightIcon className="sm:-me-1" />
+      <span className="max-sm:hidden">{t("ui.next")}</span>
+      <ChevronRightIcon className="sm:-me-1 rtl:rotate-180" />
     </PaginationLink>
   );
 }
@@ -124,7 +125,7 @@ export function PaginationEllipsis({
       {...props}
     >
       <MoreHorizontalIcon className="size-5 sm:size-4" />
-      <span className="sr-only">More pages</span>
+      <span className="sr-only">{t("ui.morePages")}</span>
     </span>
   );
 }

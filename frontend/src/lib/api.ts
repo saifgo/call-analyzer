@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { getLocale, t } from "@/lib/i18n";
 
 export class ApiError extends Error {
   status: number;
@@ -18,13 +19,13 @@ export async function api<T = unknown>(
 ): Promise<T> {
   const res = await fetch(path, {
     method: options.method,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Accept-Language": getLocale(), "Content-Type": "application/json" },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
   if (res.status === 401 && path !== "/api/login") {
     // Session expired or signed out in another tab.
     location.href = loginUrl();
-    throw new ApiError("Not logged in", 401);
+    throw new ApiError(t("common.notLoggedIn"), 401);
   }
   if (!res.ok) {
     let detail = res.statusText;

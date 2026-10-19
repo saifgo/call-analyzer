@@ -4,6 +4,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import { humanize } from "@/lib/format";
 import type { CallSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { labels, t, type TKey } from "@/lib/i18n";
 
 export function scoreVariant(score: number): "success" | "warning" | "error" {
   return score >= 7 ? "success" : score >= 5 ? "warning" : "error";
@@ -18,14 +19,19 @@ export function ScoreBadge({ score, size }: { score: number | null | undefined; 
   );
 }
 
-const STATUS: Record<string, { label: string; dot: string }> = {
-  new: { dot: "bg-muted-foreground/48", label: "Not downloaded" },
-  downloaded: { dot: "bg-muted-foreground", label: "Downloaded" },
-  transcribed: { dot: "bg-info", label: "Transcribed" },
-  analyzed: { dot: "bg-success", label: "Analyzed" },
-  stale: { dot: "bg-warning", label: "Needs re-analysis" },
-  skipped: { dot: "bg-muted-foreground/24", label: "Skipped" },
+const STATUS: Record<string, { label: TKey; dot: string }> = {
+  new: { dot: "bg-muted-foreground/48", label: "calls.status.new" },
+  downloaded: { dot: "bg-muted-foreground", label: "calls.status.downloaded" },
+  transcribed: { dot: "bg-info", label: "calls.status.transcribed" },
+  analyzed: { dot: "bg-success", label: "calls.status.analyzed" },
+  stale: { dot: "bg-warning", label: "calls.status.stale" },
+  skipped: { dot: "bg-muted-foreground/24", label: "calls.status.skipped" },
 };
+
+/** The pipeline status of a call ("analyzed") as shown to the user. */
+export function statusLabel(status: string): string {
+  return STATUS[status] ? t(STATUS[status].label) : humanize(status);
+}
 
 function Dot({ className }: { className: string }) {
   return <span aria-hidden="true" className={cn("size-1.5 rounded-full", className)} />;
@@ -37,17 +43,16 @@ export function StatusBadge({ call }: { call: Pick<CallSummary, "status" | "erro
       <Tooltip>
         <TooltipTrigger render={<Badge variant="outline" />}>
           <Dot className="bg-destructive" />
-          Error
+          {t("calls.status.error")}
         </TooltipTrigger>
         <TooltipPopup className="max-w-xs">{call.error}</TooltipPopup>
       </Tooltip>
     );
   }
-  const s = STATUS[call.status] ?? { dot: "bg-muted-foreground", label: call.status };
   return (
     <Badge variant="outline">
-      <Dot className={s.dot} />
-      {s.label}
+      <Dot className={STATUS[call.status]?.dot ?? "bg-muted-foreground"} />
+      {statusLabel(call.status)}
     </Badge>
   );
 }
@@ -75,7 +80,7 @@ export const OUTCOME_COLOR: Record<string, string> = {
   sale: "bg-success",
 };
 
-export const KIND_LABEL: Record<string, string> = { other: "Other", sales: "Sales", service: "Service" };
+export const KIND_LABEL: Record<string, string> = labels({ other: "calls.kind.other", sales: "calls.kind.sales", service: "calls.kind.service" });
 
 /** Which score card judged the call; sales is the default so only the other kinds get a badge. */
 export function KindBadge({ kind }: { kind: string | null | undefined }) {

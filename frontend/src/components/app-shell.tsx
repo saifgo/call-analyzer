@@ -4,6 +4,7 @@ import {
   FileTextIcon,
   HeadsetIcon,
   KeyRoundIcon,
+  LanguagesIcon,
   LayoutDashboardIcon,
   LogOutIcon,
   MessageSquareTextIcon,
@@ -65,6 +66,7 @@ import {
 import { Sheet, SheetDescription, SheetFooter, SheetHeader, SheetPopup, SheetTitle } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
+import { useAlerts } from "@/lib/alerts";
 import { api } from "@/lib/api";
 import { useGoVoice } from "@/lib/govoice";
 import { fmtDateTime, fmtRelative } from "@/lib/format";
@@ -72,42 +74,44 @@ import { STEP_LABELS, useJob } from "@/lib/jobs";
 import { useMe } from "@/lib/me";
 import { href, type Route } from "@/lib/router";
 import { type Theme, useTheme } from "@/lib/theme";
+import { cn } from "@/lib/utils";
 import { liveAgents, stalledSteps, STEP_NAMES, useWorkers, WORKER_STEPS } from "@/lib/workers";
+import { joinList, LOCALES, type Locale, labels, t, type TKey, useT } from "@/lib/i18n";
 
-const NAV = [
+const NAV: { adminOnly?: boolean; items: { icon: typeof PhoneIcon; label: TKey; page: string }[]; label: TKey }[] = [
   {
-    items: [{ icon: HeadsetIcon, label: "Call desk", page: "operations" }],
-    label: "Operations",
+    items: [{ icon: HeadsetIcon, label: "nav.callDesk", page: "operations" }],
+    label: "nav.group.operations",
   },
   {
     items: [
-      { icon: LayoutDashboardIcon, label: "Dashboard", page: "dashboard" },
-      { icon: PhoneIcon, label: "Calls", page: "calls" },
-      { icon: MessageSquareTextIcon, label: "Human feedback", page: "feedback" },
-      { icon: FileTextIcon, label: "Reports", page: "reports" },
+      { icon: LayoutDashboardIcon, label: "nav.dashboard", page: "dashboard" },
+      { icon: PhoneIcon, label: "nav.calls", page: "calls" },
+      { icon: MessageSquareTextIcon, label: "nav.feedback", page: "feedback" },
+      { icon: FileTextIcon, label: "nav.reports", page: "reports" },
     ],
-    label: "Coaching",
+    label: "nav.group.coaching",
   },
   {
     adminOnly: true,
-    items: [{ icon: PhoneOutgoingIcon, label: "Leads to call", page: "leads" }],
-    label: "CRM",
+    items: [{ icon: PhoneOutgoingIcon, label: "nav.leads", page: "leads" }],
+    label: "nav.group.crm",
   },
   {
     adminOnly: true,
     items: [
-      { icon: WorkflowIcon, label: "Pipeline", page: "pipeline" },
-      { icon: MonitorSmartphoneIcon, label: "Remote agents", page: "agents" },
-      { icon: BriefcaseBusinessIcon, label: "Business context", page: "business" },
-      { icon: UsersIcon, label: "Users", page: "users" },
-      { icon: Settings2Icon, label: "Settings", page: "settings" },
+      { icon: WorkflowIcon, label: "nav.pipeline", page: "pipeline" },
+      { icon: MonitorSmartphoneIcon, label: "nav.agents", page: "agents" },
+      { icon: BriefcaseBusinessIcon, label: "nav.business", page: "business" },
+      { icon: UsersIcon, label: "nav.users", page: "users" },
+      { icon: Settings2Icon, label: "nav.settings", page: "settings" },
     ],
-    label: "Workspace",
+    label: "nav.group.workspace",
   },
 ];
 
-export const PAGE_TITLES: Record<string, string> = Object.fromEntries(
-  NAV.flatMap((g) => g.items.map((i) => [i.page, i.label])),
+export const PAGE_TITLES: Record<string, string> = labels(
+  Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.page, i.label]))) as Record<string, TKey>,
 );
 const ADMIN_PAGES = new Set(NAV.filter((g) => g.adminOnly).flatMap((g) => g.items.map((i) => i.page)));
 
@@ -116,10 +120,13 @@ function NavLinks({ route }: { route: Route }) {
   const { state: workers } = useWorkers();
   const { isAdmin } = useMe();
   const agentsOnline = workers ? liveAgents(workers.workers).length : 0;
+  const { alerts } = useAlerts();
+  const critical = alerts?.some((a) => a.level === "critical");
   const { isMobile, setOpenMobile } = useSidebar();
+  const { t } = useT();
   return NAV.filter((group) => isAdmin || !group.adminOnly).map((group) => (
     <SidebarGroup key={group.label}>
-      <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+      <SidebarGroupLabel>{t(group.label)}</SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
           {group.items.map((item) => (
@@ -128,18 +135,30 @@ function NavLinks({ route }: { route: Route }) {
                 isActive={route.page === item.page}
                 onClick={() => isMobile && setOpenMobile(false)}
                 render={<a href={href(item.page)} />}
-                tooltip={item.label}
+                tooltip={t(item.label)}
               >
                 <item.icon aria-hidden="true" />
-                <span>{item.label}</span>
+                <span>{t(item.label)}</span>
               </SidebarMenuButton>
               {item.page === "pipeline" && state?.running && (
                 <SidebarMenuBadge>
                   <Spinner className="size-3.5" />
                 </SidebarMenuBadge>
               )}
+              {item.page === "operations" && isAdmin && !!alerts?.length && (
+                <SidebarMenuBadge
+                  aria-label={t("shell.alertsOnDesk", { count: alerts.length })}
+                  className={cn(
+                    critical
+                      ? "bg-destructive/16 text-destructive-foreground peer-hover/menu-button:text-destructive-foreground peer-data-[active=true]/menu-button:text-destructive-foreground"
+                      : "bg-warning/16 text-warning-foreground peer-hover/menu-button:text-warning-foreground peer-data-[active=true]/menu-button:text-warning-foreground",
+                  )}
+                >
+                  {alerts.length}
+                </SidebarMenuBadge>
+              )}
               {item.page === "agents" && agentsOnline > 0 && (
-                <SidebarMenuBadge aria-label={`${agentsOnline} online`}>{agentsOnline}</SidebarMenuBadge>
+                <SidebarMenuBadge aria-label={t("shell.online", { count: agentsOnline })}>{agentsOnline}</SidebarMenuBadge>
               )}
             </SidebarMenuItem>
           ))}
@@ -152,9 +171,14 @@ function NavLinks({ route }: { route: Route }) {
 function UserMenu() {
   const me = useMe();
   const [theme, setTheme] = useTheme();
+  const { t, locale, setLocale } = useT();
   const [passwordOpen, setPasswordOpen] = React.useState(false);
   const name = me.display_name || me.user;
-  const subtitle = me.isAdmin ? "Admin" : me.agents.length ? `Agent ${me.agents.join(", ")}` : "Agent";
+  const subtitle = me.isAdmin
+    ? t("shell.admin")
+    : me.agents.length
+      ? t("shell.agentExt", { ext: me.agents.join(", ") })
+      : t("shell.agent");
   const signOut = async () => {
     await api("/api/logout", { method: "POST" });
     location.href = "/login";
@@ -166,7 +190,7 @@ function UserMenu() {
           <Avatar className="size-8 rounded-lg">
             <AvatarFallback className="rounded-lg">{name.slice(0, 2).toUpperCase()}</AvatarFallback>
           </Avatar>
-          <div className="grid flex-1 text-left text-sm leading-tight">
+          <div className="grid flex-1 text-start text-sm leading-tight">
             <span className="truncate font-medium text-sidebar-accent-foreground">{name}</span>
             <span className="truncate text-xs">{subtitle}</span>
           </div>
@@ -174,36 +198,52 @@ function UserMenu() {
         </MenuTrigger>
         <MenuPopup align="start" className="w-(--anchor-width) min-w-60" side="top">
           <MenuGroup>
-            <MenuGroupLabel>Appearance</MenuGroupLabel>
+            <MenuGroupLabel>{t("shell.appearance")}</MenuGroupLabel>
             <MenuRadioGroup onValueChange={(v) => setTheme(v as Theme)} value={theme}>
               <MenuRadioItem value="light">
                 <span className="flex items-center gap-2">
                   <SunIcon aria-hidden="true" />
-                  Light
+                  {t("shell.theme.light")}
                 </span>
               </MenuRadioItem>
               <MenuRadioItem value="dark">
                 <span className="flex items-center gap-2">
                   <MoonIcon aria-hidden="true" />
-                  Dark
+                  {t("shell.theme.dark")}
                 </span>
               </MenuRadioItem>
               <MenuRadioItem value="system">
                 <span className="flex items-center gap-2">
                   <MonitorIcon aria-hidden="true" />
-                  System
+                  {t("shell.theme.system")}
                 </span>
               </MenuRadioItem>
             </MenuRadioGroup>
           </MenuGroup>
           <MenuSeparator />
+          <MenuGroup>
+            <MenuGroupLabel className="flex items-center gap-2">
+              <LanguagesIcon aria-hidden="true" className="size-3.5" />
+              {t("shell.language")}
+            </MenuGroupLabel>
+            <MenuRadioGroup onValueChange={(v) => setLocale(v as Locale)} value={locale}>
+              {LOCALES.map((l) => (
+                <MenuRadioItem key={l.value} value={l.value}>
+                  <span dir={l.dir} lang={l.value}>
+                    {l.label}
+                  </span>
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+          </MenuGroup>
+          <MenuSeparator />
           <MenuItem onClick={() => setPasswordOpen(true)}>
             <KeyRoundIcon aria-hidden="true" />
-            Change password
+            {t("shell.changePassword")}
           </MenuItem>
           <MenuItem onClick={signOut}>
             <LogOutIcon aria-hidden="true" />
-            Sign out
+            {t("shell.signOut")}
           </MenuItem>
         </MenuPopup>
       </Menu>
@@ -215,11 +255,12 @@ function UserMenu() {
 /** Shown when the saved GoVoice session is missing or expired. */
 function GoVoiceAlert() {
   const { status, promptLogin } = useGoVoice();
+  const { t } = useT();
   if (status?.connected !== false) return null;
   return (
     <Button onClick={() => promptLogin(status.message)} size="sm" variant="outline">
       <span aria-hidden="true" className="size-2 rounded-full bg-destructive" />
-      Log in to GoVoice
+      {t("govoice.logIn")}
     </Button>
   );
 }
@@ -227,6 +268,7 @@ function GoVoiceAlert() {
 /** Remote agents: warns when a step waits for an agent that isn't there, otherwise shows how many are online. */
 function AgentsAlert() {
   const { state } = useWorkers();
+  const { t } = useT();
   if (!state) return null;
   const stalled = stalledSteps(state);
   if (stalled.length) {
@@ -234,11 +276,10 @@ function AgentsAlert() {
       <Tooltip>
         <TooltipTrigger render={<Button render={<a href={href("agents")} />} size="sm" variant="outline" />}>
           <span aria-hidden="true" className="size-2 rounded-full bg-warning" />
-          No agent online
+          {t("shell.noAgentOnline")}
         </TooltipTrigger>
         <TooltipPopup className="max-w-xs">
-          {stalled.map((s) => STEP_NAMES[s]).join(" and ")} {stalled.length > 1 ? "are" : "is"} set to remote agents
-          only, so calls wait in the queue until an agent is ready (an agent may still be downloading its model).
+          {t("shell.stalledSteps", { count: stalled.length, steps: joinList(stalled.map((s) => STEP_NAMES[s])) })}
         </TooltipPopup>
       </Tooltip>
     );
@@ -248,7 +289,7 @@ function AgentsAlert() {
   if (!used || online === 0) return null;
   return (
     <Badge render={<a href={href("agents")} />} variant="success">
-      {online} {online === 1 ? "agent" : "agents"} online
+      {t("shell.agentsOnline", { count: online })}
     </Badge>
   );
 }
@@ -260,14 +301,15 @@ function jobTitle(label: string | undefined) {
 }
 
 function jobResult(code: number | null | undefined) {
-  if (code === 0) return { label: "Succeeded", variant: "success" as const };
-  if (code === -1) return { label: "Stopped", variant: "warning" as const };
-  return { label: "Failed", variant: "error" as const };
+  if (code === 0) return { label: t("shell.job.succeeded"), variant: "success" as const };
+  if (code === -1) return { label: t("shell.job.stopped"), variant: "warning" as const };
+  return { label: t("shell.job.failed"), variant: "error" as const };
 }
 
 /** Header button for the current or last job; opens the log drawer. */
 function JobStatus({ onOpen }: { onOpen: () => void }) {
   const { state, lines } = useJob();
+  const { t } = useT();
   if (!state?.started_at) return null;
   if (state.running) {
     return (
@@ -276,7 +318,7 @@ function JobStatus({ onOpen }: { onOpen: () => void }) {
           <Spinner />
           <span className="max-w-48 truncate">{jobTitle(state.label)}</span>
         </TooltipTrigger>
-        <TooltipPopup className="max-w-sm font-mono text-xs">{lines.at(-1) || "Starting…"}</TooltipPopup>
+        <TooltipPopup className="max-w-sm font-mono text-xs">{lines.at(-1) || t("shell.job.starting")}</TooltipPopup>
       </Tooltip>
     );
   }
@@ -287,7 +329,7 @@ function JobStatus({ onOpen }: { onOpen: () => void }) {
       render={<button onClick={onOpen} type="button" />}
       variant={jobResult(state.exit_code).variant}
     >
-      {ok ? "Last job finished" : state.exit_code === -1 ? "Last job stopped" : "Last job failed"}
+      {ok ? t("shell.job.lastFinished") : state.exit_code === -1 ? t("shell.job.lastStopped") : t("shell.job.lastFailed")}
     </Badge>
   );
 }
@@ -295,24 +337,25 @@ function JobStatus({ onOpen }: { onOpen: () => void }) {
 /** Live worker log of the current or last job, available from every page. */
 function JobDrawer({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { state, lines, stop } = useJob();
+  const { t, dir } = useT();
   const running = !!state?.running;
   const result = jobResult(state?.exit_code);
   return (
     <Sheet onOpenChange={onOpenChange} open={open}>
-      <SheetPopup className="h-full max-w-2xl" side="right" variant="inset">
+      <SheetPopup className="h-full max-w-2xl" side={dir === "rtl" ? "left" : "right"} variant="inset">
         <SheetHeader className="pe-12">
           <div className="flex items-center gap-2">
             {running && <Spinner className="size-4" />}
-            <SheetTitle className="truncate text-lg">{jobTitle(state?.label) || "Job log"}</SheetTitle>
+            <SheetTitle className="truncate text-lg">{jobTitle(state?.label) || t("shell.job.log")}</SheetTitle>
             {state?.started_at &&
-              (running ? <Badge variant="info">Running</Badge> : <Badge variant={result.variant}>{result.label}</Badge>)}
+              (running ? <Badge variant="info">{t("shell.job.running")}</Badge> : <Badge variant={result.variant}>{result.label}</Badge>)}
           </div>
           <SheetDescription>
             {running
-              ? `Running since ${fmtDateTime(state?.started_at)}`
+              ? t("shell.job.runningSince", { time: fmtDateTime(state?.started_at) })
               : state?.finished_at
-                ? `Finished ${fmtRelative(state.finished_at)}`
-                : "Output of the current or last job appears here."}
+                ? t("shell.job.finishedAgo", { time: fmtRelative(state.finished_at) })
+                : t("shell.job.empty")}
           </SheetDescription>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col px-6 pb-6">
@@ -322,12 +365,12 @@ function JobDrawer({ open, onOpenChange }: { open: boolean; onOpenChange: (open:
           {running && (
             <Button className="sm:me-auto" onClick={stop} variant="destructive-outline">
               <SquareIcon aria-hidden="true" />
-              Stop
+              {t("shell.job.stop")}
             </Button>
           )}
           <Button onClick={() => onOpenChange(false)} render={<a href={href("pipeline")} />} variant="outline">
             <WorkflowIcon aria-hidden="true" />
-            Open pipeline
+            {t("shell.job.openPipeline")}
           </Button>
         </SheetFooter>
       </SheetPopup>
@@ -345,19 +388,20 @@ export function AppShell({
   children: React.ReactNode;
 }): React.ReactElement {
   const { isAdmin } = useMe();
-  const title = (isAdmin || !ADMIN_PAGES.has(route.page) ? PAGE_TITLES[route.page] : null) ?? "Dashboard";
+  const { t, dir } = useT();
+  const title = (isAdmin || !ADMIN_PAGES.has(route.page) ? PAGE_TITLES[route.page] : null) ?? t("nav.dashboard");
   const [jobOpen, setJobOpen] = React.useState(false);
   return (
     <SidebarProvider>
-      <Sidebar collapsible="icon" variant="inset">
+      <Sidebar collapsible="icon" side={dir === "rtl" ? "right" : "left"} variant="inset">
         <SidebarHeader>
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton render={<a href={href("dashboard")} />} size="lg">
                 <img alt="" className="size-8 rounded-lg" src="/static/favicon.svg" />
-                <div className="grid flex-1 text-left text-sm leading-tight">
+                <div className="grid flex-1 text-start text-sm leading-tight">
                   <span className="truncate font-semibold text-sidebar-accent-foreground">Call Analyzer</span>
-                  <span className="truncate text-xs">Sales call coaching</span>
+                  <span className="truncate text-xs">{t("shell.tagline")}</span>
                 </div>
               </SidebarMenuButton>
             </SidebarMenuItem>

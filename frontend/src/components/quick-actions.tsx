@@ -8,6 +8,7 @@ import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
 import type { OpCall, WaActions, WaMessage } from "@/lib/types";
+import { t } from "@/lib/i18n";
 
 export function QuickActions({ op }: { op: OpCall }) {
   const { data: config } = useApi<WaActions>("/api/whatsapp/actions");
@@ -26,9 +27,9 @@ export function QuickActions({ op }: { op: OpCall }) {
         method: "POST",
       });
       setMessages(res.messages);
-      toastManager.add({ title: `"${label}" sent on WhatsApp`, type: "success" });
+      toastManager.add({ title: t("whatsapp.sentToast", { label }), type: "success" });
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: `"${label}" wasn't sent`, type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("whatsapp.notSentToast", { label }), type: "error" });
     } finally {
       setSending(null);
     }
@@ -43,7 +44,7 @@ export function QuickActions({ op }: { op: OpCall }) {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="flex items-center gap-1.5 font-medium text-sm">
             <MessageCircleIcon aria-hidden="true" className="size-4 text-success" />
-            Send on WhatsApp
+            {t("whatsapp.sendOn")}
           </span>
           {phones.length > 1 && (
             <Select items={phoneItems} onValueChange={(v) => setPhone(v as string)} value={phone}>
@@ -77,7 +78,7 @@ export function QuickActions({ op }: { op: OpCall }) {
                   <span className="truncate" dir="auto">
                     {a.label}
                   </span>
-                  {sent && <span className="font-normal text-muted-foreground text-xs">Sent at {fmtTime(sent.sent_at)} · send again</span>}
+                  {sent && <span className="font-normal text-muted-foreground text-xs">{t("whatsapp.sentAtAgain", { time: fmtTime(sent.sent_at) })}</span>}
                 </span>
               </Button>
             );

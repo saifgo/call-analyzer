@@ -1,8 +1,9 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
+import { t } from "@/lib/i18n";
 
 /** Scrolling log output that sticks to the bottom while new lines arrive, unless the user scrolled up. */
-export function JobLog({ lines, className, empty = "No job has run yet." }: { lines: string[]; className?: string; empty?: string }) {
+export function JobLog({ lines, className, empty = t("jobs.noneYet") }: { lines: string[]; className?: string; empty?: string }) {
   const ref = React.useRef<HTMLPreElement>(null);
   const stick = React.useRef(true);
 
@@ -13,6 +14,7 @@ export function JobLog({ lines, className, empty = "No job has run yet." }: { li
 
   return (
     <pre
+      dir="ltr"
       className={cn(
         "max-h-[60vh] min-h-48 overflow-auto whitespace-pre-wrap break-words rounded-xl border bg-muted/48 p-4 font-mono text-xs leading-relaxed",
         !lines.length && "text-muted-foreground",

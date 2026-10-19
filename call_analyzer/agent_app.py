@@ -73,6 +73,22 @@ def attach_console():
             pass
 
 
+def hide_child_consoles():
+    """The app has no console, so every console program it starts (claude, cmd, schtasks, the Cursor bridge…)
+    would pop up its own window over whatever the user is doing. Start them all without one."""
+    if os.name != "nt" or getattr(subprocess.Popen, "_call_analyzer_hidden", False):
+        return
+    original = subprocess.Popen.__init__
+
+    def __init__(self, *args, **kwargs):
+        if not kwargs.get("creationflags"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        original(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = __init__
+    subprocess.Popen._call_analyzer_hidden = True
+
+
 def relaunch(*args: str):
     command = [sys.executable, *args] if FROZEN else [sys.executable, "-m", "call_analyzer.agent_app", *args]
     subprocess.Popen(command, close_fds=True)
@@ -354,6 +370,7 @@ def run_app(*, background: bool = False, setup_first: bool = False):
         message("Call Analyzer Agent is already running: look for its icon near the clock.")
         return
     agent_mod._setup_logging()
+    hide_child_consoles()
     TrayApp(show_welcome=not background).run()
 
 

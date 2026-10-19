@@ -4,12 +4,15 @@ Agents and admins work the desk (/api/operations/desk, next, call...) and see th
 team board, everyone's KPIs and the outcome / AI score insights, edit campaigns, and can give a contact back to the
 queue or retry writing a call to the CRM (see AGENT_ALLOWED in server.py).
 """
+from datetime import date, timedelta
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
-from .. import campaigns, db, desk_stats, operations
+from .. import alerts, breaks, campaigns, db, desk_stats, floor, idle, inbound, operations
 from ..campaigns import CampaignError
+from ..floor import FloorError
 from ..operations import OperationError
 
 router = APIRouter()
@@ -30,17 +33,132 @@ def get_config():
 
 @router.get("/api/operations/desk")
 def get_desk(request: Request):
-    """The agent's desk, polled every few seconds: whether they're ready, the contact they hold, their callbacks."""
+    """The agent's desk, polled every few seconds: whether they're ready (or why they paused), the contact they
+    hold, their callbacks, today's figures against their targets, and the prompt to call when they've been idle too
+    long (see idle.py), where they stand toward their next earned break (see breaks.py), and the missed calls
+    waiting to be called back (see inbound.py)."""
     user = request.state.user
     conn = db.connect()
     operations.release_stale(conn)
     ready = operations.heartbeat(conn, user)
+    missed = inbound.missed(conn)
     row = operations.current(conn, user)
     names = operations.account_names(conn)
     campaign = operations.agent_campaign(conn, user)
-    return {"ready": ready, "current": operations.to_dict(row, names) if row else None,
-            "campaign_id": campaign["id"], "today": operations.today(conn, user),
+    today = operations.today(conn, user)
+    idle_prompt = idle.check(conn, user)
+    return {"ready": ready, "idle_prompt": idle_prompt, "current": operations.to_dict(row, names) if row else None,
+            "campaign_id": campaign["id"], "today": today, "goals": operations.goals(conn, user, today),
+            "pause": None if ready else floor.pause_state(conn, user), "pause_reasons": floor.reasons(conn),
+            "earned_break": breaks.state(conn, user), "missed": missed,
             "callbacks": operations.my_callbacks(conn, user), "queue": operations.queue_counts(conn, campaign)}
+
+
+# --- Incoming calls (see inbound.py): the agent's softphone says when one rings, is answered and ends ---------------
+
+class RingBody(BaseModel):
+    number: str
+    name: str = ""
+
+
+@router.post("/api/inbound")
+async def inbound_ring(body: RingBody, request: Request):
+    """A call rings the agent's softphone: logged, and who's calling."""
+    try:
+        return await run_in_threadpool(inbound.ring, request.state.user, body.number, body.name)
+    except OperationError as exc:
+        _fail(exc)
+
+
+@router.post("/api/inbound/busy")
+def inbound_busy(body: RingBody, request: Request):
+    """A call was turned away because the agent was on another one (a missed call)."""
+    try:
+        return inbound.busy(request.state.user, body.number, body.name)
+    except OperationError as exc:
+        _fail(exc)
+
+
+@router.post("/api/inbound/{inbound_id}/answer")
+async def inbound_answer(inbound_id: int, request: Request):
+    """The agent picked up: the desk call opened for the caller."""
+    try:
+        return {"current": await run_in_threadpool(inbound.answer, request.state.user, inbound_id)}
+    except OperationError as exc:
+        _fail(exc)
+
+
+class InboundEndBody(BaseModel):
+    answered: bool
+    declined: bool = False  # the agent turned it down
+    elsewhere: bool = False  # another phone picked it up
+
+
+@router.post("/api/inbound/{inbound_id}/end")
+def inbound_end(inbound_id: int, body: InboundEndBody, request: Request):
+    try:
+        inbound.end(request.state.user, inbound_id, answered=body.answered, declined=body.declined,
+                    elsewhere=body.elsewhere)
+    except OperationError as exc:
+        _fail(exc)
+    return {"ok": True}
+
+
+@router.post("/api/operations/missed/{key}/take")
+async def take_missed(key: str, request: Request):
+    """The agent calls this missed call back now."""
+    try:
+        return {"current": await run_in_threadpool(inbound.take, request.state.user, key)}
+    except OperationError as exc:
+        _fail(exc)
+
+
+@router.post("/api/operations/missed/{key}/dismiss")
+def dismiss_missed(key: str, request: Request):
+    """Nobody needs to call this number back (spam, dealt with elsewhere)."""
+    try:
+        inbound.dismiss(request.state.user, key)
+    except OperationError as exc:
+        _fail(exc)
+    return {"ok": True}
+
+
+class LinkBody(BaseModel):
+    opportunity_id: str | None = None  # one of the caller's opportunities
+    person_id: str | None = None  # their CRM contact: a new opportunity for them
+    name: str = ""  # else a new contact
+    city: str = ""
+    email: str = ""
+
+
+@router.post("/api/operations/{op_id}/link")
+async def link_call(op_id: int, body: LinkBody, request: Request):
+    """Link a call that came in to the caller's CRM contact or opportunity (adding them when they aren't in it)."""
+    try:
+        return await run_in_threadpool(lambda: operations.link(
+            op_id, request.state.user, opportunity_id=body.opportunity_id, person_id=body.person_id, name=body.name,
+            city=body.city, email=body.email))
+    except OperationError as exc:
+        _fail(exc)
+
+
+@router.post("/api/operations/idle-prompt/{prompt_id}/seen")
+def idle_prompt_seen(prompt_id: int, request: Request):
+    """The agent dismissed the prompt to call (it's still logged; it comes back if they stay idle)."""
+    idle.acknowledge(db.connect(), request.state.user, prompt_id)
+    return {"ok": True}
+
+
+@router.post("/api/operations/earned-break")
+def take_earned_break(request: Request):
+    """The agent takes the break they earned by closing enough calls: they pause for it."""
+    conn = db.connect()
+    try:
+        breaks.take(conn, request.state.user)
+    except FloorError as exc:
+        conn.rollback()
+        raise HTTPException(409, str(exc))
+    return {"ok": True}
 
 
 class CampaignChoice(BaseModel):
@@ -59,11 +177,15 @@ def choose_campaign(body: CampaignChoice, request: Request):
 
 class ReadyBody(BaseModel):
     ready: bool
+    reason_id: int | None = None  # why the agent pauses (see floor.py)
 
 
 @router.post("/api/operations/ready")
 def set_ready(body: ReadyBody, request: Request):
-    operations.set_ready(db.connect(), request.state.user, body.ready)
+    try:
+        operations.set_ready(db.connect(), request.state.user, body.ready, body.reason_id)
+    except OperationError as exc:
+        _fail(exc)
     return {"ok": True, "ready": body.ready}
 
 
@@ -227,8 +349,13 @@ def cancel_callback(op_id: int, request: Request):
 async def get_kpis(request: Request, since: str = "", until: str = "", campaign_id: int | None = None):
     """Agent KPIs between two days (until exclusive; today by default). Agents only get their own."""
     username = None if _is_admin(request) else request.state.user
-    return await run_in_threadpool(lambda: desk_stats.kpis(db.connect(), since or None, until or None,
-                                                           username=username, campaign_id=campaign_id))
+
+    def figures():
+        conn = db.connect()
+        found = desk_stats.kpis(conn, since or None, until or None, username=username, campaign_id=campaign_id)
+        found["inbound"] = inbound.stats(conn, found["since"], found["until"], username)
+        return found
+    return await run_in_threadpool(figures)
 
 
 # --- Admins -----------------------------------------------------------------------------------------
@@ -265,11 +392,48 @@ def delete_campaign(campaign_id: int):
         raise HTTPException(400, str(exc))
 
 
+@router.get("/api/operations/targets")
+def get_targets():
+    """Daily targets (team and per agent), the workday, the pause reasons, and the accounts to set targets for."""
+    conn = db.connect()
+    users = [{"username": r[0], "name": r[1] or r[0], "role": r[2]}
+             for r in conn.execute("SELECT username, display_name, role FROM users ORDER BY username")]
+    return {**floor.targets(conn), "pause_reasons": floor.reasons(conn), "users": users}
+
+
+class TargetsBody(BaseModel):
+    team: dict = {}
+    agents: dict = {}
+    workday: dict = {}
+    pause_reasons: list[dict] | None = None
+
+
+@router.put("/api/operations/targets")
+def save_targets(body: TargetsBody):
+    conn = db.connect()
+    try:
+        if body.pause_reasons is not None:
+            floor.save_reasons(conn, body.pause_reasons)
+        floor.save_targets(conn, {"team": body.team, "agents": body.agents, "workday": body.workday})
+    except FloorError as exc:
+        conn.rollback()
+        raise HTTPException(400, str(exc))
+    return get_targets()
+
+
 @router.get("/api/operations/board")
 def get_board():
     conn = db.connect()
     operations.release_stale(conn)
-    return operations.board(conn)
+    today = date.today()
+    return {**operations.board(conn), "missed": inbound.missed(conn),
+            "inbound_today": inbound.stats(conn, today.isoformat(), (today + timedelta(days=1)).isoformat())["team"]}
+
+
+@router.get("/api/operations/alerts")
+def get_alerts():
+    """What needs a supervisor's eye on the desk right now (see alerts.py); every admin page polls it."""
+    return {"alerts": alerts.current(db.connect())}
 
 
 @router.post("/api/operations/{op_id}/release")

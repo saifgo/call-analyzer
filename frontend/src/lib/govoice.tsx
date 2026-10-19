@@ -1,5 +1,5 @@
 // GoVoice sign-in: when the saved GoVoice session is missing or expired, ask the user to log in to GoVoice
-// in a new tab. The server captures the session from that login (see web/govoice_login.py) and saves it.
+// in a new tab. The server captures the session from that login (see adapters/telephony/govoice/login.py) and saves it.
 import { ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
 import * as React from "react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { toastManager } from "@/components/ui/toast";
 import { api } from "@/lib/api";
 import type { GoVoiceStatus } from "@/lib/types";
+import { useT } from "@/lib/i18n";
 
 const LOGIN_URL = "/govoice-login/";
 
@@ -52,6 +53,7 @@ export function GoVoiceProvider({
   const [waiting, setWaiting] = React.useState(false);
   const [checking, setChecking] = React.useState(false);
   const [resumes, setResumes] = React.useState(false);
+  const { t, tx } = useT();
   const pending = React.useRef<(() => void) | undefined>(undefined);
   const popup = React.useRef<Window | null>(null);
 
@@ -78,7 +80,7 @@ export function GoVoiceProvider({
     } catch {
       // already closed
     }
-    toastManager.add({ description: next.message, title: "Connected to GoVoice", type: "success" });
+    toastManager.add({ description: next.message, title: t("govoice.connected"), type: "success" });
     const then = pending.current;
     pending.current = undefined;
     then?.();
@@ -142,7 +144,7 @@ export function GoVoiceProvider({
     const next = await fetchStatus(true);
     setChecking(false);
     if (next?.connected) connected(next);
-    else toastManager.add({ description: next?.message, title: "Still not connected", type: "warning" });
+    else toastManager.add({ description: next?.message, title: t("govoice.stillNotConnected"), type: "warning" });
   };
 
   const onOpenChange = (value: boolean) => {
@@ -164,10 +166,10 @@ export function GoVoiceProvider({
       <Dialog onOpenChange={onOpenChange} open={open}>
         <DialogPopup className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Log in to GoVoice</DialogTitle>
+            <DialogTitle>{t("govoice.logIn")}</DialogTitle>
             <DialogDescription>
-              {reason ? `${reason}. ` : ""}Sign in to your GoVoice account in the tab that opens; Call Analyzer saves the
-              session automatically{resumes ? " and continues where you left off" : ""}.
+              {reason ? `${reason}. ` : ""}
+              {resumes ? t("govoice.loginHelpResume") : t("govoice.loginHelp")}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
@@ -175,28 +177,30 @@ export function GoVoiceProvider({
               <div className="flex items-center gap-3 rounded-lg border bg-muted/50 p-3 text-sm">
                 <Spinner className="size-4 shrink-0" />
                 <span>
-                  Waiting for you to sign in to GoVoice… Tab didn't open?{" "}
-                  <a className="underline underline-offset-2" href={LOGIN_URL} rel="noopener" target="_blank">
-                    Open the login page
-                  </a>
-                  .
+                  {tx("govoice.waiting", {
+                    link: (
+                      <a className="underline underline-offset-2" href={LOGIN_URL} rel="noopener" target="_blank">
+                        {t("govoice.openLoginPage")}
+                      </a>
+                    ),
+                  })}
                 </span>
               </div>
             ) : (
               <p className="text-muted-foreground text-sm">
-                You can also paste a cookie copied from your browser in Settings → <code>GOVOICE_COOKIE</code>.
+                {tx("govoice.cookieHint", { cookie: <code>GOVOICE_COOKIE</code> })}
               </p>
             )}
           </DialogPanel>
           <DialogFooter>
-            <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+            <DialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</DialogClose>
             <Button loading={checking} onClick={checkAgain} variant="outline">
               <RefreshCwIcon aria-hidden="true" />
-              Check again
+              {t("govoice.checkAgain")}
             </Button>
             <Button onClick={openLogin}>
               <ExternalLinkIcon aria-hidden="true" />
-              {waiting ? "Open again" : "Open GoVoice login"}
+              {waiting ? t("govoice.openAgain") : t("govoice.openLogin")}
             </Button>
           </DialogFooter>
         </DialogPopup>

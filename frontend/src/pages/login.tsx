@@ -7,7 +7,9 @@ import { Field, FieldLabel } from "@/components/ui/field";
 import { Form } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { LanguageSelect } from "@/components/language-select";
 import { api } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 // Only follow same-site paths ("/..." but not "//other-site").
 function nextTarget(): string {
@@ -20,6 +22,7 @@ export function LoginPage(): React.ReactElement {
   const [loading, setLoading] = React.useState(false);
   const [showPassword, setShowPassword] = React.useState(false);
   const passwordRef = React.useRef<HTMLInputElement>(null);
+  const { t } = useT();
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -33,7 +36,7 @@ export function LoginPage(): React.ReactElement {
       });
       location.href = nextTarget();
     } catch (err) {
-      setError(err instanceof TypeError ? "Can't reach the server" : (err as Error).message);
+      setError(err instanceof TypeError ? t("login.unreachable") : (err as Error).message);
       if (passwordRef.current) {
         passwordRef.current.value = "";
         passwordRef.current.focus();
@@ -50,8 +53,8 @@ export function LoginPage(): React.ReactElement {
       </div>
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Sign in</CardTitle>
-          <CardDescription>Use the account your manager created for you.</CardDescription>
+          <CardTitle>{t("login.signIn")}</CardTitle>
+          <CardDescription>{t("login.description")}</CardDescription>
         </CardHeader>
         <CardPanel>
           <Form className="flex w-full flex-col gap-4" onSubmit={onSubmit}>
@@ -62,11 +65,11 @@ export function LoginPage(): React.ReactElement {
               </Alert>
             )}
             <Field>
-              <FieldLabel>Username</FieldLabel>
+              <FieldLabel>{t("login.username")}</FieldLabel>
               <Input autoComplete="username" autoFocus name="username" required type="text" />
             </Field>
             <Field>
-              <FieldLabel>Password</FieldLabel>
+              <FieldLabel>{t("login.password")}</FieldLabel>
               <InputGroup>
                 <InputGroupInput
                   autoComplete="current-password"
@@ -77,7 +80,7 @@ export function LoginPage(): React.ReactElement {
                 />
                 <InputGroupAddon align="inline-end">
                   <Button
-                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
                     onClick={() => setShowPassword((v) => !v)}
                     size="icon-xs"
                     variant="ghost"
@@ -88,11 +91,12 @@ export function LoginPage(): React.ReactElement {
               </InputGroup>
             </Field>
             <Button className="w-full" loading={loading} type="submit">
-              Sign in
+              {t("login.signIn")}
             </Button>
           </Form>
         </CardPanel>
       </Card>
+      <LanguageSelect className="w-auto" />
     </main>
   );
 }

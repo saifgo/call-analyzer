@@ -31,6 +31,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useApi } from "@/lib/api";
 import { fmtDateTime, fmtRelative, humanize, numberFmt } from "@/lib/format";
+import { t } from "@/lib/i18n";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
 import { useMe } from "@/lib/me";
 import { href, navigate, type Route } from "@/lib/router";
@@ -108,15 +109,15 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
     <>
       <Button disabled={running} onClick={() => job.start(["sync"])} variant="outline">
         <RefreshCwIcon aria-hidden="true" />
-        Sync call list
+        {t("dashboard.sync")}
       </Button>
       <Button disabled={running} onClick={() => job.start(["download", "voice", "transcribe", "analyze"])} variant="outline">
         <DownloadCloudIcon aria-hidden="true" />
-        Process new calls
+        {t("dashboard.processNew")}
       </Button>
       <Button disabled={running} onClick={() => job.start(["sync", "download", "transcribe", "analyze", "report"])}>
-        <PlayIcon aria-hidden="true" />
-        Run full pipeline
+        <PlayIcon aria-hidden="true" className="rtl:-scale-x-100" />
+        {t("dashboard.runAll")}
       </Button>
     </>
   );
@@ -127,12 +128,12 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
         actions={isAdmin ? actions : undefined}
         description={
           s?.last_call
-            ? `Latest call ${fmtRelative(s.last_call)} · ${fmtDateTime(s.last_call)}`
+            ? t("dashboard.latestCall", { date: fmtDateTime(s.last_call), relative: fmtRelative(s.last_call) })
             : isAdmin
-              ? "Pipeline progress, agent performance and call outcomes."
-              : "Your calls, scores and outcomes."
+              ? t("dashboard.descriptionAdmin")
+              : t("dashboard.descriptionAgent")
         }
-        title={isAdmin ? "Dashboard" : "My performance"}
+        title={isAdmin ? t("nav.dashboard") : t("dashboard.myPerformance")}
       />
 
       <div className="flex flex-wrap items-center gap-2">
@@ -144,7 +145,7 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
         {since && (
           <Button onClick={() => navigate(href("dashboard"), { replace: true })} variant="ghost">
             <XIcon aria-hidden="true" />
-            Reset
+            {t("common.reset")}
           </Button>
         )}
       </div>
@@ -158,8 +159,8 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
               <EmptyMedia variant="icon">
                 <PhoneIcon />
               </EmptyMedia>
-              <EmptyTitle>No calls in this period</EmptyTitle>
-              <EmptyDescription>Pick another date range.</EmptyDescription>
+              <EmptyTitle>{t("dashboard.noCallsPeriod")}</EmptyTitle>
+              <EmptyDescription>{t("dashboard.pickAnotherRange")}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         </Card>
@@ -170,18 +171,16 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
               <EmptyMedia variant="icon">
                 <PhoneIcon />
               </EmptyMedia>
-              <EmptyTitle>No calls yet</EmptyTitle>
+              <EmptyTitle>{t("dashboard.noCalls")}</EmptyTitle>
               <EmptyDescription>
-                {isAdmin
-                  ? "Sync the call list from GoVoice to start analyzing your team’s calls."
-                  : "Your calls appear here once they are analyzed. Ask your manager if this takes long."}
+                {isAdmin ? t("dashboard.emptyAdmin") : t("dashboard.emptyAgent")}
               </EmptyDescription>
             </EmptyHeader>
             {isAdmin && (
               <EmptyContent>
                 <Button disabled={running} onClick={() => job.start(["sync"])}>
                   <RefreshCwIcon aria-hidden="true" />
-                  Sync call list
+                  {t("dashboard.sync")}
                 </Button>
               </EmptyContent>
             )}
@@ -194,13 +193,11 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
               {s.stale > 0 && (
                 <Alert variant="warning">
                   <PencilLineIcon aria-hidden="true" />
-                  <AlertTitle>
-                    {s.stale} {s.stale === 1 ? "call needs" : "calls need"} re-analysis
-                  </AlertTitle>
-                  <AlertDescription>The transcript was edited after the feedback was written.</AlertDescription>
+                  <AlertTitle>{t("dashboard.staleTitle", { count: s.stale })}</AlertTitle>
+                  <AlertDescription>{t("dashboard.staleHint")}</AlertDescription>
                   <AlertAction>
                     <Button render={<a href={href("calls", null, { ...range, status: "stale" })} />} size="sm" variant="outline">
-                      Review
+                      {t("dashboard.review")}
                     </Button>
                   </AlertAction>
                 </Alert>
@@ -208,13 +205,11 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
               {s.errors > 0 && (
                 <Alert variant="error">
                   <CircleAlertIcon aria-hidden="true" />
-                  <AlertTitle>
-                    {s.errors} {s.errors === 1 ? "call" : "calls"} failed to process
-                  </AlertTitle>
-                  <AlertDescription>Open them to see the error, then retry.</AlertDescription>
+                  <AlertTitle>{t("dashboard.errorsTitle", { count: s.errors })}</AlertTitle>
+                  <AlertDescription>{t("dashboard.errorsHint")}</AlertDescription>
                   <AlertAction>
                     <Button render={<a href={href("calls", null, { ...range, status: "error" })} />} size="sm" variant="outline">
-                      View errors
+                      {t("dashboard.viewErrors")}
                     </Button>
                   </AlertAction>
                 </Alert>
@@ -223,15 +218,15 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
           )}
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Kpi hint={`${numberFmt.format(minutes)} minutes recorded`} label="Total calls" value={numberFmt.format(s.total)} />
+            <Kpi hint={t("dashboard.minutesRecorded", { count: minutes })} label={t("dashboard.totalCalls")} value={numberFmt.format(s.total)} />
             <Kpi
-              hint={`${pct(s.analyzed, s.total)}% of ${isAdmin ? "all" : "your"} calls have feedback`}
-              label="Analyzed"
+              hint={t(isAdmin ? "dashboard.analyzedHintAll" : "dashboard.analyzedHintYour", { pct: pct(s.analyzed, s.total) })}
+              label={t("calls.status.analyzed")}
               value={numberFmt.format(s.analyzed)}
             />
             <Kpi
-              hint={avgScore === null ? "No analyzed sales calls yet" : "Across every analyzed sales call"}
-              label="Average sales score"
+              hint={avgScore === null ? t("dashboard.noSalesScore") : t("dashboard.acrossSales")}
+              label={t("dashboard.avgSalesScore")}
               value={
                 avgScore === null ? "–" : (
                   <>
@@ -242,8 +237,8 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
               }
             />
             <Kpi
-              hint={`${pct(wins, s.analyzed)}% of analyzed calls`}
-              label="Sales & next steps"
+              hint={t("dashboard.pctAnalyzed", { pct: pct(wins, s.analyzed) })}
+              label={t("dashboard.salesNextSteps")}
               value={numberFmt.format(wins)}
             />
           </div>
@@ -252,20 +247,20 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
             {isAdmin && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Pipeline coverage</CardTitle>
-                  <CardDescription>How far each call has gone through the pipeline.</CardDescription>
+                  <CardTitle className="text-base">{t("dashboard.coverage")}</CardTitle>
+                  <CardDescription>{t("dashboard.coverageHint")}</CardDescription>
                 </CardHeader>
                 <CardPanel className="flex flex-col gap-5">
-                  <CoverageMeter label="Downloaded" total={s.total} value={s.downloaded} />
-                  <CoverageMeter className="bg-info" label="Transcribed" total={s.total} value={s.transcribed} />
-                  <CoverageMeter className="bg-success" label="Analyzed" total={s.total} value={s.analyzed} />
+                  <CoverageMeter label={t("calls.status.downloaded")} total={s.total} value={s.downloaded} />
+                  <CoverageMeter className="bg-info" label={t("calls.status.transcribed")} total={s.total} value={s.transcribed} />
+                  <CoverageMeter className="bg-success" label={t("calls.status.analyzed")} total={s.total} value={s.analyzed} />
                 </CardPanel>
               </Card>
             )}
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Outcomes</CardTitle>
-                <CardDescription>Result of each analyzed call.</CardDescription>
+                <CardTitle className="text-base">{t("dashboard.outcomes")}</CardTitle>
+                <CardDescription>{t("dashboard.outcomesHint")}</CardDescription>
               </CardHeader>
               <CardPanel className="flex flex-col gap-5">
                 {s.outcomes.length ? (
@@ -279,7 +274,7 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
                     />
                   ))
                 ) : (
-                  <p className="text-muted-foreground text-sm">No analyzed calls yet.</p>
+                  <p className="text-muted-foreground text-sm">{t("dashboard.noAnalyzed")}</p>
                 )}
               </CardPanel>
             </Card>
@@ -287,24 +282,22 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
 
           <CardFrame>
             <CardFrameHeader>
-              <CardFrameTitle>{isAdmin ? "Agents" : "Your extensions"}</CardFrameTitle>
-              <CardFrameDescription>
-                {isAdmin ? "Select an agent to see their calls." : "Select an extension to see its calls."}
-              </CardFrameDescription>
+              <CardFrameTitle>{isAdmin ? t("board.agents") : t("dashboard.yourExtensions")}</CardFrameTitle>
+              <CardFrameDescription>{isAdmin ? t("dashboard.selectAgent") : t("dashboard.selectExtension")}</CardFrameDescription>
             </CardFrameHeader>
             <Table variant="card">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Extension</TableHead>
-                  <TableHead className="text-right">Calls</TableHead>
-                  <TableHead className="text-right">Minutes</TableHead>
-                  <TableHead className="text-right">Analyzed</TableHead>
-                  <TableHead className="text-right">Sales score</TableHead>
-                  <TableHead className="text-right">Sales / next steps</TableHead>
-                  <TableHead className="text-right">Service calls</TableHead>
-                  <TableHead className="text-right">Service score</TableHead>
+                  <TableHead>{t("dashboard.extension")}</TableHead>
+                  <TableHead className="text-end">{t("ops.metric.calls")}</TableHead>
+                  <TableHead className="text-end">{t("dashboard.minutes")}</TableHead>
+                  <TableHead className="text-end">{t("calls.status.analyzed")}</TableHead>
+                  <TableHead className="text-end">{t("dashboard.salesScore")}</TableHead>
+                  <TableHead className="text-end">{t("dashboard.salesSlashNext")}</TableHead>
+                  <TableHead className="text-end">{t("dashboard.serviceCalls")}</TableHead>
+                  <TableHead className="text-end">{t("dashboard.serviceScore")}</TableHead>
                   <TableHead className="w-10">
-                    <span className="sr-only">Open</span>
+                    <span className="sr-only">{t("share.open")}</span>
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -323,19 +316,19 @@ export function DashboardPage({ route }: { route: Route }): React.ReactElement {
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">{numberFmt.format(a.calls)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{numberFmt.format(a.minutes ?? 0)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{numberFmt.format(a.analyzed)}</TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-end tabular-nums">{numberFmt.format(a.calls)}</TableCell>
+                    <TableCell className="text-end tabular-nums">{numberFmt.format(a.minutes ?? 0)}</TableCell>
+                    <TableCell className="text-end tabular-nums">{numberFmt.format(a.analyzed)}</TableCell>
+                    <TableCell className="text-end">
                       <ScoreBadge score={a.avg_score} />
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">{a.wins ?? 0}</TableCell>
-                    <TableCell className="text-right tabular-nums">{a.service_calls ?? 0}</TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-end tabular-nums">{a.wins ?? 0}</TableCell>
+                    <TableCell className="text-end tabular-nums">{a.service_calls ?? 0}</TableCell>
+                    <TableCell className="text-end">
                       <ScoreBadge score={a.service_score} />
                     </TableCell>
-                    <TableCell className="text-right">
-                      <ArrowRightIcon aria-hidden="true" className="ms-auto size-4 text-muted-foreground" />
+                    <TableCell className="text-end">
+                      <ArrowRightIcon aria-hidden="true" className="ms-auto size-4 text-muted-foreground rtl:rotate-180" />
                     </TableCell>
                   </TableRow>
                 ))}

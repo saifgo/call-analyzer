@@ -10,13 +10,14 @@ import json
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from . import campaigns, crm, operations
+from . import campaigns, crm, floor, idle, operations
 from .analyze import kind_of
+from .adapters.telephony.base import DATE_FORMAT
 from .config import live
 
 LINK_SLACK_MINUTES = 3
 LINK_LOOKBACK_DAYS = 30
-_GOVOICE_TIME = "%Y-%m-%d %H:%M:%S"
+_RECORDING_TIME = DATE_FORMAT  # how recordings write date_call
 REAL = f"opportunity_id NOT LIKE '{operations.TEST_PREFIX}%'"
 # AI score bands, to compare how often calls in each band end in a win.
 SCORE_BANDS = [("1-4", 1, 4), ("5-6", 5, 6), ("7-8", 7, 8), ("9-10", 9, 10)]
@@ -69,13 +70,13 @@ def link_recordings(conn) -> int:
         mine = extensions.get(row["agent"])
         best = None
         for rec in conn.execute("SELECT id, agent, customer, date_call FROM calls WHERE date_call BETWEEN ? AND ?",
-                                ((start - slack).strftime(_GOVOICE_TIME), (end + slack).strftime(_GOVOICE_TIME))):
+                                ((start - slack).strftime(_RECORDING_TIME), (end + slack).strftime(_RECORDING_TIME))):
             if rec["id"] in claimed or crm.match_key(rec["customer"] or "") not in keys:
                 continue
             if mine and rec["agent"] not in mine:
                 continue
             try:
-                gap = abs((datetime.strptime(rec["date_call"], _GOVOICE_TIME) - start).total_seconds())
+                gap = abs((datetime.strptime(rec["date_call"], _RECORDING_TIME) - start).total_seconds())
             except (TypeError, ValueError):
                 continue
             if best is None or gap < best[0]:
@@ -171,7 +172,9 @@ def kpis(conn, since: str | None = None, until: str | None = None, username: str
          campaign_id: int | None = None) -> dict:
     """Per agent, and for the team: calls closed, reached, wins, the rates between them, talk and wrap-up time, time
     on the desk and calls per hour, callbacks booked, contacts given back, and the AI's average score of their
-    recorded calls. `days` has the team's calls, reached and wins per day."""
+    recorded calls, time paused (in all, per reason, and pauses over their limit), and the times they were prompted
+    to call after staying idle (`idle_prompts`, each one listed, latest first; see idle.py). `days` has the team's
+    calls, reached and wins per day."""
     since, until = _range(since, until)
     link_recordings(conn)
     lookup = operations.outcome_lookup(conn)
@@ -182,7 +185,8 @@ def kpis(conn, since: str | None = None, until: str | None = None, username: str
     def blank():
         return {"calls": 0, "reached": 0, "success": 0, "talk_seconds": 0, "wrap_seconds": 0, "wrapped": 0,
                 "linked": 0, "score_sum": 0.0, "scored": 0, "outcomes": {}, "desk_seconds": 0, "callbacks_booked": 0,
-                "given_back": 0}
+                "given_back": 0, "pause_seconds": 0, "pauses_over": 0, "pause_reasons": {}, "idle_prompts": 0,
+                "idle_seconds": 0}
 
     agents: dict[str, dict] = {}
     days: dict[str, dict] = {}
@@ -220,6 +224,14 @@ def kpis(conn, since: str | None = None, until: str | None = None, username: str
                                 f"AND finished_at >= ? AND finished_at < ? AND {REAL} {ag_sql} GROUP BY agent",
                                 [since, until, *ag_args]):
         agents.setdefault(user, blank())["given_back"] = n
+    for user, t in floor.pause_totals(conn, since, until, username).items():
+        a = agents.setdefault(user, blank())
+        a["pause_seconds"], a["pauses_over"], a["pause_reasons"] = t["pause_seconds"], t["pauses_over"], t["by_reason"]
+    prompts = idle.history(conn, since, until, username)
+    for p in prompts:
+        a = agents.setdefault(p["username"], blank())
+        a["idle_prompts"] += 1
+        a["idle_seconds"] += p["idle_seconds"]
 
     def finish(user: str | None, a: dict) -> dict:
         hours = a["desk_seconds"] / 3600
@@ -234,18 +246,22 @@ def kpis(conn, since: str | None = None, until: str | None = None, username: str
                 "success_per_hour": round(a["success"] / hours, 2) if hours >= 0.05 else None,
                 "talk_share": _rate(a["talk_seconds"], a["desk_seconds"]) if a["desk_seconds"] else None,
                 "callbacks_booked": a["callbacks_booked"], "given_back": a["given_back"], "linked": a["linked"],
+                "pause_seconds": a["pause_seconds"], "pauses_over": a["pauses_over"],
+                "pause_reasons": a["pause_reasons"], "idle_prompts": a["idle_prompts"], "idle_seconds": a["idle_seconds"],
                 "scored": a["scored"], "avg_score": round(a["score_sum"] / a["scored"], 2) if a["scored"] else None}
 
     team = blank()
     for a in agents.values():
         for key in ("calls", "reached", "success", "talk_seconds", "wrap_seconds", "wrapped", "linked", "score_sum",
-                    "scored", "desk_seconds", "callbacks_booked", "given_back"):
+                    "scored", "desk_seconds", "callbacks_booked", "given_back", "pause_seconds", "pauses_over", "idle_prompts", "idle_seconds"):
             team[key] += a[key]
+        for label, seconds in a["pause_reasons"].items():
+            team["pause_reasons"][label] = team["pause_reasons"].get(label, 0) + seconds
         for value, n in a["outcomes"].items():
             team["outcomes"][value] = team["outcomes"].get(value, 0) + n
     listed = sorted((finish(u, a) for u, a in agents.items()), key=lambda k: (-k["success"], -k["calls"], k["name"]))
     return {"since": since, "until": until, "team": finish(None, team), "agents": listed,
-            "days": [{"day": d, **v} for d, v in sorted(days.items())]}
+            "days": [{"day": d, **v} for d, v in sorted(days.items())], "idle_prompts": prompts}
 
 
 # --- Outcomes and AI scores --------------------------------------------------------------------------

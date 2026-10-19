@@ -12,6 +12,7 @@ import { createContext, useContext } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { t } from "@/lib/i18n";
 
 type DrawerPosition = "right" | "left" | "top" | "bottom";
 
@@ -213,7 +214,7 @@ export function DrawerPopup({
           {children}
           {showCloseButton && (
             <DrawerPrimitive.Close
-              aria-label="Close"
+              aria-label={t("common.close")}
               className="absolute end-2 top-2 z-1"
               render={<Button size="icon" variant="ghost" />}
             >
@@ -502,7 +503,7 @@ export function DrawerMenuTrigger({
       {...props}
     >
       {children}
-      <ChevronRightIcon className="ms-auto -me-0.5 opacity-80" />
+      <ChevronRightIcon className="ms-auto -me-0.5 opacity-80 rtl:rotate-180" />
     </DrawerTrigger>
   );
 }

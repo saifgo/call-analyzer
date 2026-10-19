@@ -1,0 +1,22 @@
+import { agents } from "./fr/agents";
+import { board } from "./fr/board";
+import { callDesk } from "./fr/callDesk";
+import { calls } from "./fr/calls";
+import { campaigns } from "./fr/campaigns";
+import { common } from "./fr/common";
+import { components } from "./fr/components";
+import { desk } from "./fr/desk";
+import { leads } from "./fr/leads";
+import { inbound } from "./fr/inbound";
+import { lib } from "./fr/lib";
+import { overview } from "./fr/overview";
+import { pages } from "./fr/pages";
+import { phone } from "./fr/phone";
+import { settings } from "./fr/settings";
+import { shell } from "./fr/shell";
+import { ui } from "./fr/ui";
+import { users } from "./fr/users";
+import { values } from "./fr/values";
+import { wall } from "./fr/wall";
+
+export const fr = { ...agents, ...board, ...callDesk, ...calls, ...campaigns, ...common, ...components, ...desk, ...inbound, ...leads, ...lib, ...overview, ...pages, ...phone, ...settings, ...shell, ...ui, ...users, ...values, ...wall };

@@ -37,8 +37,8 @@ import {
   fmtRelative,
   fmtTime,
   humanize,
-  numberFmt,
 } from "@/lib/format";
+import { t } from "@/lib/i18n";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
 import { useMe } from "@/lib/me";
 import { href, navigate, type Route } from "@/lib/router";
@@ -80,7 +80,7 @@ function SortableHead({
         className={cn(
           "-mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring",
           active && "text-foreground",
-          className?.includes("text-right") && "flex-row-reverse",
+          className?.includes("text-end") && "flex-row-reverse",
         )}
         onClick={() => onSort(next === DEFAULT_SORT ? "" : next)}
         type="button"
@@ -92,18 +92,19 @@ function SortableHead({
   );
 }
 
-const STATUS_ITEMS = [
-  { label: "Not downloaded", value: "new" },
-  { label: "Downloaded", value: "downloaded" },
-  { label: "Transcribed", value: "transcribed" },
-  { label: "Analyzed", value: "analyzed" },
-  { label: "Needs re-analysis", value: "stale" },
-  { label: "Skipped (SKIP_NUMBERS)", value: "skipped" },
-  { label: "Errors", value: "error" },
+// Functions, not constants, so the labels follow the interface language.
+const statusItems = () => [
+  { label: t("calls.status.new"), value: "new" },
+  { label: t("calls.status.downloaded"), value: "downloaded" },
+  { label: t("calls.status.transcribed"), value: "transcribed" },
+  { label: t("calls.status.analyzed"), value: "analyzed" },
+  { label: t("calls.status.stale"), value: "stale" },
+  { label: t("calls.filter.skipped"), value: "skipped" },
+  { label: t("calls.filter.errors"), value: "error" },
 ];
 
-const KIND_ITEMS = [
-  { label: "All calls", value: "all" },
+const kindItems = () => [
+  { label: t("calls.filter.allCalls"), value: "all" },
   ...["sales", "service", "other"].map((value) => ({ label: KIND_LABEL[value], value })),
 ];
 
@@ -118,12 +119,12 @@ function outcomeItems(kind: string) {
 }
 
 // Length buckets as "min-max" seconds (max exclusive), the format of the API's `length` parameter.
-const LENGTH_ITEMS = [
-  { label: "Under 30 s", value: "-30" },
-  { label: "30 s – 1 min", value: "30-60" },
-  { label: "1 – 2 min", value: "60-120" },
-  { label: "2 – 5 min", value: "120-300" },
-  { label: "5 min or more", value: "300-" },
+const lengthItems = () => [
+  { label: t("calls.len.under30"), value: "-30" },
+  { label: t("calls.len.30to60"), value: "30-60" },
+  { label: t("calls.len.1to2"), value: "60-120" },
+  { label: t("calls.len.2to5"), value: "120-300" },
+  { label: t("calls.len.over5"), value: "300-" },
 ];
 
 const splitList = (value: string) => (value ? value.split(",") : []);
@@ -179,13 +180,13 @@ function MultiSelectFilter({
 }
 
 function HighlightList({ items, icon: Icon, className }: { items: string[]; icon: typeof ThumbsUpIcon; className: string }) {
-  if (!items.length) return <p className="text-muted-foreground text-sm">None noted.</p>;
+  if (!items.length) return <p className="text-muted-foreground text-sm">{t("calls.noneNoted")}</p>;
   return (
     <ul className="flex flex-col gap-1.5">
       {items.map((item, i) => (
         <li className="flex gap-2 text-sm" key={i}>
           <Icon aria-hidden="true" className={cn("mt-0.5 size-3.5 shrink-0", className)} />
-          <span>{item}</span>
+          <span dir="auto">{item}</span>
         </li>
       ))}
     </ul>
@@ -204,7 +205,7 @@ function CallHighlights({ callId }: { callId: string }) {
   return (
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger
-        aria-label={`Positives and negatives for call ${callId}`}
+        aria-label={t("calls.highlightsFor", { id: callId })}
         onClick={(e) => e.stopPropagation()}
         render={<Button size="icon-xs" variant="ghost" />}
       >
@@ -218,15 +219,15 @@ function CallHighlights({ callId }: { callId: string }) {
             <Spinner />
           </div>
         ) : !a ? (
-          <p className="text-muted-foreground text-sm">This call hasn't been analyzed yet.</p>
+          <p className="text-muted-foreground text-sm">{t("calls.notAnalyzedYet")}</p>
         ) : (
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
-              <PopoverTitle className="text-sm">Positives</PopoverTitle>
+              <PopoverTitle className="text-sm">{t("calls.positives")}</PopoverTitle>
               <HighlightList className="text-success-foreground" icon={ThumbsUpIcon} items={positives} />
             </div>
             <div className="flex flex-col gap-2">
-              <PopoverTitle className="text-sm">Negatives</PopoverTitle>
+              <PopoverTitle className="text-sm">{t("calls.negatives")}</PopoverTitle>
               <HighlightList className="text-destructive-foreground" icon={ThumbsDownIcon} items={negatives} />
             </div>
           </div>
@@ -255,8 +256,8 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
   React.useEffect(() => setSearch(filters.q), [filters.q]);
   React.useEffect(() => {
     if (search === filters.q) return;
-    const t = window.setTimeout(() => setQuery({ q: search }), 300);
-    return () => window.clearTimeout(t);
+    const timer = window.setTimeout(() => setQuery({ q: search }), 300);
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
@@ -299,7 +300,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
   };
 
   const outcomes = outcomeItems(filters.kind);
-  const agentItems = (data?.agents ?? []).map((a) => ({ label: `Agent ${a}`, value: a }));
+  const agentItems = (data?.agents ?? []).map((a) => ({ label: t("shell.agentExt", { ext: a }), value: a }));
   const hasFilters = FILTER_KEYS.some((k) => filters[k]);
   const total = data?.total ?? 0;
   const first = total ? (page - 1) * PAGE_SIZE + 1 : 0;
@@ -314,10 +315,10 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
       <PageHeader
         description={
           isAdmin
-            ? "Listen to calls, correct transcripts and read the coaching feedback."
-            : "Listen to your calls and read the AI coaching feedback on each one."
+            ? t("calls.descriptionAdmin")
+            : t("calls.descriptionAgent")
         }
-        title={isAdmin ? "Calls" : "My calls"}
+        title={isAdmin ? t("nav.calls") : t("calls.myCalls")}
       />
 
       <Tabs
@@ -329,8 +330,8 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
         }}
         value={filters.kind || "all"}
       >
-        <TabsList aria-label="Kind of call">
-          {KIND_ITEMS.map((item) => (
+        <TabsList aria-label={t("calls.kindOfCall")}>
+          {kindItems().map((item) => (
             <TabsTab key={item.value} value={item.value}>
               {item.label}
             </TabsTab>
@@ -341,9 +342,9 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
       <div className="flex flex-wrap items-center gap-2">
         <InputGroup className="w-full sm:w-72">
           <InputGroupInput
-            aria-label="Search calls"
+            aria-label={t("calls.search")}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search number, call ID or transcript"
+            placeholder={t("calls.searchPlaceholder")}
             type="search"
             value={search}
           />
@@ -353,31 +354,31 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
         </InputGroup>
         {(isAdmin || agentItems.length > 1) && (
           <MultiSelectFilter
-            allLabel="All agents"
+            allLabel={t("pipeline.allAgents")}
             items={agentItems}
-            label="Agents"
+            label={t("board.agents")}
             onChange={(agent) => setQuery({ agent })}
             value={filters.agent}
           />
         )}
         <MultiSelectFilter
-          allLabel="Any status"
-          items={STATUS_ITEMS}
-          label="Statuses"
+          allLabel={t("calls.filter.anyStatus")}
+          items={statusItems()}
+          label={t("calls.filter.statuses")}
           onChange={(status) => setQuery({ status })}
           value={filters.status}
         />
         <MultiSelectFilter
-          allLabel="Any outcome"
+          allLabel={t("calls.filter.anyOutcome")}
           items={outcomes}
-          label="Outcomes"
+          label={t("dashboard.outcomes")}
           onChange={(outcome) => setQuery({ outcome })}
           value={filters.outcome}
         />
         <MultiSelectFilter
-          allLabel="Any length"
-          items={LENGTH_ITEMS}
-          label="Lengths"
+          allLabel={t("calls.filter.anyLength")}
+          items={lengthItems()}
+          label={t("calls.filter.lengths")}
           onChange={(len) => setQuery({ len })}
           value={filters.len}
         />
@@ -389,7 +390,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
         {hasFilters && (
           <Button onClick={() => navigate(href("calls", selectedId, { sort: filters.sort }), { replace: true })} variant="ghost">
             <XIcon aria-hidden="true" />
-            Reset
+            {t("common.reset")}
           </Button>
         )}
       </div>
@@ -399,29 +400,29 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
           {isAdmin && checked.size > 0 ? (
             <>
               <div className="flex items-center gap-2 font-medium text-sm">
-                {checked.size} selected
+                {t("calls.selected", { count: checked.size })}
                 <Button onClick={() => setChecked(new Set())} size="xs" variant="ghost">
-                  Clear
+                  {t("calls.clear")}
                 </Button>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button disabled={running} onClick={() => bulk(["download", "voice", "transcribe", "analyze"])} size="sm">
                   <WorkflowIcon aria-hidden="true" />
-                  Process
+                  {t("calls.process")}
                 </Button>
                 <Button disabled={running} onClick={() => bulk(["transcribe"], true)} size="sm" variant="outline">
                   <MicIcon aria-hidden="true" />
-                  Re-transcribe
+                  {t("calls.retranscribe")}
                 </Button>
                 <Button disabled={running} onClick={() => bulk(["analyze"], true)} size="sm" variant="outline">
                   <SparklesIcon aria-hidden="true" />
-                  Re-analyze
+                  {t("calls.reanalyze")}
                 </Button>
               </div>
             </>
           ) : (
             <div className="text-muted-foreground text-sm">
-              {data ? `${numberFmt.format(total)} ${total === 1 ? "call" : "calls"}` : "Loading calls…"}
+              {data ? t("desk.nCalls", { count: total }) : t("calls.loading")}
             </div>
           )}
         </CardFrameHeader>
@@ -431,7 +432,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
               {isAdmin && (
                 <TableHead className="w-10">
                   <Checkbox
-                    aria-label="Select all calls on this page"
+                    aria-label={t("calls.selectAll")}
                     checked={allChecked}
                     indeterminate={someChecked && !allChecked}
                     onCheckedChange={(v) => toggleAll(v)}
@@ -439,31 +440,31 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
                 </TableHead>
               )}
               <SortableHead column="date" onSort={(s) => setQuery({ sort: s })} sort={sort}>
-                Date
+                {t("calls.col.date")}
               </SortableHead>
               <SortableHead column="agent" onSort={(s) => setQuery({ sort: s })} sort={sort}>
-                Agent
+                {t("shell.agent")}
               </SortableHead>
               <SortableHead column="customer" onSort={(s) => setQuery({ sort: s })} sort={sort}>
-                Customer
+                {t("value.customer")}
               </SortableHead>
-              <TableHead className="max-md:hidden">Type</TableHead>
-              <SortableHead className="text-right" column="duration" onSort={(s) => setQuery({ sort: s })} sort={sort}>
-                Length
+              <TableHead className="max-md:hidden">{t("calls.col.type")}</TableHead>
+              <SortableHead className="text-end" column="duration" onSort={(s) => setQuery({ sort: s })} sort={sort}>
+                {t("calls.col.length")}
               </SortableHead>
-              <TableHead>Status</TableHead>
+              <TableHead>{t("board.status")}</TableHead>
               <SortableHead column="score" onSort={(s) => setQuery({ sort: s })} sort={sort}>
-                AI score
+                {t("kpis.aiScore")}
               </SortableHead>
               <SortableHead column="human" onSort={(s) => setQuery({ sort: s })} sort={sort}>
-                Human score
+                {t("calls.col.humanScore")}
               </SortableHead>
-              <TableHead className="max-lg:hidden">Outcome</TableHead>
+              <TableHead className="max-lg:hidden">{t("insights.outcome")}</TableHead>
               <SortableHead className="max-xl:hidden" column="updated" onSort={(s) => setQuery({ sort: s })} sort={sort}>
-                Updated
+                {t("calls.col.updated")}
               </SortableHead>
               <TableHead className="w-10">
-                <span className="sr-only">Details</span>
+                <span className="sr-only">{t("calls.col.details")}</span>
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -486,7 +487,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
                     {isAdmin && (
                       <TableCell onClick={(e) => e.stopPropagation()}>
                         <Checkbox
-                          aria-label={`Select call ${c.id}`}
+                          aria-label={t("calls.selectCall", { id: c.id })}
                           checked={checked.has(c.id)}
                           onCheckedChange={(v) => toggle(c.id, v)}
                         />
@@ -497,9 +498,11 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
                       <div className="text-muted-foreground text-xs">{fmtTime(c.date_call)}</div>
                     </TableCell>
                     <TableCell className="tabular-nums">{c.agent}</TableCell>
-                    <TableCell className="tabular-nums">{c.customer}</TableCell>
+                    <TableCell className="tabular-nums">
+                      <span dir="ltr">{c.customer}</span>
+                    </TableCell>
                     <TableCell className="text-muted-foreground max-md:hidden">{c.type}</TableCell>
-                    <TableCell className="text-right tabular-nums">{fmtDuration(c.duration)}</TableCell>
+                    <TableCell className="text-end tabular-nums">{fmtDuration(c.duration)}</TableCell>
                     <TableCell>
                       <StatusBadge call={c} />
                     </TableCell>
@@ -531,13 +534,13 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
                       <EmptyMedia variant="icon">
                         <FileAudioIcon />
                       </EmptyMedia>
-                      <EmptyTitle>No calls found</EmptyTitle>
+                      <EmptyTitle>{t("calls.noneFound")}</EmptyTitle>
                       <EmptyDescription>
                         {hasFilters
-                          ? "Try different filters."
+                          ? t("calls.tryFilters")
                           : isAdmin
-                            ? "Run a sync from the Pipeline page to fetch calls."
-                            : "No calls for your extensions yet."}
+                            ? t("calls.emptyAdmin")
+                            : t("calls.emptyAgent")}
                       </EmptyDescription>
                     </EmptyHeader>
                   </Empty>
@@ -549,7 +552,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
         {total > PAGE_SIZE && (
           <CardFrameFooter className="flex flex-wrap items-center justify-between gap-2 py-3">
             <p className="text-muted-foreground text-sm tabular-nums">
-              {numberFmt.format(first)}–{numberFmt.format(last)} of {numberFmt.format(total)}
+              {t("calls.range", { first, last, total })}
             </p>
             <Pagination className="mx-0 w-auto">
               <PaginationContent>
@@ -562,7 +565,7 @@ export function CallsPage({ route }: { route: Route }): React.ReactElement {
                 </PaginationItem>
                 <PaginationItem>
                   <span className="px-2 text-muted-foreground text-sm tabular-nums">
-                    Page {page} of {lastPage}
+                    {t("calls.pageOf", { last: lastPage, page })}
                   </span>
                 </PaginationItem>
                 <PaginationItem>

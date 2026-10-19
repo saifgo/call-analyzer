@@ -3,10 +3,12 @@ import { AppShell } from "@/components/app-shell";
 import { Softphone } from "@/components/softphone";
 import { AnchoredToastProvider, ToastProvider } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AlertsProvider } from "@/lib/alerts";
 import { GoVoiceProvider } from "@/lib/govoice";
 import { JobProvider } from "@/lib/jobs";
 import { MeProvider, useMe } from "@/lib/me";
 import { useRoute } from "@/lib/router";
+import { InboundProvider } from "@/lib/inbound";
 import { SoftphoneProvider } from "@/lib/softphone";
 import { WorkersProvider } from "@/lib/workers";
 import { AgentsPage } from "@/pages/agents";
@@ -21,6 +23,8 @@ import { PipelinePage } from "@/pages/pipeline";
 import { ReportsPage } from "@/pages/reports";
 import { SettingsPage } from "@/pages/settings";
 import { UsersPage } from "@/pages/users";
+import { WallboardPage } from "@/pages/wallboard";
+import { useT } from "@/lib/i18n";
 
 /** Pages agent accounts can open; the others fall back to the dashboard (the server refuses them anyway). */
 const AGENT_PAGES = new Set(["dashboard", "operations", "calls", "feedback", "reports"]);
@@ -74,14 +78,24 @@ function Pages() {
 
 function SignedIn() {
   const { isAdmin } = useMe();
+  const route = useRoute();
+  // Remount the pages on a language switch so text computed outside useT() updates too; the providers
+  // (and a call in progress) stay as they are.
+  const { locale } = useT();
+  // The wallboard runs on its own (e.g. on a TV): no menu, and no softphone that would take the phone from a desk tab.
+  if (isAdmin && route.page === "wallboard") return <WallboardPage key={locale} />;
   return (
     <GoVoiceProvider enabled={isAdmin}>
       <JobProvider enabled={isAdmin}>
         <WorkersProvider enabled={isAdmin}>
-          <SoftphoneProvider>
-            <Pages />
-            <Softphone />
-          </SoftphoneProvider>
+          <AlertsProvider enabled={isAdmin}>
+            <SoftphoneProvider>
+              <InboundProvider>
+                <Pages key={locale} />
+                <Softphone />
+              </InboundProvider>
+            </SoftphoneProvider>
+          </AlertsProvider>
         </WorkersProvider>
       </JobProvider>
     </GoVoiceProvider>

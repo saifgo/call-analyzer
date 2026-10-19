@@ -3,10 +3,11 @@ import type { DateRange } from "@daypicker/react";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
-import { isoDay, parseDate } from "@/lib/format";
+import { dateTimeFormat, isoDay, parseDate } from "@/lib/format";
+import { t } from "@/lib/i18n";
 
 const DAY = 86400000;
-const rangeFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const rangeFmt = dateTimeFormat({ day: "numeric", month: "short" });
 
 function startOfToday(): Date {
   const d = new Date();
@@ -21,12 +22,12 @@ function presets(): [string, Date, Date][] {
   const daysAgo = (n: number) => new Date(today.getTime() - n * DAY);
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
   return [
-    ["Today", today, tomorrow],
-    ["Yesterday", daysAgo(1), today],
-    ["Last 7 days", daysAgo(6), tomorrow],
-    ["Last 30 days", daysAgo(29), tomorrow],
-    ["This month", monthStart, tomorrow],
-    ["Last month", new Date(today.getFullYear(), today.getMonth() - 1, 1), monthStart],
+    [t("dates.today"), today, tomorrow],
+    [t("dates.yesterday"), daysAgo(1), today],
+    [t("dates.lastDays", { count: 7 }), daysAgo(6), tomorrow],
+    [t("dates.lastDays", { count: 30 }), daysAgo(29), tomorrow],
+    [t("dates.thisMonth"), monthStart, tomorrow],
+    [t("dates.lastMonth"), new Date(today.getFullYear(), today.getMonth() - 1, 1), monthStart],
   ];
 }
 
@@ -44,7 +45,7 @@ export function DateRangeFilter({
   // `until` is exclusive in the API; show the inclusive last day.
   const untilDate = parseDate(until);
   const to = untilDate ? new Date(untilDate.getTime() - DAY) : undefined;
-  const label = from ? (to && +to !== +from ? `${rangeFmt.format(from)} – ${rangeFmt.format(to)}` : rangeFmt.format(from)) : "Any date";
+  const label = from ? (to && +to !== +from ? rangeFmt().formatRange(from, to) : rangeFmt().format(from)) : t("dates.any");
 
   const select = (range: DateRange | undefined) => {
     if (!range?.from) return onChange("", "");
@@ -80,7 +81,7 @@ export function DateRangeFilter({
             <Calendar defaultMonth={from} mode="range" onSelect={select} selected={{ from, to }} />
             {from && (
               <Button onClick={() => onChange("", "")} size="sm" variant="ghost">
-                Clear dates
+                {t("dates.clear")}
               </Button>
             )}
           </div>

@@ -10,6 +10,11 @@
       const theme = localStorage.getItem("theme") || "system";
       const dark = theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.classList.toggle("dark", dark);
+      // Same for the interface language: Arabic lays the page out right-to-left (see src/lib/i18n.tsx).
+      const saved = localStorage.getItem("lang");
+      const lang = ["en", "fr", "ar"].includes(saved) ? saved : ["fr", "ar"].includes(navigator.language.slice(0, 2)) ? navigator.language.slice(0, 2) : "en";
+      document.documentElement.lang = lang;
+      document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
     </script>
   </head>
   <body>

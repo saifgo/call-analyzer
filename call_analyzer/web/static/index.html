@@ -10,9 +10,14 @@
       const theme = localStorage.getItem("theme") || "system";
       const dark = theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.classList.toggle("dark", dark);
+      // Same for the interface language: Arabic lays the page out right-to-left (see src/lib/i18n.tsx).
+      const saved = localStorage.getItem("lang");
+      const lang = ["en", "fr", "ar"].includes(saved) ? saved : ["fr", "ar"].includes(navigator.language.slice(0, 2)) ? navigator.language.slice(0, 2) : "en";
+      document.documentElement.lang = lang;
+      document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
     </script>
-    <script type="module" crossorigin src="/static/assets/index-Bm8XgjZX.js"></script>
-    <link rel="stylesheet" crossorigin href="/static/assets/index-_f1Qto-z.css">
+    <script type="module" crossorigin src="/static/assets/index-YuEk8cVe.js"></script>
+    <link rel="stylesheet" crossorigin href="/static/assets/index-D6BTI7ne.css">
   </head>
   <body>
     <div id="root" class="isolate"></div>

@@ -13,6 +13,7 @@ os.environ["DATA_DIR"] = str(Path(TMP.name) / "data")
 os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 
 from call_analyzer import crm, db  # noqa: E402
+from call_analyzer.adapters.crm.twenty import TwentyCrm  # noqa: E402
 from call_analyzer.web.server import get_crm_leads  # noqa: E402
 
 
@@ -28,7 +29,6 @@ def opportunity(i: int, phone: str | None) -> dict:
 
 class LeadsTests(unittest.TestCase):
     def setUp(self):
-        crm._leads_cache.clear()
         self.requests = []
         pages = [
             ([opportunity(1, "22602716"), opportunity(2, None)], {"hasNextPage": True, "endCursor": "c1"}),
@@ -39,9 +39,11 @@ class LeadsTests(unittest.TestCase):
             self.requests.append((path, dict(params)))
             return pages[len(self.requests) - 1]
 
-        self._get_page, self._config = crm._get_page, crm._config
-        crm._get_page = fake_page
-        crm._config = lambda: ("https://crm.example.com", "test-key", True)
+        # The real Twenty adapter, with its HTTP calls answered here.
+        self.twenty = TwentyCrm()
+        self.twenty._get_page = fake_page
+        self.twenty._config = lambda: ("https://crm.example.com", "test-key", True)
+        crm.use(self.twenty)
         conn = db.connect()
         conn.execute("DELETE FROM calls")
         for call_id, customer, date in (("10", "+21622602716", "2026-10-02 09:00:00"),
@@ -50,7 +52,7 @@ class LeadsTests(unittest.TestCase):
         conn.commit()
 
     def tearDown(self):
-        crm._get_page, crm._config = self._get_page, self._config
+        crm.use(None)
 
     def test_all_pages_of_new_opportunities_with_their_contacts_and_our_calls(self):
         result = get_crm_leads()
@@ -76,12 +78,12 @@ class LeadsTests(unittest.TestCase):
         get_crm_leads()
         get_crm_leads()
         self.assertEqual(len(self.requests), 2)  # two pages, once
-        crm._get_page = lambda path, params: ([opportunity(4, "55111222")], {"hasNextPage": False})
+        self.twenty._get_page = lambda path, params: ([opportunity(4, "55111222")], {"hasNextPage": False})
         self.assertEqual([lead["id"] for lead in get_crm_leads(refresh=True)["leads"]], ["o4"])
 
     def test_without_an_api_key_nothing_is_asked(self):
-        crm._get_page = lambda *a: self.fail("the CRM must not be queried")
-        crm._config = lambda: ("https://crm.example.com", "", True)
+        self.twenty._get_page = lambda *a: self.fail("the CRM must not be queried")
+        self.twenty._config = lambda: ("https://crm.example.com", "", True)
         self.assertEqual(get_crm_leads(), {"configured": False, "stage": "NEW", "leads": [], "truncated": False})
 
 

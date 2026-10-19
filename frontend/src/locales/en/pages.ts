@@ -1,0 +1,62 @@
+// Login, business context, feedback and reports pages, and the share-link dialogs.
+export const pages = {
+  "login.unreachable": "Can't reach the server",
+  "login.signIn": "Sign in",
+  "login.description": "Use the account your manager created for you.",
+  "login.username": "Username",
+  "login.password": "Password",
+  "login.hidePassword": "Hide password",
+  "login.showPassword": "Show password",
+
+  "business.saved": "Business context saved",
+  "business.description":
+    "What you sell, your ideal call, common objections and who is on which extension. Analysis judges every call against this.",
+  "business.reanalyzeHint":
+    "After changing it, re-analyze calls (Pipeline → Analyze with “Redo”) so existing feedback is updated.",
+  "business.textareaLabel": "Business context (Markdown)",
+
+  "feedback.allAuthors": "All authors",
+  "feedback.descriptionAdmin":
+    "Everything the team wrote about calls. Open a row to see the call, and add or edit feedback there.",
+  "feedback.descriptionAgent": "What reviewers wrote about your calls.",
+  "feedback.search": "Search feedback",
+  "feedback.searchPlaceholder": "Search feedback, number or call ID",
+  "feedback.author": "Author",
+  "feedback.notes_one": "{count} note",
+  "feedback.notes_other": "{count} notes",
+  "feedback.loading": "Loading feedback…",
+  "feedback.added": "Added",
+  "feedback.feedback": "Feedback",
+  "feedback.score": "Score",
+  "feedback.call": "Call",
+  "feedback.edited": "edited {time}",
+  "feedback.humanScore": "Human {score}/10",
+  "feedback.ai": "AI",
+  "feedback.noneFound": "No feedback found",
+  "feedback.emptyAdmin": "Open a call and use its Human feedback tab to write the first note.",
+  "feedback.emptyAgent": "Nobody has written feedback on your calls yet.",
+  "feedback.showingLatest": "Showing the latest {shown} of {total}. Search to narrow it down.",
+
+  "reports.wholeTeam": "Whole team",
+  "reports.shareDescription": "A private link to this coaching report. Anyone with the link can read it without signing in.",
+  "reports.noLink": "No link exists for this report yet.",
+  "reports.generate": "Generate reports",
+  "reports.descriptionAdmin": "Coaching reports for the whole team and for each agent.",
+  "reports.descriptionAgent": "Your coaching reports.",
+  "reports.none": "No reports yet",
+  "reports.emptyAdmin": "Analyze some calls, then generate coaching reports from them.",
+  "reports.emptyAgent": "Your coaching reports appear here once your manager generates them.",
+
+  "share.title": "Share link",
+  "share.revoked": "Share link revoked",
+  "share.copy": "Copy link",
+  "share.localOnly": "Only works on this computer",
+  "share.localOnlyHint":
+    "To share with others, set PUBLIC_URL (hosted) or SHARE_ON_LAN=true (local network) in Settings and restart the app. To send it to anyone, download the PDF instead.",
+  "share.revoke": "Revoke link",
+  "share.open": "Open",
+  "share.create": "Create link",
+  "share.pdfStarting": "The download starts in a few seconds.",
+  "share.creatingPdf": "Creating PDF…",
+  "share.downloadPdf": "Download PDF",
+};

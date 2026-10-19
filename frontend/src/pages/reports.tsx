@@ -27,13 +27,14 @@ import { useMe } from "@/lib/me";
 import { href, navigate, type Route } from "@/lib/router";
 import type { ReportFile, Share } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { t } from "@/lib/i18n";
 
 /** "20261003-1430-agent-101.md" -> { run: "20261003-1430", who: "Agent 101", team: false } */
 function parseName(name: string) {
   const m = name.match(/^(\d{8}-\d{4})-(.+)\.md$/);
   if (!m) return { run: "", team: false, who: name.replace(/\.md$/, "") };
   const team = m[2] === "team";
-  return { run: m[1], team, who: team ? "Whole team" : `Agent ${m[2].replace(/^agent-/, "")}` };
+  return { run: m[1], team, who: team ? t("reports.wholeTeam") : t("shell.agentExt", { ext: m[2].replace(/^agent-/, "") }) };
 }
 
 function runLabel(run: string, fallback: string) {
@@ -58,7 +59,7 @@ function ReportShareDialog({ name, open, onOpenChange }: { name: string; open: b
   const revoke = async () => {
     await api(base, { method: "DELETE" });
     setData({ lan: share?.lan ?? false, token: null, url: null });
-    toastManager.add({ title: "Share link revoked", type: "success" });
+    toastManager.add({ title: t("share.revoked"), type: "success" });
   };
   const copy = async () => {
     if (!share?.url) return;
@@ -71,10 +72,8 @@ function ReportShareDialog({ name, open, onOpenChange }: { name: string; open: b
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogPopup className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Share link</DialogTitle>
-          <DialogDescription>
-            A private link to this coaching report. Anyone with the link can read it without signing in.
-          </DialogDescription>
+          <DialogTitle>{t("share.title")}</DialogTitle>
+          <DialogDescription>{t("reports.shareDescription")}</DialogDescription>
         </DialogHeader>
         <DialogPanel className="flex flex-col gap-4">
           {!share ? (
@@ -82,9 +81,9 @@ function ReportShareDialog({ name, open, onOpenChange }: { name: string; open: b
           ) : share.url ? (
             <>
               <InputGroup>
-                <InputGroupInput aria-label="Share link" readOnly type="text" value={share.url} />
+                <InputGroupInput aria-label={t("share.title")} dir="ltr" readOnly type="text" value={share.url} />
                 <InputGroupAddon align="inline-end">
-                  <Button aria-label="Copy link" onClick={copy} size="icon-xs" variant="ghost">
+                  <Button aria-label={t("share.copy")} onClick={copy} size="icon-xs" variant="ghost">
                     {copied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
                   </Button>
                 </InputGroupAddon>
@@ -92,36 +91,33 @@ function ReportShareDialog({ name, open, onOpenChange }: { name: string; open: b
               {!share.lan && (
                 <Alert variant="warning">
                   <CircleAlertIcon aria-hidden="true" />
-                  <AlertTitle>Only works on this computer</AlertTitle>
-                  <AlertDescription>
-                    To share with others, set PUBLIC_URL (hosted) or SHARE_ON_LAN=true (local network) in Settings and
-                    restart the app. To send it to anyone, download the PDF instead.
-                  </AlertDescription>
+                  <AlertTitle>{t("share.localOnly")}</AlertTitle>
+                  <AlertDescription>{t("share.localOnlyHint")}</AlertDescription>
                 </Alert>
               )}
             </>
           ) : (
-            <p className="text-muted-foreground text-sm">No link exists for this report yet.</p>
+            <p className="text-muted-foreground text-sm">{t("reports.noLink")}</p>
           )}
         </DialogPanel>
         <DialogFooter>
           {share?.url ? (
             <>
               <Button className="sm:me-auto" onClick={revoke} variant="destructive-outline">
-                Revoke link
+                {t("share.revoke")}
               </Button>
               <Button render={<a href={share.url} rel="noreferrer" target="_blank" />} variant="outline">
                 <ExternalLinkIcon aria-hidden="true" />
-                Open
+                {t("share.open")}
               </Button>
-              <DialogClose render={<Button />}>Done</DialogClose>
+              <DialogClose render={<Button />}>{t("common.done")}</DialogClose>
             </>
           ) : (
             <>
-              <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+              <DialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</DialogClose>
               <Button disabled={!share} loading={busy} onClick={create}>
                 <Link2Icon aria-hidden="true" />
-                Create link
+                {t("share.create")}
               </Button>
             </>
           )}
@@ -149,7 +145,7 @@ function ReportView({ name }: { name: string }) {
   }
   return (
     <article
-      className="prose prose-neutral dark:prose-invert prose-sm sm:prose-base max-w-none prose-headings:font-heading prose-h1:text-2xl prose-headings:tracking-tight [&_[dir=rtl]]:text-right"
+      className="prose prose-neutral dark:prose-invert prose-sm sm:prose-base max-w-none prose-headings:font-heading prose-h1:text-2xl prose-headings:tracking-tight [&_[dir=ltr]]:text-left [&_[dir=rtl]]:text-right"
       // biome-ignore lint/security/noDangerouslySetInnerHtml: reports are generated locally by our own pipeline.
       dangerouslySetInnerHTML={{ __html: html }}
       ref={ref}
@@ -184,7 +180,7 @@ export function ReportsPage({ route }: { route: Route }): React.ReactElement {
   const generate = (
     <Button disabled={!!job.state?.running} onClick={() => job.start(["report"], { min_duration: 0 })}>
       <SparklesIcon aria-hidden="true" />
-      Generate reports
+      {t("reports.generate")}
     </Button>
   );
 
@@ -192,8 +188,8 @@ export function ReportsPage({ route }: { route: Route }): React.ReactElement {
     <>
       <PageHeader
         actions={isAdmin ? generate : undefined}
-        description={isAdmin ? "Coaching reports for the whole team and for each agent." : "Your coaching reports."}
-        title="Reports"
+        description={isAdmin ? t("reports.descriptionAdmin") : t("reports.descriptionAgent")}
+        title={t("nav.reports")}
       />
 
       {!reports ? (
@@ -208,11 +204,11 @@ export function ReportsPage({ route }: { route: Route }): React.ReactElement {
               <EmptyMedia variant="icon">
                 <FileTextIcon />
               </EmptyMedia>
-              <EmptyTitle>No reports yet</EmptyTitle>
+              <EmptyTitle>{t("reports.none")}</EmptyTitle>
               <EmptyDescription>
                 {isAdmin
-                  ? "Analyze some calls, then generate coaching reports from them."
-                  : "Your coaching reports appear here once your manager generates them."}
+                  ? t("reports.emptyAdmin")
+                  : t("reports.emptyAgent")}
               </EmptyDescription>
             </EmptyHeader>
             {isAdmin && <EmptyContent>{generate}</EmptyContent>}
@@ -220,7 +216,7 @@ export function ReportsPage({ route }: { route: Route }): React.ReactElement {
         </Card>
       ) : (
         <div className="grid items-start gap-6 lg:grid-cols-[18rem_1fr]">
-          <nav aria-label="Reports" className="flex flex-col gap-5 lg:sticky lg:top-20">
+          <nav aria-label={t("nav.reports")} className="flex flex-col gap-5 lg:sticky lg:top-20">
             {groups.map((g) => (
               <div className="flex flex-col gap-1" key={g.run}>
                 <h2 className="px-2 font-medium text-muted-foreground text-xs">{g.label}</h2>
@@ -254,19 +250,19 @@ export function ReportsPage({ route }: { route: Route }): React.ReactElement {
                       variant="outline"
                       onClick={() =>
                         toastManager.add({
-                          description: "The download starts in a few seconds.",
-                          title: "Creating PDF…",
+                          description: t("share.pdfStarting"),
+                          title: t("share.creatingPdf"),
                           type: "info",
                         })
                       }
                     >
                       <FileTextIcon aria-hidden="true" />
-                      Download PDF
+                      {t("share.downloadPdf")}
                     </Button>
                     {isAdmin && (
                       <Button onClick={() => setShareOpen(true)} size="sm" variant="outline">
                         <Link2Icon aria-hidden="true" />
-                        Share link
+                        {t("share.title")}
                       </Button>
                     )}
                   </div>

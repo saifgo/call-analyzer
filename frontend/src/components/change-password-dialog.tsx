@@ -17,6 +17,7 @@ import { Form } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { toastManager } from "@/components/ui/toast";
 import { api } from "@/lib/api";
+import { t } from "@/lib/i18n";
 
 export const MIN_PASSWORD_LENGTH = 8;
 
@@ -36,7 +37,7 @@ export function ChangePasswordDialog({
     const form = new FormData(event.currentTarget);
     const next = String(form.get("new_password"));
     if (next !== form.get("repeat_password")) {
-      setError("The new passwords don't match");
+      setError(t("password.mismatch"));
       return;
     }
     setSaving(true);
@@ -46,7 +47,7 @@ export function ChangePasswordDialog({
         body: { current_password: form.get("current_password"), new_password: next },
         method: "PUT",
       });
-      toastManager.add({ description: "Other devices were signed out.", title: "Password changed", type: "success" });
+      toastManager.add({ description: t("password.othersSignedOut"), title: t("password.changed"), type: "success" });
       onOpenChange(false);
     } catch (err) {
       setError((err as Error).message);
@@ -66,8 +67,8 @@ export function ChangePasswordDialog({
       <DialogPopup className="sm:max-w-sm">
         <Form className="contents" onSubmit={onSubmit}>
           <DialogHeader>
-            <DialogTitle>Change password</DialogTitle>
-            <DialogDescription>You stay signed in here; other devices are signed out.</DialogDescription>
+            <DialogTitle>{t("shell.changePassword")}</DialogTitle>
+            <DialogDescription>{t("password.description")}</DialogDescription>
           </DialogHeader>
           <DialogPanel className="flex flex-col gap-4">
             {error && (
@@ -77,23 +78,23 @@ export function ChangePasswordDialog({
               </Alert>
             )}
             <Field>
-              <FieldLabel>Current password</FieldLabel>
+              <FieldLabel>{t("password.current")}</FieldLabel>
               <Input autoComplete="current-password" name="current_password" required type="password" />
             </Field>
             <Field>
-              <FieldLabel>New password</FieldLabel>
+              <FieldLabel>{t("password.new")}</FieldLabel>
               <Input autoComplete="new-password" minLength={MIN_PASSWORD_LENGTH} name="new_password" required type="password" />
-              <FieldDescription>At least {MIN_PASSWORD_LENGTH} characters.</FieldDescription>
+              <FieldDescription>{t("password.minLength", { count: MIN_PASSWORD_LENGTH })}</FieldDescription>
             </Field>
             <Field>
-              <FieldLabel>Repeat new password</FieldLabel>
+              <FieldLabel>{t("password.repeat")}</FieldLabel>
               <Input autoComplete="new-password" name="repeat_password" required type="password" />
             </Field>
           </DialogPanel>
           <DialogFooter>
-            <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+            <DialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</DialogClose>
             <Button loading={saving} type="submit">
-              Change password
+              {t("shell.changePassword")}
             </Button>
           </DialogFooter>
         </Form>

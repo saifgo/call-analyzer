@@ -20,10 +20,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import auth, crm, db, desk_stats, workers
+from .. import auth, crm, db, desk_stats, telephony, workers
 from ..analyze import KIND_SQL, SCORE_SQL, kind_of
 from ..config import ENV_PATH, ROOT, settings
-from . import govoice_login, operations_api, softphone_api, whatsapp_api, workers_api
+from . import operations_api, softphone_api, whatsapp_api, workers_api
 from .export import audio_data_uri, render_call_page, render_report_page
 
 # Built from frontend/ (npm run build); see frontend/README.md.
@@ -33,9 +33,21 @@ STATIC = Path(__file__).parent / "static"
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/wasm", ".wasm")
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
-SECRET_KEYS = {"GOVOICE_COOKIE", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "OPENAI_API_KEY",
-               "CLAUDE_CODE_OAUTH_TOKEN", "CURSOR_API_KEY", "ADMIN_PASSWORD", "CRM_API_KEY", "WHATSAPP_TOKEN",
-               "SECRET_KEY"}
+SECRET_KEYS = {"ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+               "CURSOR_API_KEY", "ADMIN_PASSWORD", "WHATSAPP_TOKEN", "SECRET_KEY"}
+
+
+def _secret_keys() -> set[str]:
+    """SECRET_KEYS and the secrets of every CRM and phone system adapter, chosen or not (a switched-from one's
+    secrets can still be in .env)."""
+    keys = set(SECRET_KEYS)
+    for registry in (crm.registry, telephony.registry):
+        for name in registry.names():
+            try:
+                keys.update(registry.get(name).secret_keys)
+            except Exception:  # a broken adapter mustn't keep the Settings page from opening
+                pass
+    return keys
 
 
 @asynccontextmanager
@@ -44,7 +56,7 @@ async def lifespan(app):
     if not auth.list_users():
         print("No user accounts yet. Create one with:  python -m call_analyzer user add <name>")
     stop = threading.Event()
-    threading.Thread(target=govoice_login.keepalive_loop, args=(stop,), daemon=True).start()
+    threading.Thread(target=telephony.keepalive_loop, args=(stop,), daemon=True).start()
     threading.Thread(target=auto_process_loop, args=(stop,), daemon=True).start()
     threading.Thread(target=workers_api.janitor_loop, args=(stop,), daemon=True).start()
     yield
@@ -52,7 +64,12 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Call Analyzer", lifespan=lifespan)
-app.include_router(govoice_login.router)
+# The routers of the chosen phone system (e.g. GoVoice's login page). Changing TELEPHONY_PROVIDER needs a restart.
+try:
+    for _router in telephony.adapter().routers():
+        app.include_router(_router)
+except RuntimeError as _exc:  # an unknown provider: start anyway, so Settings can fix it
+    print(f"Phone system: {_exc}")
 app.include_router(workers_api.router)
 app.include_router(operations_api.router)
 app.include_router(softphone_api.router)
@@ -103,10 +120,14 @@ AGENT_ALLOWED = [(method, re.compile(pattern)) for method, pattern in [
     ("GET", r"/api/reports/[^/]+/export\.pdf"),
     # The Operations call desk (the team board, giving contacts back and CRM retries stay admin-only).
     ("GET", r"/api/operations/(config|desk|lookup|kpis)"),  # kpis: only their own
-    ("POST", r"/api/operations/(ready|next|test|direct|leads|campaign)"),
+    ("POST", r"/api/operations/(ready|next|test|direct|leads|campaign|earned-break)"),
     ("GET", r"/api/operations/\d+/context"),
-    ("POST", r"/api/operations/\d+/(call|end|finish|give-back)"),
+    ("POST", r"/api/operations/\d+/(call|end|finish|give-back|link)"),
+    # Incoming calls on their softphone, and calling back the missed ones.
+    ("POST", r"/api/inbound(/busy|/\d+/(answer|end))?"),
+    ("POST", r"/api/operations/missed/[^/]+/(take|dismiss)"),
     ("PUT", r"/api/operations/\d+/answers"),
+    ("POST", r"/api/operations/idle-prompt/\d+/seen"),
     ("DELETE", r"/api/operations/callbacks/\d+"),
     # WhatsApp quick actions: agents send them (setting them up stays admin-only).
     ("GET", r"/api/whatsapp/actions"),
@@ -271,6 +292,30 @@ def update_account(username: str, body: UserUpdateBody, request: Request):
     return auth.get_user(username)
 
 
+@app.get("/api/telephony/status")
+@app.get("/api/govoice/status")  # the name the UI has always used
+def telephony_status(refresh: bool = False):
+    """Whether the phone system's saved login works ({connected, total, message, label, login_url})."""
+    if refresh or telephony.status()["checked_at"] is None:
+        return telephony.check_connection()
+    return telephony.status()
+
+
+@app.get("/api/providers")
+def providers():
+    """The CRM and phone system adapters there are, and the ones chosen in Settings."""
+    found = {}
+    for kind, registry in (("crm", crm.registry), ("telephony", telephony.registry)):
+        try:
+            chosen = registry.get()
+            active = {"name": chosen.name, "label": chosen.label, "error": None}
+        except RuntimeError as exc:
+            active = {"name": registry.active_name(), "label": None, "error": str(exc)}
+        found[kind] = {"setting": registry.setting, "available": registry.names(), "active": active}
+    found["crm"]["active"]["configured"] = not found["crm"]["active"]["error"] and crm.is_configured()
+    return found
+
+
 @app.get("/api/crm/members")
 def crm_members():
     """The CRM's users, to link accounts to (who owns the leads an agent adds from the call desk)."""
@@ -344,6 +389,7 @@ def _parse_env(path: Path) -> dict[str, str]:
 def _env_schema() -> list[dict]:
     """Fields in .env.example order, with their section and the comment lines above them as help text."""
     fields, section, comments = [], "General", []
+    secret_keys = _secret_keys()
     for line in ENV_EXAMPLE_PATH.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if match := re.match(r"#\s*---\s*(.+?)\s*---", stripped):
@@ -353,7 +399,7 @@ def _env_schema() -> list[dict]:
         elif "=" in stripped:
             key, _, default = stripped.partition("=")
             fields.append({"key": key, "section": section, "help": " ".join(comments),
-                           "default": default, "secret": key in SECRET_KEYS})
+                           "default": default, "secret": key in secret_keys})
             comments = []
         else:
             comments = []
@@ -1023,8 +1069,8 @@ def auto_process_loop(stop: threading.Event):
         if time.time() - last_run < minutes * 60 or jobs.running:
             continue
         last_run = time.time()
-        # Skip while GoVoice isn't logged in; the header already asks to log in.
-        if govoice_login.check_connection()["connected"] is False:
+        # Skip while the phone system isn't logged in; the header already asks to log in.
+        if telephony.check_connection()["connected"] is False:
             continue
         try:
             jobs.start(AUTO_COMMANDS, {"new_only": True}, auto=True)
@@ -1075,12 +1121,6 @@ def _shareable() -> bool:
     return bool(settings.public_url) or settings.share_on_lan
 
 
-def _govoice_audio_url(row) -> str | None:
-    if settings.govoice_recordings_dir and row["filename"]:
-        return f"{settings.govoice_base_url}/{settings.govoice_recordings_dir}/{row['filename']}"
-    return None
-
-
 def _share_token(call_id: str) -> str | None:
     found = db.connect().execute("SELECT token FROM shares WHERE call_id=?", (call_id,)).fetchone()
     return found[0] if found else None
@@ -1091,8 +1131,8 @@ def _links(row, include_share: bool) -> list[tuple[str, str]]:
     token = _share_token(row["id"])
     if include_share and token and _shareable():
         links.append(("Listen (share link)", f"{_base_url()}/share/{token}/audio"))
-    if url := _govoice_audio_url(row):
-        links.append(("Open in GoVoice (login required)", url))
+    if url := telephony.recording_url(row["filename"]):
+        links.append((f"Open in {telephony.label()} (login required)", url))
     return links
 
 

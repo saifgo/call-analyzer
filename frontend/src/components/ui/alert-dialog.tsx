@@ -93,7 +93,7 @@ export function AlertDialogHeader({
   return (
     <div
       className={cn(
-        "flex flex-col gap-2 p-6 text-center max-sm:pb-4 sm:text-left",
+        "flex flex-col gap-2 p-6 text-center max-sm:pb-4 sm:text-start",
         className,
       )}
       data-slot="alert-dialog-header"

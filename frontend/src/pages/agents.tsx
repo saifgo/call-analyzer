@@ -68,6 +68,7 @@ import { href } from "@/lib/router";
 import type { AgentInstaller, RunsOn, Worker, WorkersState, WorkerStep, WorkerTask } from "@/lib/types";
 import { liveAgents, RUNS_ON_LABELS, STEP_NAMES, useWorkers, WORKER_STEPS } from "@/lib/workers";
 import { cn } from "@/lib/utils";
+import { labels, t, type TKey, tx } from "@/lib/i18n";
 
 const STEPS = WORKER_STEPS;
 const SETTING_KEY: Record<WorkerStep, string> = {
@@ -75,15 +76,16 @@ const SETTING_KEY: Record<WorkerStep, string> = {
   transcribe: "TRANSCRIBE_RUNS_ON",
   voice: "VOICE_RUNS_ON",
 };
-const RUNS_ON_ITEMS = (Object.keys(RUNS_ON_LABELS) as RunsOn[]).map((value) => ({
-  label: RUNS_ON_LABELS[value],
-  value,
-}));
-const STEP_HELP: Record<WorkerStep, string> = {
-  analyze: "Claude or Cursor writes the feedback for each call.",
-  transcribe: "Whisper turns each recording into text.",
-  voice: "An emotion model listens to each recording for the voice tone score (the agent downloads it from the server).",
-};
+const runsOnItems = () =>
+  (Object.keys(RUNS_ON_LABELS) as RunsOn[]).map((value) => ({
+    label: RUNS_ON_LABELS[value],
+    value,
+  }));
+const STEP_HELP = labels<WorkerStep>({
+  analyze: "agents.stepHelp.analyze",
+  transcribe: "agents.stepHelp.transcribe",
+  voice: "agents.stepHelp.voice",
+});
 
 /** Settings an agent works with, in the order they're shown. */
 const SHOWN_SETTINGS = [
@@ -106,18 +108,19 @@ function CopyField({ value, label }: { value: string; label: string }) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
-      toastManager.add({ title: "Couldn't copy", description: "Select the text and copy it by hand.", type: "warning" });
+      toastManager.add({ title: t("agents.couldntCopy"), description: t("agents.copyByHand"), type: "warning" });
     }
   };
   return (
     <div className="flex items-start gap-2">
       <pre
         aria-label={label}
+        dir="ltr"
         className="min-w-0 flex-1 select-all overflow-x-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/48 px-3 py-2 font-mono text-xs"
       >
         {value}
       </pre>
-      <Button aria-label={`Copy ${label}`} onClick={copy} size="icon" variant="outline">
+      <Button aria-label={t("leads.copyNumber", { number: label })} onClick={copy} size="icon" variant="outline">
         {copied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
       </Button>
     </div>
@@ -130,7 +133,7 @@ function connectionCode(server: string, token: string): string {
   return `ca1.${b64}`;
 }
 
-const mb = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
+const mb = (bytes: number) => t("agents.mb", { n: Math.round(bytes / 1_000_000) });
 
 /** How to connect a PC: install the agent, paste the code. The command line is there for developers. */
 function ConnectInstructions({ token }: { token: string }) {
@@ -141,7 +144,7 @@ function ConnectInstructions({ token }: { token: string }) {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
-        <span className="font-medium text-sm">1. Install the agent on the PC</span>
+        <span className="font-medium text-sm">{t("agents.step1")}</span>
         {installers.length > 0 || state?.download_url ? (
           <div className="flex flex-wrap gap-2">
             {installers.map((i) => (
@@ -151,39 +154,46 @@ function ConnectInstructions({ token }: { token: string }) {
                 variant="outline"
               >
                 <DownloadIcon aria-hidden="true" />
-                {i.kind === "gpu" ? "GPU installer" : "CPU installer"} ({mb(i.size)})
+                {i.kind === "gpu" ? t("agents.gpuInstaller") : t("agents.cpuInstaller")} ({mb(i.size)})
               </Button>
             ))}
             {state?.download_url && (
               <Button render={<a href={state.download_url} rel="noreferrer" target="_blank" />} variant="outline">
                 <DownloadIcon aria-hidden="true" />
-                Download the installer
+                {t("agents.downloadInstaller")}
               </Button>
             )}
           </div>
         ) : (
           <p className="text-muted-foreground text-sm">
-            Run <code className="rounded bg-muted px-1">CallAnalyzerAgent-Setup.exe</code> on the PC. (Put the
-            installer in the server's <code className="rounded bg-muted px-1">data/downloads</code> folder, or set{" "}
-            <code className="rounded bg-muted px-1">AGENT_DOWNLOAD_URL</code> in Settings, and it is offered here.)
+            {tx("agents.runSetup", {
+              exe: <code className="rounded bg-muted px-1">CallAnalyzerAgent-Setup.exe</code>,
+              folder: <code className="rounded bg-muted px-1">data/downloads</code>,
+              setting: <code className="rounded bg-muted px-1">AGENT_DOWNLOAD_URL</code>,
+            })}
           </p>
         )}
       </div>
       <div className="flex flex-col gap-2">
-        <span className="font-medium text-sm">2. Paste this connection code when the agent asks for it</span>
-        <CopyField label="connection code" value={code} />
+        <span className="font-medium text-sm">{t("agents.step2")}</span>
+        <CopyField label={t("agents.connectionCode")} value={code} />
         <p className="text-muted-foreground text-xs">
-          The agent then shows an icon near the clock and works for this server. It connects out to{" "}
-          <span className="font-mono">{server}</span>: no ports to open.
+          {tx("agents.connectsOut", {
+            server: (
+              <span className="font-mono" dir="ltr">
+                {server}
+              </span>
+            ),
+          })}
         </p>
       </div>
       <details className="text-sm">
         <summary className="w-fit cursor-pointer text-muted-foreground text-xs underline-offset-2 hover:underline">
-          Command line (developers, or a PC without the installer)
+          {t("agents.commandLine")}
         </summary>
         <div className="mt-2 flex flex-col gap-2">
-          <CopyField label="login command" value={`python -m call_analyzer agent login --code ${code}`} />
-          <CopyField label="run command" value="python -m call_analyzer agent run" />
+          <CopyField label={t("agents.loginCommand")} value={`python -m call_analyzer agent login --code ${code}`} />
+          <CopyField label={t("agents.runCommand")} value="python -m call_analyzer agent run" />
         </div>
       </details>
     </div>
@@ -226,14 +236,14 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
     return (
       <>
         <DialogHeader>
-          <DialogTitle>Connect “{name}”</DialogTitle>
-          <DialogDescription>The token is shown only once. Anyone who has it can work as this agent.</DialogDescription>
+          <DialogTitle>{t("agents.connectTitle", { name })}</DialogTitle>
+          <DialogDescription>{t("agents.tokenOnce")}</DialogDescription>
         </DialogHeader>
         <DialogPanel>
           <ConnectInstructions token={token} />
         </DialogPanel>
         <DialogFooter>
-          <DialogClose render={<Button />}>Done</DialogClose>
+          <DialogClose render={<Button />}>{t("common.done")}</DialogClose>
         </DialogFooter>
       </>
     );
@@ -241,10 +251,8 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
   return (
     <Form className="contents" onSubmit={submit}>
       <DialogHeader>
-        <DialogTitle>Add an agent</DialogTitle>
-        <DialogDescription>
-          A PC that transcribes and analyzes calls for this server, with its own GPU and Claude login.
-        </DialogDescription>
+        <DialogTitle>{t("settings.addAgent")}</DialogTitle>
+        <DialogDescription>{t("agents.addHint")}</DialogDescription>
       </DialogHeader>
       <DialogPanel className="flex flex-col gap-4">
         {error && (
@@ -254,23 +262,23 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
           </Alert>
         )}
         <Field>
-          <FieldLabel>Name</FieldLabel>
+          <FieldLabel>{t("campaigns.name")}</FieldLabel>
           <Input
             autoFocus
             maxLength={64}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Office PC"
+            placeholder={t("agents.namePlaceholder")}
             required
             type="text"
             value={name}
           />
-          <FieldDescription>Shown in the list and on every call this agent processes.</FieldDescription>
+          <FieldDescription>{t("agents.nameHint")}</FieldDescription>
         </Field>
       </DialogPanel>
       <DialogFooter>
-        <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+        <DialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</DialogClose>
         <Button loading={saving} type="submit">
-          Create agent
+          {t("agents.create")}
         </Button>
       </DialogFooter>
     </Form>
@@ -322,7 +330,7 @@ function RenameForm({ worker, onDone }: { worker: Worker; onDone: () => void }) 
   return (
     <Form className="contents" onSubmit={submit}>
       <DialogHeader>
-        <DialogTitle>Rename agent</DialogTitle>
+        <DialogTitle>{t("agents.rename")}</DialogTitle>
       </DialogHeader>
       <DialogPanel className="flex flex-col gap-3">
         {error && (
@@ -331,12 +339,12 @@ function RenameForm({ worker, onDone }: { worker: Worker; onDone: () => void }) 
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        <Input aria-label="Name" maxLength={64} onChange={(e) => setName(e.target.value)} required type="text" value={name} />
+        <Input aria-label={t("campaigns.name")} maxLength={64} onChange={(e) => setName(e.target.value)} required type="text" value={name} />
       </DialogPanel>
       <DialogFooter>
-        <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+        <DialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</DialogClose>
         <Button loading={saving} type="submit">
-          Save
+          {t("common.save")}
         </Button>
       </DialogFooter>
     </Form>
@@ -361,7 +369,7 @@ function NewTokenForm({ worker }: { worker: Worker }) {
     try {
       setToken((await api<{ token: string }>(`/api/workers/${worker.id}/token`, { method: "POST" })).token);
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't create a token", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("agents.tokenFailed"), type: "error" });
     } finally {
       setBusy(false);
     }
@@ -369,12 +377,8 @@ function NewTokenForm({ worker }: { worker: Worker }) {
   return (
     <>
       <DialogHeader>
-        <DialogTitle>New token for “{worker.name}”</DialogTitle>
-        <DialogDescription>
-          {token
-            ? "The token is shown only once."
-            : "The current token stops working at once: the agent has to log in again with the new one."}
-        </DialogDescription>
+        <DialogTitle>{t("agents.newTokenTitle", { name: worker.name })}</DialogTitle>
+        <DialogDescription>{token ? t("agents.tokenShownOnce") : t("agents.tokenReplaceHint")}</DialogDescription>
       </DialogHeader>
       {token && (
         <DialogPanel>
@@ -382,10 +386,10 @@ function NewTokenForm({ worker }: { worker: Worker }) {
         </DialogPanel>
       )}
       <DialogFooter>
-        <DialogClose render={<Button variant="ghost" />}>{token ? "Done" : "Cancel"}</DialogClose>
+        <DialogClose render={<Button variant="ghost" />}>{token ? t("common.done") : t("common.cancel")}</DialogClose>
         {!token && (
           <Button loading={busy} onClick={generate} variant="destructive">
-            Replace token
+            {t("agents.replaceToken")}
           </Button>
         )}
       </DialogFooter>
@@ -401,11 +405,11 @@ function RemoveDialog({ worker, onOpenChange, onDone }: { worker: Worker | null;
     setBusy(true);
     try {
       await api(`/api/workers/${worker.id}`, { method: "DELETE" });
-      toastManager.add({ title: `Removed ${worker.name}`, type: "success" });
+      toastManager.add({ title: t("agents.removed", { name: worker.name }), type: "success" });
       onDone();
       onOpenChange(false);
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't remove the agent", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("agents.removeFailed"), type: "error" });
     } finally {
       setBusy(false);
     }
@@ -414,16 +418,13 @@ function RemoveDialog({ worker, onOpenChange, onDone }: { worker: Worker | null;
     <AlertDialog onOpenChange={onOpenChange} open={!!worker}>
       <AlertDialogPopup>
         <AlertDialogHeader>
-          <AlertDialogTitle>Remove {shown?.name}?</AlertDialogTitle>
-          <AlertDialogDescription>
-            Its token stops working and it disconnects. What it was working on goes back to the queue. Calls it already
-            processed keep their results.
-          </AlertDialogDescription>
+          <AlertDialogTitle>{t("agents.removeTitle", { name: shown?.name })}</AlertDialogTitle>
+          <AlertDialogDescription>{t("agents.removeHint")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="ghost" />}>Cancel</AlertDialogClose>
+          <AlertDialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</AlertDialogClose>
           <Button loading={busy} onClick={remove} variant="destructive">
-            Remove agent
+            {t("agents.remove")}
           </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>
@@ -437,11 +438,11 @@ function CancelQueueDialog({ open, onOpenChange, onDone }: { open: boolean; onOp
     setBusy(true);
     try {
       const res = await api<{ cancelled: number }>("/api/workers/tasks/cancel", { body: {}, method: "POST" });
-      toastManager.add({ title: `Cancelled ${res.cancelled} ${res.cancelled === 1 ? "task" : "tasks"}`, type: "success" });
+      toastManager.add({ title: t("agents.cancelledTasks", { count: res.cancelled }), type: "success" });
       onDone();
       onOpenChange(false);
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't cancel", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("agents.cancelFailed"), type: "error" });
     } finally {
       setBusy(false);
     }
@@ -450,15 +451,13 @@ function CancelQueueDialog({ open, onOpenChange, onDone }: { open: boolean; onOp
     <AlertDialog onOpenChange={onOpenChange} open={open}>
       <AlertDialogPopup>
         <AlertDialogHeader>
-          <AlertDialogTitle>Cancel all waiting and running tasks?</AlertDialogTitle>
-          <AlertDialogDescription>
-            The calls stay as they are and can be processed again from the Pipeline page.
-          </AlertDialogDescription>
+          <AlertDialogTitle>{t("agents.cancelAllTitle")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("agents.cancelAllHint")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="ghost" />}>Keep them</AlertDialogClose>
+          <AlertDialogClose render={<Button variant="ghost" />}>{t("agents.keepThem")}</AlertDialogClose>
           <Button loading={busy} onClick={cancel} variant="destructive">
-            Cancel tasks
+            {t("agents.cancelTasks")}
           </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>
@@ -468,9 +467,9 @@ function CancelQueueDialog({ open, onOpenChange, onDone }: { open: boolean; onOp
 
 // --- Installers ---------------------------------------------------------------------------------
 
-const KIND_HELP: Record<AgentInstaller["kind"], string> = {
-  cpu: "Works on any PC. Transcription runs on the processor.",
-  gpu: "For PCs with an NVIDIA graphics card: much faster transcription. Includes the CUDA libraries, so it is large.",
+const KIND_HELP: Record<AgentInstaller["kind"], TKey> = {
+  cpu: "agents.kindHelp.cpu",
+  gpu: "agents.kindHelp.gpu",
 };
 
 function RemoveInstallerDialog({
@@ -494,7 +493,7 @@ function RemoveInstallerDialog({
       onDone();
       onOpenChange(false);
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't delete the installer", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("agents.deleteInstallerFailed"), type: "error" });
     } finally {
       setBusy(false);
     }
@@ -503,15 +502,13 @@ function RemoveInstallerDialog({
     <AlertDialog onOpenChange={onOpenChange} open={!!installer}>
       <AlertDialogPopup>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete {shown?.name}?</AlertDialogTitle>
-          <AlertDialogDescription>
-            It can no longer be downloaded from this page. PCs that already have it installed keep working.
-          </AlertDialogDescription>
+          <AlertDialogTitle>{t("users.deleteTitle", { name: shown?.name })}</AlertDialogTitle>
+          <AlertDialogDescription>{t("agents.deleteInstallerHint")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="ghost" />}>Cancel</AlertDialogClose>
+          <AlertDialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</AlertDialogClose>
           <Button loading={busy} onClick={remove} variant="destructive">
-            Delete
+            {t("common.delete")}
           </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>
@@ -536,9 +533,9 @@ function InstallersCard({ state, reload }: { state: WorkersState; reload: () => 
     };
     const fail = (detail: string) => {
       setUpload(null);
-      toastManager.add({ description: detail, title: "Couldn't upload the installer", type: "error" });
+      toastManager.add({ description: detail, title: t("agents.uploadFailed"), type: "error" });
     };
-    xhr.onerror = () => fail("The connection dropped. Large files can also be refused by a proxy in front of the server.");
+    xhr.onerror = () => fail(t("agents.connectionDropped"));
     xhr.onload = () => {
       if (xhr.status === 401) {
         location.href = loginUrl();
@@ -546,7 +543,7 @@ function InstallersCard({ state, reload }: { state: WorkersState; reload: () => 
       }
       if (xhr.status >= 200 && xhr.status < 300) {
         setUpload(null);
-        toastManager.add({ title: `${file.name} uploaded`, type: "success" });
+        toastManager.add({ title: t("agents.uploaded", { name: file.name }), type: "success" });
         reload();
         return;
       }
@@ -565,18 +562,13 @@ function InstallersCard({ state, reload }: { state: WorkersState; reload: () => 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Get the agent for Windows</CardTitle>
-        <CardDescription>
-          Install it on any PC that should transcribe and analyze calls for this server. Then add the PC below and
-          paste its connection code.
-        </CardDescription>
+        <CardTitle className="text-base">{t("agents.getAgent")}</CardTitle>
+        <CardDescription>{t("agents.getAgentHint")}</CardDescription>
       </CardHeader>
       <CardPanel className="flex flex-col gap-3">
         {installers.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            No installer on this server yet. Build it on a Windows PC with{" "}
-            <code className="rounded bg-muted px-1">packaging\build_agent.ps1</code> (see the README), then upload it
-            here.
+            {tx("agents.noInstaller", { script: <code className="rounded bg-muted px-1">packaging\build_agent.ps1</code> })}
           </p>
         ) : (
           <ul className="flex flex-col divide-y rounded-lg border">
@@ -589,14 +581,14 @@ function InstallersCard({ state, reload }: { state: WorkersState; reload: () => 
                     {i.version && <Badge variant="outline">v{i.version}</Badge>}
                   </div>
                   <span className="text-muted-foreground text-xs">
-                    {KIND_HELP[i.kind]} {mb(i.size)} · uploaded {fmtRelative(i.modified)}
+                    {t(KIND_HELP[i.kind])} {mb(i.size)} · {t("agents.uploadedAgo", { time: fmtRelative(i.modified) })}
                   </span>
                 </div>
                 <Button render={<a download href={`/api/workers/installers/${encodeURIComponent(i.name)}`} />}>
                   <DownloadIcon aria-hidden="true" />
-                  Download
+                  {t("jobs.step.download")}
                 </Button>
-                <Button aria-label={`Delete ${i.name}`} onClick={() => setRemoving(i)} size="icon" variant="ghost">
+                <Button aria-label={t("agents.deleteName", { name: i.name })} onClick={() => setRemoving(i)} size="icon" variant="ghost">
                   <Trash2Icon aria-hidden="true" />
                 </Button>
               </li>
@@ -606,7 +598,7 @@ function InstallersCard({ state, reload }: { state: WorkersState; reload: () => 
         {upload && (
           <Progress value={upload.pct}>
             <div className="flex items-center justify-between gap-2 text-sm">
-              <span className="truncate">Uploading {upload.name}</span>
+              <span className="truncate">{t("agents.uploading", { name: upload.name })}</span>
               <span className="text-muted-foreground tabular-nums">{upload.pct}%</span>
             </div>
             <ProgressTrack>
@@ -619,13 +611,16 @@ function InstallersCard({ state, reload }: { state: WorkersState; reload: () => 
         <span className="text-muted-foreground text-xs">
           {state.download_url ? (
             <>
-              Also available at{" "}
-              <a className="underline underline-offset-2" href={state.download_url} rel="noreferrer" target="_blank">
-                {state.download_url}
-              </a>
+              {tx("agents.alsoAt", {
+                url: (
+                  <a className="underline underline-offset-2" dir="ltr" href={state.download_url} rel="noreferrer" target="_blank">
+                    {state.download_url}
+                  </a>
+                ),
+              })}
             </>
           ) : (
-            "Installers are stored in the server's data/downloads folder."
+            t("agents.storedIn")
           )}
         </span>
         <input
@@ -641,7 +636,7 @@ function InstallersCard({ state, reload }: { state: WorkersState; reload: () => 
         />
         <Button disabled={!!upload} onClick={() => input.current?.click()} size="sm" variant="outline">
           <UploadIcon aria-hidden="true" />
-          Upload installer
+          {t("agents.uploadInstaller")}
         </Button>
       </CardFooter>
       <RemoveInstallerDialog installer={removing} onDone={reload} onOpenChange={(open) => !open && setRemoving(null)} />
@@ -652,12 +647,13 @@ function InstallersCard({ state, reload }: { state: WorkersState; reload: () => 
 // --- Where each step runs -----------------------------------------------------------------------
 
 function stepStatus(mode: RunsOn, ready: number): { text: string; warn: boolean } {
-  if (mode === "host") return { text: "This server does it itself; agents are not used.", warn: false };
-  const agents = `${ready} ${ready === 1 ? "agent is" : "agents are"} ready`;
-  if (ready > 0) return { text: `${agents}${mode === "auto" ? "; the server steps in if they all go offline" : ""}.`, warn: false };
+  if (mode === "host") return { text: t("agents.status.host"), warn: false };
+  if (ready > 0) {
+    return { text: t(mode === "auto" ? "agents.status.readyAuto" : "agents.status.ready", { count: ready }), warn: false };
+  }
   return mode === "agent"
-    ? { text: "No agent is ready: calls wait in the queue until one connects.", warn: true }
-    : { text: "No agent is ready: this server does it for now.", warn: false };
+    ? { text: t("agents.status.noneQueued"), warn: true }
+    : { text: t("agents.status.noneHost"), warn: false };
 }
 
 function RoutingCard({ state, reload, onCancelQueue }: { state: WorkersState; reload: () => Promise<void>; onCancelQueue: () => void }) {
@@ -667,9 +663,9 @@ function RoutingCard({ state, reload, onCancelQueue }: { state: WorkersState; re
     try {
       await api("/api/settings", { body: { [SETTING_KEY[step]]: value }, method: "PUT" });
       await reload();
-      toastManager.add({ description: "Used by the next job.", title: "Saved", type: "success" });
+      toastManager.add({ description: t("settings.usedByNextJob"), title: t("board.saved"), type: "success" });
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't save", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("common.couldntSave"), type: "error" });
     } finally {
       setSaving(null);
     }
@@ -679,13 +675,15 @@ function RoutingCard({ state, reload, onCancelQueue }: { state: WorkersState; re
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Where processing runs</CardTitle>
+        <CardTitle className="text-base">{t("agents.routing")}</CardTitle>
         <CardDescription>
-          Choose, for each step, whether this server does the work or remote agents do. Also in{" "}
-          <a className="underline underline-offset-2" href={href("settings")}>
-            Settings
-          </a>
-          .
+          {tx("agents.routingHint", {
+            settings: (
+              <a className="underline underline-offset-2" href={href("settings")}>
+                {t("nav.settings")}
+              </a>
+            ),
+          })}
         </CardDescription>
       </CardHeader>
       <CardPanel className="grid gap-6 md:grid-cols-2">
@@ -696,15 +694,15 @@ function RoutingCard({ state, reload, onCancelQueue }: { state: WorkersState; re
               <FieldLabel>{STEP_NAMES[step]}</FieldLabel>
               <Select
                 disabled={saving === step}
-                items={RUNS_ON_ITEMS}
+                items={runsOnItems()}
                 onValueChange={(v) => change(step, v as RunsOn)}
                 value={state.runs_on[step]}
               >
-                <SelectTrigger aria-label={`${STEP_NAMES[step]} runs on`}>
+                <SelectTrigger aria-label={t("agents.runsOn", { step: STEP_NAMES[step] })}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectPopup>
-                  {RUNS_ON_ITEMS.map((item) => (
+                  {runsOnItems().map((item) => (
                     <SelectItem key={item.value} value={item.value}>
                       {item.label}
                     </SelectItem>
@@ -720,12 +718,14 @@ function RoutingCard({ state, reload, onCancelQueue }: { state: WorkersState; re
       </CardPanel>
       <CardFooter className="flex-wrap justify-between gap-2 border-t">
         <span className="text-muted-foreground text-sm">
-          Queue: <span className="font-medium text-foreground tabular-nums">{numberFmt.format(queued)}</span> waiting ·{" "}
-          <span className="font-medium text-foreground tabular-nums">{numberFmt.format(running)}</span> running
+          {tx("agents.queue", {
+            queued: <span className="font-medium text-foreground tabular-nums">{numberFmt.format(queued)}</span>,
+            running: <span className="font-medium text-foreground tabular-nums">{numberFmt.format(running)}</span>,
+          })}
         </span>
         <Button disabled={queued + running === 0} onClick={onCancelQueue} size="sm" variant="outline">
           <XIcon aria-hidden="true" />
-          Cancel tasks
+          {t("agents.cancelTasks")}
         </Button>
       </CardFooter>
     </Card>
@@ -738,26 +738,28 @@ function StatusBadge({ worker }: { worker: Worker }) {
   if (!worker.online) {
     return (
       <Tooltip>
-        <TooltipTrigger render={<Badge variant="secondary" />}>Offline</TooltipTrigger>
-        <TooltipPopup>{worker.last_seen ? `Last seen ${fmtRelative(worker.last_seen)}` : "Never connected yet"}</TooltipPopup>
+        <TooltipTrigger render={<Badge variant="secondary" />}>{t("ops.state.offline")}</TooltipTrigger>
+        <TooltipPopup>{worker.last_seen ? t("agents.lastSeen", { time: fmtRelative(worker.last_seen) }) : t("agents.neverConnected")}</TooltipPopup>
       </Tooltip>
     );
   }
-  return worker.enabled ? <Badge variant="success">Online</Badge> : <Badge variant="warning">Paused</Badge>;
+  return worker.enabled ? <Badge variant="success">{t("agents.online")}</Badge> : <Badge variant="warning">{t("ops.state.paused")}</Badge>;
 }
 
 function StepBadge({ step, worker }: { step: WorkerStep; worker: Worker }) {
   const cap = worker.info.capabilities?.[step];
   if (!cap && step === "voice") return null; // agents from before the voice step don't report it
-  if (!cap) return <Badge variant="outline">{STEP_NAMES[step]}: unknown</Badge>;
+  if (!cap) return <Badge variant="outline">{t("agents.stepUnknown", { step: STEP_NAMES[step] })}</Badge>;
   return (
     <Tooltip>
       <TooltipTrigger render={<Badge variant={cap.ok ? "success" : "warning"} />}>
         {STEP_NAMES[step]}
-        {cap.ok ? "" : " · not ready"}
+        {cap.ok ? "" : ` · ${t("settings.notReady")}`}
       </TooltipTrigger>
       <TooltipPopup className="max-w-xs">
-        {cap.ok ? `Ready: ${cap.detail}${cap.slots > 1 ? ` (${cap.slots} at a time)` : ""}` : cap.reason || "Not set up"}
+        {cap.ok
+          ? `${t("agents.readyDetail", { detail: cap.detail })}${cap.slots > 1 ? ` ${t("agents.atATime", { count: cap.slots })}` : ""}`
+          : cap.reason || t("agents.notSetUp")}
       </TooltipPopup>
     </Tooltip>
   );
@@ -772,16 +774,18 @@ function SettingsList({ worker, defaults }: { worker: Worker; defaults: Record<s
         const value = key in own ? own[key] : (effective[key] ?? defaults[key] ?? "");
         return (
           <React.Fragment key={key}>
-            <dt className="font-mono text-muted-foreground text-xs leading-5">{key}</dt>
+            <dt className="font-mono text-muted-foreground text-xs leading-5" dir="ltr">
+              {key}
+            </dt>
             <dd className="flex min-w-0 items-center gap-1.5">
               <span className="truncate" dir="auto" title={String(value)}>
-                {String(value) || <span className="text-muted-foreground">(empty)</span>}
+                {String(value) || <span className="text-muted-foreground">{t("agents.empty")}</span>}
               </span>
               {key in own && (
                 <Tooltip>
                   <TooltipTrigger render={<Badge size="sm" variant="info" />}>agent.toml</TooltipTrigger>
                   <TooltipPopup className="max-w-xs">
-                    Set on the agent itself. The server's default is “{defaults[key] ?? "not set"}”.
+                    {t("agents.ownSetting", { value: defaults[key] ?? t("agents.notSet") })}
                   </TooltipPopup>
                 </Tooltip>
               )}
@@ -829,29 +833,29 @@ function AgentCard({
               </span>
               <StatusBadge worker={worker} />
             </CardTitle>
-            <CardDescription className="truncate">{machine || "Hasn't connected yet"}</CardDescription>
+            <CardDescription className="truncate">{machine || t("agents.notConnectedYet")}</CardDescription>
           </div>
           <Menu>
-            <MenuTrigger render={<Button aria-label={`Actions for ${worker.name}`} size="icon-sm" variant="ghost" />}>
+            <MenuTrigger render={<Button aria-label={t("users.actionsFor", { name: worker.name })} size="icon-sm" variant="ghost" />}>
               <EllipsisIcon aria-hidden="true" />
             </MenuTrigger>
             <MenuPopup align="end">
               <MenuItem onClick={onToggle}>
                 {worker.enabled ? <PauseIcon aria-hidden="true" /> : <PlayIcon aria-hidden="true" />}
-                {worker.enabled ? "Pause" : "Resume"}
+                {worker.enabled ? t("agents.pause") : t("agents.resume")}
               </MenuItem>
               <MenuItem onClick={onRename}>
                 <PencilIcon aria-hidden="true" />
-                Rename
+                {t("agents.renameShort")}
               </MenuItem>
               <MenuItem onClick={onToken}>
                 <KeyRoundIcon aria-hidden="true" />
-                New token
+                {t("agents.newToken")}
               </MenuItem>
               <MenuSeparator />
               <MenuItem onClick={onRemove} variant="destructive">
                 <Trash2Icon aria-hidden="true" />
-                Remove
+                {t("common.remove")}
               </MenuItem>
             </MenuPopup>
           </Menu>
@@ -862,7 +866,7 @@ function AgentCard({
           {info.gpu !== undefined && (
             <Badge variant="outline">
               <CpuIcon aria-hidden="true" />
-              {info.gpu ? "GPU" : "CPU only"}
+              {info.gpu ? "GPU" : t("agents.cpuOnly")}
             </Badge>
           )}
           {STEPS.map((step) => (
@@ -883,11 +887,12 @@ function AgentCard({
               <CircleAlertIcon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-destructive" />
             )}
             <span className="min-w-0">
-              {info.model.status === "downloading" ? "Downloading the model " : "Couldn't get the model "}
-              <span className="font-medium">{info.model.name}</span>
+              {tx(info.model.status === "downloading" ? "agents.downloadingModel" : "agents.modelFailed", {
+                name: <span className="font-medium">{info.model.name}</span>,
+              })}
               <span className="block break-words text-muted-foreground text-xs">
                 {info.model.detail}
-                {info.model.status === "downloading" && ". It starts transcribing as soon as it is here."}
+                {info.model.status === "downloading" && `. ${t("agents.startsWhenHere")}`}
               </span>
             </span>
           </div>
@@ -895,18 +900,18 @@ function AgentCard({
 
         {worker.running.length > 0 ? (
           <ul className="flex flex-col gap-1.5 text-sm">
-            {worker.running.map((t) => (
-              <li className="flex items-center gap-2" key={t.id}>
+            {worker.running.map((task) => (
+              <li className="flex items-center gap-2" key={task.id}>
                 <span aria-hidden="true" className="size-1.5 shrink-0 animate-pulse rounded-full bg-info" />
                 <span className="truncate">
-                  {STEP_NAMES[t.kind]} · call {t.call_id}
-                  {t.progress && <span className="text-muted-foreground"> · {t.progress}</span>}
+                  {STEP_NAMES[task.kind]} · {t("agents.callId", { id: task.call_id })}
+                  {task.progress && <span className="text-muted-foreground"> · {task.progress}</span>}
                 </span>
               </li>
             ))}
           </ul>
         ) : (
-          <p className="text-muted-foreground text-sm">{worker.online ? "Idle." : "Not connected."}</p>
+          <p className="text-muted-foreground text-sm">{worker.online ? t("agents.idleDot") : t("agents.notConnectedDot")}</p>
         )}
 
         {Object.keys(info.effective ?? {}).length > 0 && (
@@ -916,8 +921,8 @@ function AgentCard({
               onClick={() => setOpen((o) => !o)}
               type="button"
             >
-              {open ? "Hide settings" : "Show the settings this agent uses"}
-              {Object.keys(info.overrides ?? {}).length > 0 && ` (${Object.keys(info.overrides ?? {}).length} of its own)`}
+              {open ? t("agents.hideSettings") : t("agents.showSettings")}
+              {Object.keys(info.overrides ?? {}).length > 0 && ` ${t("agents.ofItsOwn", { count: Object.keys(info.overrides ?? {}).length })}`}
             </button>
             {open && <SettingsList defaults={defaults} worker={worker} />}
           </div>
@@ -925,15 +930,16 @@ function AgentCard({
       </CardPanel>
       <CardFooter className="justify-between gap-2 border-t text-muted-foreground text-xs">
         <span>
-          <span className="tabular-nums">{numberFmt.format(worker.done)}</span> done
-          {worker.failed > 0 && (
-            <>
-              {" "}
-              · <span className="tabular-nums">{numberFmt.format(worker.failed)}</span> failed
-            </>
-          )}
+          {t("agents.done", { count: worker.done })}
+          {worker.failed > 0 && ` · ${t("agents.failed", { count: worker.failed })}`}
         </span>
-        <span>{worker.online ? "Connected now" : worker.last_seen ? `Seen ${fmtRelative(worker.last_seen)}` : "Never seen"}</span>
+        <span>
+          {worker.online
+            ? t("agents.connectedNow")
+            : worker.last_seen
+              ? t("agents.seenAgo", { time: fmtRelative(worker.last_seen) })
+              : t("agents.neverSeen")}
+        </span>
       </CardFooter>
     </Card>
   );
@@ -948,6 +954,13 @@ const TASK_VARIANT = {
   queued: "secondary",
   running: "info",
 } as const;
+const TASK_LABELS = labels<keyof typeof TASK_VARIANT>({
+  cancelled: "agents.task.cancelled",
+  done: "agents.task.done",
+  failed: "agents.task.failed",
+  queued: "agents.task.queued",
+  running: "agents.task.running",
+});
 
 function TasksTable({ state }: { state: WorkersState }) {
   const { data: tasks } = useApi<WorkerTask[]>("/api/workers/tasks?limit=30", [state]);
@@ -955,39 +968,46 @@ function TasksTable({ state }: { state: WorkersState }) {
   return (
     <CardFrame>
       <CardFrameHeader>
-        <CardFrameTitle>Recent tasks</CardFrameTitle>
+        <CardFrameTitle>{t("agents.recentTasks")}</CardFrameTitle>
       </CardFrameHeader>
       <Table variant="card">
         <TableHeader>
           <TableRow>
-            <TableHead>Call</TableHead>
-            <TableHead>Step</TableHead>
-            <TableHead>Agent</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead className="max-md:hidden">When</TableHead>
+            <TableHead>{t("feedback.call")}</TableHead>
+            <TableHead>{t("agents.step")}</TableHead>
+            <TableHead>{t("shell.agent")}</TableHead>
+            <TableHead>{t("board.status")}</TableHead>
+            <TableHead className="max-md:hidden">{t("agents.when")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {tasks.map((t) => (
-            <TableRow key={t.id}>
+          {tasks.map((task) => (
+            <TableRow key={task.id}>
               <TableCell>
-                <a className="font-medium underline-offset-2 hover:underline" href={href("calls", t.call_id)}>
-                  {t.filename ?? t.call_id}
+                <a className="font-medium underline-offset-2 hover:underline" href={href("calls", task.call_id)}>
+                  {task.filename ?? task.call_id}
                 </a>
-                {t.customer && <div className="text-muted-foreground text-xs">{t.customer}</div>}
+                {task.customer && (
+                  <div className="text-muted-foreground text-xs" dir="ltr">
+                    {task.customer}
+                  </div>
+                )}
               </TableCell>
-              <TableCell>{STEP_NAMES[t.kind]}</TableCell>
-              <TableCell className="text-muted-foreground">{t.worker_name ?? "—"}</TableCell>
+              <TableCell>{STEP_NAMES[task.kind]}</TableCell>
+              <TableCell className="text-muted-foreground">{task.worker_name ?? "—"}</TableCell>
               <TableCell className="max-w-72">
-                <Badge variant={TASK_VARIANT[t.status]}>{t.status}</Badge>
-                {(t.status === "running" ? t.progress : t.error) && (
-                  <div className="mt-0.5 truncate text-muted-foreground text-xs" title={(t.status === "running" ? t.progress : t.error) ?? ""}>
-                    {t.status === "running" ? t.progress : t.error}
+                <Badge variant={TASK_VARIANT[task.status]}>{TASK_LABELS[task.status]}</Badge>
+                {(task.status === "running" ? task.progress : task.error) && (
+                  <div
+                    className="mt-0.5 truncate text-muted-foreground text-xs"
+                    title={(task.status === "running" ? task.progress : task.error) ?? ""}
+                  >
+                    {task.status === "running" ? task.progress : task.error}
                   </div>
                 )}
               </TableCell>
               <TableCell className="whitespace-nowrap text-muted-foreground max-md:hidden">
-                {fmtDateTime(t.finished_at ?? t.created_at)}
+                {fmtDateTime(task.finished_at ?? task.created_at)}
               </TableCell>
             </TableRow>
           ))}
@@ -1012,19 +1032,19 @@ export function AgentsPage(): React.ReactElement {
       await api(`/api/workers/${worker.id}`, { body: { enabled: !worker.enabled }, method: "PATCH" });
       await reload();
       toastManager.add({
-        description: worker.enabled ? "It finishes what it's doing and takes no new work." : undefined,
-        title: worker.enabled ? `Paused ${worker.name}` : `Resumed ${worker.name}`,
+        description: worker.enabled ? t("agents.pausedHint") : undefined,
+        title: worker.enabled ? t("agents.pausedName", { name: worker.name }) : t("agents.resumedName", { name: worker.name }),
         type: "success",
       });
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't update the agent", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("agents.updateFailed"), type: "error" });
     }
   };
 
   const addButton = (
     <Button onClick={() => setAdding(true)}>
       <PlusIcon aria-hidden="true" />
-      Add agent
+      {t("agents.add")}
     </Button>
   );
   const online = state ? state.workers.filter((w) => w.online && w.enabled).length : 0;
@@ -1035,10 +1055,10 @@ export function AgentsPage(): React.ReactElement {
         actions={addButton}
         description={
           state
-            ? `${online} of ${state.workers.length} ${state.workers.length === 1 ? "agent" : "agents"} online. Agents are PCs that connect to this server and do the transcription and analysis.`
-            : "PCs that connect to this server and do the transcription and analysis."
+            ? `${t("settings.agentsOnlineOf", { count: state.workers.length, online })}. ${t("agents.descriptionTail")}`
+            : t("agents.description")
         }
-        title="Remote agents"
+        title={t("nav.agents")}
       />
 
       {!state ? (
@@ -1058,11 +1078,8 @@ export function AgentsPage(): React.ReactElement {
                   <EmptyMedia variant="icon">
                     <MonitorSmartphoneIcon />
                   </EmptyMedia>
-                  <EmptyTitle>No agents yet</EmptyTitle>
-                  <EmptyDescription>
-                    Add a PC with a GPU or a Claude login: it connects to this server, takes the calls to process and
-                    sends the results back. It only needs internet access.
-                  </EmptyDescription>
+                  <EmptyTitle>{t("settings.noAgents")}</EmptyTitle>
+                  <EmptyDescription>{t("agents.emptyHint")}</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>{addButton}</EmptyContent>
               </Empty>
@@ -1072,11 +1089,8 @@ export function AgentsPage(): React.ReactElement {
               {STEPS.some((s) => state.runs_on[s] === "agent") && online === 0 && (
                 <Alert variant="warning">
                   <CircleAlertIcon aria-hidden="true" />
-                  <AlertTitle>No agent is online</AlertTitle>
-                  <AlertDescription>
-                    Calls for steps set to “Remote agents only” wait in the queue and are processed as soon as an agent
-                    connects.
-                  </AlertDescription>
+                  <AlertTitle>{t("agents.noneOnline")}</AlertTitle>
+                  <AlertDescription>{t("agents.noneOnlineHint")}</AlertDescription>
                 </Alert>
               )}
               <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">

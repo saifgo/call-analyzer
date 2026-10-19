@@ -249,8 +249,10 @@ def _ask_claude_cli(system: str, prompt: str, schema: dict | None = None, cfg=No
         ]
         if schema:
             cmd += ["--json-schema", json.dumps(schema)]
+        # No console window on Windows: on agent PCs this runs while someone is using the computer.
         proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
-                              cwd=workdir, timeout=1800)
+                              cwd=workdir, timeout=1800,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     try:
         result = json.loads(proc.stdout)
     except ValueError:

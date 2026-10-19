@@ -8,6 +8,7 @@ import * as React from "react";
 import { toastManager } from "@/components/ui/toast";
 import { api } from "@/lib/api";
 import { type AudioSettings, CallAudio, loadAudioSettings, preloadCallAudio, saveAudioSettings } from "@/lib/call-audio";
+import { t } from "@/lib/i18n";
 
 export type SoftphoneConfig =
   | {
@@ -29,6 +30,8 @@ export type SoftphoneConfig =
 export type PhoneStatus = "off" | "unsupported" | "elsewhere" | "connecting" | "registered" | "failed";
 
 export type ActiveCall = {
+  /** Tells calls apart in the phone's events. */
+  id: number;
   direction: "incoming" | "outgoing";
   number: string;
   name: string;
@@ -41,6 +44,15 @@ export type ActiveCall = {
 
 export type CallEnd = { answered: boolean; cause: string; seconds: number };
 export type CallHandlers = { onAnswered?: () => void; onEnded?: (end: CallEnd) => void };
+
+/** What happens on the phone, for whoever listens (see lib/inbound.tsx). `busy`: a call turned away because this
+ * phone was on another one. On `ended`, `byMe` says the agent hung up (or declined), `elsewhere` that another phone
+ * answered it (a ring group). */
+export type PhoneEvent =
+  | { type: "incoming"; call: ActiveCall }
+  | { type: "answered"; call: ActiveCall }
+  | { type: "ended"; call: ActiveCall; end: CallEnd & { byMe: boolean; elsewhere: boolean } }
+  | { type: "busy"; number: string; name: string };
 
 type SoftphoneContextValue = {
   config: SoftphoneConfig | null;
@@ -61,6 +73,8 @@ type SoftphoneContextValue = {
   setAudio: (patch: Partial<AudioSettings>) => void;
   /** The current call's audio chain (level meter), null when there's no call. */
   callAudio: CallAudio | null;
+  /** Listen to the phone's events; returns the function that stops listening. */
+  subscribe: (listener: (event: PhoneEvent) => void) => () => void;
 };
 
 const SoftphoneContext = React.createContext<SoftphoneContextValue | null>(null);
@@ -120,22 +134,32 @@ function startRingtone(): () => void {
   };
 }
 
+/** Whether the caller's CANCEL says another phone picked the call up (Reason: SIP;cause=200, "Call completed
+ * elsewhere"). */
+function answeredElsewhere(e: EndEvent): boolean {
+  const message = e.message as { getHeader?: (name: string) => string | undefined } | null | undefined;
+  const reason = typeof message?.getHeader === "function" ? (message.getHeader("Reason") ?? "") : "";
+  return /cause=200\b|elsewhere/i.test(reason);
+}
+
+let nextCallId = 1;
+
 function endCause(e: EndEvent): string {
   switch (e.cause) {
     case JsSIP.C.causes.BUSY:
-      return "The line is busy";
+      return t("phone.end.busy");
     case JsSIP.C.causes.REJECTED:
-      return "The call was declined";
+      return t("phone.end.rejected");
     case JsSIP.C.causes.UNAVAILABLE:
     case JsSIP.C.causes.NOT_FOUND:
-      return "The number can't be reached";
+      return t("phone.end.unreachable");
     case JsSIP.C.causes.NO_ANSWER:
-      return "No answer";
+      return t("phone.end.noAnswer");
     case JsSIP.C.causes.USER_DENIED_MEDIA_ACCESS:
-      return "The browser isn't allowed to use the microphone";
+      return t("phone.micDenied");
     case JsSIP.C.causes.CONNECTION_ERROR:
     case JsSIP.C.causes.REQUEST_TIMEOUT:
-      return "Lost the connection to GoVoice";
+      return t("phone.end.connectionLost");
     default:
       return e.cause;
   }
@@ -158,6 +182,22 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
   const [liveAudio, setLiveAudio] = React.useState<CallAudio | null>(null);
   const [opening, setOpening] = React.useState(false);
   const openingRef = React.useRef(false);
+  const listeners = React.useRef(new Set<(event: PhoneEvent) => void>());
+  const emit = React.useCallback((event: PhoneEvent) => {
+    for (const listener of listeners.current) {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  }, []);
+  const subscribe = React.useCallback((listener: (event: PhoneEvent) => void) => {
+    listeners.current.add(listener);
+    return () => {
+      listeners.current.delete(listener);
+    };
+  }, []);
 
   const setAudio = React.useCallback((patch: Partial<AudioSettings>) => {
     const next = { ...audioSettingsRef.current, ...patch };
@@ -176,7 +216,7 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
   React.useEffect(() => {
     api<SoftphoneConfig>("/api/softphone")
       .then(setConfig)
-      .catch(() => setConfig({ enabled: false, reason: "Couldn't load the softphone settings" }));
+      .catch(() => setConfig({ enabled: false, reason: t("phone.settingsFailed") }));
   }, []);
 
   const update = React.useCallback((patch: Partial<ActiveCall>) => {
@@ -214,6 +254,7 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
         stopRing.current?.();
         update({ state: "active", answeredAt: Date.now() });
         handlers.current.onAnswered?.();
+        emit({ call, type: "answered" });
       });
       s.on("hold", () => update({ held: true }));
       s.on("unhold", () => update({ held: false }));
@@ -232,18 +273,23 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
         const answered = !!s.start_time;
         const seconds = answered ? Math.round((Date.now() - s.start_time.getTime()) / 1000) : 0;
         if (!answered && e.originator !== "local" && call.direction === "outgoing") {
-          toastManager.add({ description: endCause(e), title: "Call not connected", type: "warning" });
+          toastManager.add({ description: endCause(e), title: t("phone.notConnected"), type: "warning" });
         } else if (!answered && e.originator === "remote" && call.direction === "incoming") {
-          toastManager.add({ description: call.name || call.number, title: "Missed call", type: "info" });
+          toastManager.add({ description: call.name || call.number, title: t("phone.missedCall"), type: "info" });
         }
         handlers.current.onEnded?.({ answered, cause: e.cause, seconds });
         handlers.current = {};
         setActive(null);
+        emit({
+          call,
+          end: { answered, byMe: e.originator === "local", cause: e.cause, elsewhere: answeredElsewhere(e), seconds },
+          type: "ended",
+        });
       };
       s.on("ended", finish);
       s.on("failed", finish);
     },
-    [setCallAudio, update],
+    [emit, setCallAudio, update],
   );
 
   // Register while this tab holds the lock; another tab gets the phone once this one closes.
@@ -275,7 +321,7 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
         phone.on("connecting", () => setStatus("connecting"));
         phone.on("disconnected", () => {
           setStatus("connecting");
-          setError("Can't reach GoVoice, retrying…");
+          setError(t("phone.unreachableRetrying"));
         });
         phone.on("registered", () => {
           setStatus("registered");
@@ -287,27 +333,31 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
           setStatus("failed");
           setError(
             e.cause === JsSIP.C.causes.AUTHENTICATION_ERROR
-              ? `GoVoice refused extension ${config.extension}: check its SIP password in Users`
-              : `GoVoice refused to sign in the phone (${e.cause})`,
+              ? t("phone.extensionRefused", { extension: config.extension })
+              : t("phone.signInRefused", { cause: e.cause }),
           );
         });
         phone.on("newRTCSession", (e: RTCSessionEvent) => {
           if (e.originator !== "remote") return;
+          const remote = e.session.remote_identity;
           if (session.current) {
             e.session.terminate({ status_code: 486, reason_phrase: "Busy Here" });
+            emit({ name: remote.display_name || "", number: remote.uri.user, type: "busy" });
             return;
           }
-          const remote = e.session.remote_identity;
           stopRing.current = startRingtone();
-          track(e.session, {
+          const incoming: ActiveCall = {
             answeredAt: null,
             direction: "incoming",
             held: false,
+            id: nextCallId++,
             muted: false,
             name: remote.display_name || "",
             number: remote.uri.user,
             state: "ringing",
-          });
+          };
+          track(e.session, incoming);
+          emit({ call: incoming, type: "incoming" });
         });
         phone.start();
         ua.current = phone;
@@ -325,7 +375,7 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
       release?.();
       setStatus("off");
     };
-  }, [config, track]);
+  }, [config, emit, track]);
 
   // Leaving the page drops the call: ask first.
   React.useEffect(() => {
@@ -344,8 +394,8 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
     } catch (err) {
       const denied = err instanceof DOMException && (err.name === "NotAllowedError" || err.name === "SecurityError");
       toastManager.add({
-        description: denied ? "The browser isn't allowed to use the microphone" : `The microphone didn't start (${String(err)})`,
-        title: "Call not connected",
+        description: denied ? t("phone.micDenied") : t("phone.micFailed", { error: String(err) }),
+        title: t("phone.notConnected"),
         type: "error",
       });
       return null;
@@ -384,6 +434,7 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
             answeredAt: null,
             direction: "outgoing",
             held: false,
+            id: nextCallId++,
             muted: false,
             name: "",
             number: target,
@@ -393,7 +444,7 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
           mic.close();
           const ended = handlers.current.onEnded;
           handlers.current = {};
-          toastManager.add({ description: String(err), title: "Couldn't place the call", type: "error" });
+          toastManager.add({ description: String(err), title: t("phone.couldntCall"), type: "error" });
           ended?.({ answered: false, cause: JsSIP.C.causes.INTERNAL_ERROR, seconds: 0 });
         }
       })();
@@ -441,6 +492,7 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
         session.current?.sendDTMF(tone, { transportType: JsSIP.C.DTMF_TRANSPORT.RFC2833 }),
       setAudio,
       status: shown,
+      subscribe,
       toggleHold: () => {
         const s = session.current;
         if (!s?.isEstablished()) return;
@@ -454,7 +506,7 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
         else s.mute({ audio: true });
       },
     }),
-    [active, answer, audioSettings, call, config, error, liveAudio, opening, setAudio, shown, status],
+    [active, answer, audioSettings, call, config, error, liveAudio, opening, setAudio, shown, status, subscribe],
   );
 
   return (

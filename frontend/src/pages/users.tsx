@@ -46,13 +46,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
-import { fmtDate, numberFmt } from "@/lib/format";
+import { fmtDate } from "@/lib/format";
+import { t, type TKey } from "@/lib/i18n";
 import { useMe } from "@/lib/me";
 import type { Account, AgentInfo, CrmMembers, Role } from "@/lib/types";
 
-const ROLE_ITEMS: { label: string; value: Role; help: string }[] = [
-  { help: "Sees only the calls, feedback and reports of the extensions below. Read-only.", label: "Agent", value: "agent" },
-  { help: "Sees everything and manages the pipeline, settings and users.", label: "Admin", value: "admin" },
+const ROLES: { label: TKey; value: Role; help: TKey }[] = [
+  { help: "users.role.agentHelp", label: "shell.agent", value: "agent" },
+  { help: "users.role.adminHelp", label: "shell.admin", value: "admin" },
 ];
 
 function AgentPicker({
@@ -87,10 +88,10 @@ function AgentPicker({
               <Label className="items-start font-normal" key={a.agent}>
                 <Checkbox checked={value.includes(a.agent)} onCheckedChange={(on) => toggle(a.agent, on)} />
                 <span className="flex flex-col gap-0.5">
-                  <span className="font-medium tabular-nums">Extension {a.agent}</span>
+                  <span className="font-medium tabular-nums">{t("phone.extension", { extension: a.agent })}</span>
                   <span className="text-muted-foreground text-xs">
-                    {numberFmt.format(a.calls)} {a.calls === 1 ? "call" : "calls"}
-                    {others.length > 0 && ` · also linked to ${others.join(", ")}`}
+                    {t("desk.nCalls", { count: a.calls })}
+                    {others.length > 0 && ` · ${t("users.alsoLinked", { names: others.join(", ") })}`}
                   </span>
                 </span>
               </Label>
@@ -100,7 +101,7 @@ function AgentPicker({
       )}
       <div className="flex gap-2">
         <Input
-          aria-label="Other extension"
+          aria-label={t("users.otherExtension")}
           onChange={(e) => setExtra(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -108,13 +109,13 @@ function AgentPicker({
               add();
             }
           }}
-          placeholder="Other extension, e.g. 110"
+          placeholder={t("users.otherExtensionPlaceholder")}
           type="text"
           value={extra}
         />
         <Button disabled={!extra.trim()} onClick={add} variant="outline">
           <PlusIcon aria-hidden="true" />
-          Add
+          {t("whatsapp.add")}
         </Button>
       </div>
     </div>
@@ -165,16 +166,16 @@ function CrmUserField({
 }) {
   if (members && !members.configured) return null;
   const items = [
-    { label: "Not linked", value: NO_CRM_USER },
+    { label: t("users.notLinked"), value: NO_CRM_USER },
     ...(members?.members ?? []).map((m) => ({ label: m.email ? `${m.name} (${m.email})` : m.name, value: m.id })),
   ];
   // A linked user the CRM no longer lists still shows, so saving doesn't silently unlink them.
-  if (members && !items.some((i) => i.value === value)) items.push({ label: "Unknown CRM user", value });
+  if (members && !items.some((i) => i.value === value)) items.push({ label: t("users.unknownCrmUser"), value });
   return (
     <Field>
-      <FieldLabel>CRM user</FieldLabel>
+      <FieldLabel>{t("users.crmUser")}</FieldLabel>
       {error ? (
-        <p className="text-destructive-foreground text-sm">Couldn't load the CRM users: {error}</p>
+        <p className="text-destructive-foreground text-sm">{t("users.crmUsersFailed", { error })}</p>
       ) : members ? (
         <Select items={items} onValueChange={(v) => onChange(v as string)} value={value}>
           <SelectTrigger>
@@ -191,7 +192,7 @@ function CrmUserField({
       ) : (
         <Skeleton className="h-9 w-full rounded-lg" />
       )}
-      <FieldDescription>Contacts this account adds from the call desk are owned by this CRM user.</FieldDescription>
+      <FieldDescription>{t("users.crmUserHint")}</FieldDescription>
     </Field>
   );
 }
@@ -224,11 +225,12 @@ function UserForm({
   const [saving, setSaving] = React.useState(false);
 
   const isSelf = account?.username === me.user;
+  const roleItems = ROLES.map((r) => ({ help: t(r.help), label: t(r.label), value: r.value }));
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (role === "agent" && agents.length === 0) {
-      setError("Link at least one extension, or the agent won't see any calls.");
+      setError(t("users.linkExtension"));
       return;
     }
     setSaving(true);
@@ -259,8 +261,8 @@ function UserForm({
         await api(phonePath, { method: "DELETE" });
       }
       toastManager.add({
-        description: password && editing ? "They were signed out everywhere." : undefined,
-        title: editing ? "User updated" : "User created",
+        description: password && editing ? t("users.signedOutEverywhere") : undefined,
+        title: editing ? t("users.updated") : t("users.created"),
         type: "success",
       });
       onSaved();
@@ -275,12 +277,8 @@ function UserForm({
   return (
     <Form className="contents" onSubmit={onSubmit}>
       <DialogHeader>
-        <DialogTitle>{editing ? `Edit ${account.username}` : "Add user"}</DialogTitle>
-        <DialogDescription>
-          {editing
-            ? "Changing the role signs the user out everywhere."
-            : "Give each agent their own account so they can sign in and see their calls, feedback and reports."}
-        </DialogDescription>
+        <DialogTitle>{editing ? t("whatsapp.editLabel", { label: account.username }) : t("users.add")}</DialogTitle>
+        <DialogDescription>{editing ? t("users.editHint") : t("users.addHint")}</DialogDescription>
       </DialogHeader>
       <DialogPanel className="flex flex-col gap-5">
         {error && (
@@ -291,7 +289,7 @@ function UserForm({
         )}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field>
-            <FieldLabel>Username</FieldLabel>
+            <FieldLabel>{t("login.username")}</FieldLabel>
             <Input
               autoComplete="off"
               disabled={editing}
@@ -302,43 +300,39 @@ function UserForm({
               type="text"
               value={username}
             />
-            {!editing && <FieldDescription>Letters, digits and . _ @ -</FieldDescription>}
+            {!editing && <FieldDescription>{t("users.usernameHint")}</FieldDescription>}
           </Field>
           <Field>
-            <FieldLabel>Name</FieldLabel>
+            <FieldLabel>{t("campaigns.name")}</FieldLabel>
             <Input
               dir="auto"
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Optional, e.g. Ali Ben Salah"
+              placeholder={t("users.namePlaceholder")}
               type="text"
               value={displayName}
             />
           </Field>
         </div>
         <Field>
-          <FieldLabel>Role</FieldLabel>
-          <Select disabled={isSelf} items={ROLE_ITEMS} onValueChange={(v) => setRole(v as Role)} value={role}>
+          <FieldLabel>{t("users.role")}</FieldLabel>
+          <Select disabled={isSelf} items={roleItems} onValueChange={(v) => setRole(v as Role)} value={role}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
             <SelectPopup>
-              {ROLE_ITEMS.map((item) => (
+              {roleItems.map((item) => (
                 <SelectItem key={item.value} value={item.value}>
                   {item.label}
                 </SelectItem>
               ))}
             </SelectPopup>
           </Select>
-          <FieldDescription>
-            {isSelf ? "You can't remove your own admin access." : ROLE_ITEMS.find((i) => i.value === role)?.help}
-          </FieldDescription>
+          <FieldDescription>{isSelf ? t("users.ownAdmin") : roleItems.find((i) => i.value === role)?.help}</FieldDescription>
         </Field>
         {role === "agent" && (
           <div className="flex flex-col gap-2">
-            <span className="font-medium text-sm">Agent extensions</span>
-            <p className="text-muted-foreground text-xs">
-              The account sees the calls of every extension ticked here, and their coaching reports.
-            </p>
+            <span className="font-medium text-sm">{t("users.agentExtensions")}</span>
+            <p className="text-muted-foreground text-xs">{t("users.agentExtensionsHint")}</p>
             {known ? (
               <AgentPicker known={known} onChange={setAgents} username={account?.username ?? ""} value={agents} />
             ) : (
@@ -348,14 +342,11 @@ function UserForm({
         )}
         <CrmUserField error={crmError?.message} members={crmMembers} onChange={setCrmMember} value={crmMember} />
         <div className="flex flex-col gap-2">
-          <span className="font-medium text-sm">Phone</span>
-          <p className="text-muted-foreground text-xs">
-            The GoVoice extension this account makes and takes calls with in the browser, and the GoVoice account
-            (My Account on otn.govoice.tn) its SIP password is fetched with. Leave the extension empty for no phone.
-          </p>
+          <span className="font-medium text-sm">{t("users.phone")}</span>
+          <p className="text-muted-foreground text-xs">{t("users.phoneHint")}</p>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field>
-              <FieldLabel>Extension</FieldLabel>
+              <FieldLabel>{t("dashboard.extension")}</FieldLabel>
               <Input
                 autoComplete="off"
                 inputMode="numeric"
@@ -365,18 +356,18 @@ function UserForm({
                   setPhoneExt(e.target.value);
                 }}
                 pattern="\d{1,6}"
-                placeholder={`e.g. ${agents[0] ?? "100"}`}
+                placeholder={t("users.eg", { example: agents[0] ?? "100" })}
                 type="text"
                 value={phoneExt}
               />
             </Field>
             <Field>
-              <FieldLabel>GoVoice username</FieldLabel>
+              <FieldLabel>{t("users.govoiceUsername")}</FieldLabel>
               <Input
                 autoComplete="off"
                 disabled={!phoneExt.trim()}
                 onChange={(e) => setGovoiceUser(e.target.value)}
-                placeholder={`e.g. user${phoneExt.trim() || "100"}`}
+                placeholder={t("users.eg", { example: `user${phoneExt.trim() || "100"}` })}
                 required={!!phoneExt.trim()}
                 type="text"
                 value={govoiceUser}
@@ -384,39 +375,37 @@ function UserForm({
             </Field>
           </div>
           <Field>
-            <FieldLabel>GoVoice account password</FieldLabel>
+            <FieldLabel>{t("users.govoicePassword")}</FieldLabel>
             <Input
               autoComplete="new-password"
               disabled={!phoneExt.trim()}
               onChange={(e) => setAccountPassword(e.target.value)}
-              placeholder={phone?.govoice_user ? "Leave empty to keep it" : undefined}
+              placeholder={phone?.govoice_user ? t("users.keepEmpty") : undefined}
               required={!!phoneExt.trim() && !phone?.govoice_user}
               type="password"
               value={accountPassword}
             />
-            <FieldDescription>The SIP password is fetched from GoVoice with it when you save.</FieldDescription>
+            <FieldDescription>{t("users.govoicePasswordHint")}</FieldDescription>
           </Field>
         </div>
         <Field>
-          <FieldLabel>{editing ? "New password" : "Password"}</FieldLabel>
+          <FieldLabel>{editing ? t("password.new") : t("login.password")}</FieldLabel>
           <Input
             autoComplete="new-password"
             minLength={MIN_PASSWORD_LENGTH}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder={editing ? "Leave empty to keep the current password" : undefined}
+            placeholder={editing ? t("users.keepPassword") : undefined}
             required={!editing}
             type="password"
             value={password}
           />
-          <FieldDescription>
-            At least {MIN_PASSWORD_LENGTH} characters. Users can change it themselves from their account menu.
-          </FieldDescription>
+          <FieldDescription>{t("users.passwordHint", { count: MIN_PASSWORD_LENGTH })}</FieldDescription>
         </Field>
       </DialogPanel>
       <DialogFooter>
-        <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+        <DialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</DialogClose>
         <Button loading={saving} type="submit">
-          {editing ? "Save" : "Create user"}
+          {editing ? t("common.save") : t("users.create")}
         </Button>
       </DialogFooter>
     </Form>
@@ -438,11 +427,11 @@ function DeleteUserDialog({
     setBusy(true);
     try {
       await api(`/api/users/${encodeURIComponent(account.username)}`, { method: "DELETE" });
-      toastManager.add({ title: `Deleted ${account.username}`, type: "success" });
+      toastManager.add({ title: t("users.deleted", { name: account.username }), type: "success" });
       onDeleted();
       onOpenChange(false);
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't delete the user", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("users.deleteFailed"), type: "error" });
     } finally {
       setBusy(false);
     }
@@ -451,15 +440,13 @@ function DeleteUserDialog({
     <AlertDialog onOpenChange={onOpenChange} open={!!account}>
       <AlertDialogPopup>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete {account?.username}?</AlertDialogTitle>
-          <AlertDialogDescription>
-            They are signed out and can no longer sign in. Their calls, feedback and reports are kept.
-          </AlertDialogDescription>
+          <AlertDialogTitle>{t("users.deleteTitle", { name: account?.username })}</AlertDialogTitle>
+          <AlertDialogDescription>{t("users.deleteHint")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="ghost" />}>Cancel</AlertDialogClose>
+          <AlertDialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</AlertDialogClose>
           <Button loading={busy} onClick={remove} variant="destructive">
-            Delete user
+            {t("users.deleteUser")}
           </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>
@@ -495,7 +482,7 @@ export function UsersPage(): React.ReactElement {
   const addButton = (
     <Button onClick={openNew}>
       <UserPlusIcon aria-hidden="true" />
-      Add user
+      {t("users.add")}
     </Button>
   );
 
@@ -503,22 +490,20 @@ export function UsersPage(): React.ReactElement {
     <>
       <PageHeader
         actions={addButton}
-        description="Who can sign in. Agents only see their own calls, AI feedback and coaching reports."
-        title="Users"
+        description={t("users.description")}
+        title={t("nav.users")}
       />
 
       {unlinked.length > 0 && (
         <Alert variant="info">
           <UsersIcon aria-hidden="true" />
-          <AlertTitle>
-            {unlinked.length === 1 ? "1 extension has" : `${unlinked.length} extensions have`} no account yet
-          </AlertTitle>
+          <AlertTitle>{t("users.unlinked", { count: unlinked.length })}</AlertTitle>
           <AlertDescription>
-            {unlinked.map((a) => `${a.agent} (${numberFmt.format(a.calls)} calls)`).join(", ")}
+            {unlinked.map((a) => `${a.agent} (${t("desk.nCalls", { count: a.calls })})`).join(", ")}
           </AlertDescription>
           <AlertAction>
             <Button onClick={openNew} size="sm" variant="outline">
-              Add user
+              {t("users.add")}
             </Button>
           </AlertAction>
         </Alert>
@@ -533,8 +518,8 @@ export function UsersPage(): React.ReactElement {
               <EmptyMedia variant="icon">
                 <UsersIcon />
               </EmptyMedia>
-              <EmptyTitle>No users</EmptyTitle>
-              <EmptyDescription>Add an account for each agent.</EmptyDescription>
+              <EmptyTitle>{t("users.none")}</EmptyTitle>
+              <EmptyDescription>{t("users.noneHint")}</EmptyDescription>
             </EmptyHeader>
             <EmptyContent>{addButton}</EmptyContent>
           </Empty>
@@ -542,22 +527,20 @@ export function UsersPage(): React.ReactElement {
       ) : (
         <CardFrame>
           <CardFrameHeader>
-            <CardFrameTitle>Accounts</CardFrameTitle>
-            <CardFrameDescription>
-              {accounts.length} {accounts.length === 1 ? "account" : "accounts"}
-            </CardFrameDescription>
+            <CardFrameTitle>{t("users.accounts")}</CardFrameTitle>
+            <CardFrameDescription>{t("users.accountCount", { count: accounts.length })}</CardFrameDescription>
           </CardFrameHeader>
           <Table variant="card">
             <TableHeader>
               <TableRow>
-                <TableHead>User</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Extensions</TableHead>
-                <TableHead className="max-sm:hidden">Phone</TableHead>
-                <TableHead className="max-lg:hidden">CRM user</TableHead>
-                <TableHead className="max-md:hidden">Created</TableHead>
+                <TableHead>{t("users.user")}</TableHead>
+                <TableHead>{t("users.role")}</TableHead>
+                <TableHead>{t("users.extensions")}</TableHead>
+                <TableHead className="max-sm:hidden">{t("users.phone")}</TableHead>
+                <TableHead className="max-lg:hidden">{t("users.crmUser")}</TableHead>
+                <TableHead className="max-md:hidden">{t("leads.created")}</TableHead>
                 <TableHead className="w-10">
-                  <span className="sr-only">Actions</span>
+                  <span className="sr-only">{t("board.actions")}</span>
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -567,16 +550,16 @@ export function UsersPage(): React.ReactElement {
                   <TableCell>
                     <div className="font-medium" dir="auto">
                       {a.display_name || a.username}
-                      {a.username === me.user && <span className="ms-1.5 font-normal text-muted-foreground">(you)</span>}
+                      {a.username === me.user && <span className="ms-1.5 font-normal text-muted-foreground">{t("users.you")}</span>}
                     </div>
                     {a.display_name && <div className="text-muted-foreground text-xs">{a.username}</div>}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={a.role === "admin" ? "info" : "secondary"}>{a.role === "admin" ? "Admin" : "Agent"}</Badge>
+                    <Badge variant={a.role === "admin" ? "info" : "secondary"}>{a.role === "admin" ? t("shell.admin") : t("shell.agent")}</Badge>
                   </TableCell>
                   <TableCell>
                     {a.role === "admin" ? (
-                      <span className="text-muted-foreground text-sm">All</span>
+                      <span className="text-muted-foreground text-sm">{t("pipeline.all")}</span>
                     ) : a.agents.length ? (
                       <div className="flex flex-wrap gap-1">
                         {a.agents.map((ext) => (
@@ -586,7 +569,7 @@ export function UsersPage(): React.ReactElement {
                         ))}
                       </div>
                     ) : (
-                      <Badge variant="warning">None linked</Badge>
+                      <Badge variant="warning">{t("users.noneLinked")}</Badge>
                     )}
                   </TableCell>
                   <TableCell className="max-sm:hidden">
@@ -596,33 +579,33 @@ export function UsersPage(): React.ReactElement {
                         {phones[a.username].extension}
                       </Badge>
                     ) : (
-                      <span className="text-muted-foreground text-sm">None</span>
+                      <span className="text-muted-foreground text-sm">{t("detail.none")}</span>
                     )}
                   </TableCell>
                   <TableCell className="max-lg:hidden">
                     {a.crm_member_id ? (
                       <span className="text-sm" dir="auto">
-                        {crmMembers?.members.find((m) => m.id === a.crm_member_id)?.name ?? "Linked"}
+                        {crmMembers?.members.find((m) => m.id === a.crm_member_id)?.name ?? t("users.linked")}
                       </span>
                     ) : (
-                      <span className="text-muted-foreground text-sm">None</span>
+                      <span className="text-muted-foreground text-sm">{t("detail.none")}</span>
                     )}
                   </TableCell>
                   <TableCell className="text-muted-foreground max-md:hidden">{fmtDate(a.created_at)}</TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <Menu>
-                      <MenuTrigger render={<Button aria-label={`Actions for ${a.username}`} size="icon-sm" variant="ghost" />}>
+                      <MenuTrigger render={<Button aria-label={t("users.actionsFor", { name: a.username })} size="icon-sm" variant="ghost" />}>
                         <EllipsisIcon aria-hidden="true" />
                       </MenuTrigger>
                       <MenuPopup align="end">
                         <MenuItem onClick={() => openEdit(a)}>
                           <PencilIcon aria-hidden="true" />
-                          Edit
+                          {t("common.edit")}
                         </MenuItem>
                         <MenuSeparator />
                         <MenuItem disabled={a.username === me.user} onClick={() => setDeleting(a)} variant="destructive">
                           <Trash2Icon aria-hidden="true" />
-                          Delete
+                          {t("common.delete")}
                         </MenuItem>
                       </MenuPopup>
                     </Menu>

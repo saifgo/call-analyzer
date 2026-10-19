@@ -14,15 +14,16 @@ import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
 import { textDir } from "@/lib/bidi";
 import type { WaAction, WaActions, WaTemplate } from "@/lib/types";
+import { t } from "@/lib/i18n";
 
 const FIXED = "text:";
-const templateKey = (t: { template?: string; name?: string; language: string }) => `${t.template ?? t.name}|${t.language}`;
+const templateKey = (tpl: { template?: string; name?: string; language: string }) => `${tpl.template ?? tpl.name}|${tpl.language}`;
 
 /** "body.1" → "Body {{1}}", "button.0.1" → "Button 1 link {{1}}". */
 function variableLabel(v: string): string {
   const parts = v.split(".");
-  if (parts[0] === "button") return `Button ${Number(parts[1]) + 1} link {{${parts[2]}}}`;
-  return `${parts[0] === "header" ? "Title" : "Message"} {{${parts[1]}}}`;
+  if (parts[0] === "button") return t("whatsapp.var.button", { n: Number(parts[1]) + 1, v: `{{${parts[2]}}}` });
+  return t(parts[0] === "header" ? "whatsapp.var.title" : "whatsapp.var.message", { v: `{{${parts[1]}}}` });
 }
 
 /** `refreshKey`: reloaded when it changes, e.g. after the settings above are saved. */
@@ -40,7 +41,7 @@ export function WhatsAppActions({ refreshKey }: { refreshKey: unknown }) {
   };
   const remove = async (a: WaAction) => {
     await api(`/api/whatsapp/actions/${a.id}`, { method: "DELETE" });
-    toastManager.add({ title: `"${a.label}" removed`, type: "success" });
+    toastManager.add({ title: t("whatsapp.removed", { label: a.label }), type: "success" });
     reload();
   };
 
@@ -48,20 +49,18 @@ export function WhatsAppActions({ refreshKey }: { refreshKey: unknown }) {
     <div className="flex flex-col gap-3 rounded-xl border bg-muted/32 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-col gap-0.5">
-          <span className="font-medium text-sm">Quick actions</span>
-          <span className="text-muted-foreground text-xs">
-            Buttons on the call desk that send the contact a WhatsApp message: the price list, how to make a deposit…
-          </span>
+          <span className="font-medium text-sm">{t("whatsapp.quickActions")}</span>
+          <span className="text-muted-foreground text-xs">{t("whatsapp.quickActionsHint")}</span>
         </div>
         <Button disabled={!data.configured} onClick={() => setEditing("new")} size="sm" variant="outline">
           <PlusIcon aria-hidden="true" />
-          Add
+          {t("whatsapp.add")}
         </Button>
       </div>
       {!data.configured ? (
-        <p className="text-muted-foreground text-sm">Fill in the token, phone number ID and business account ID above and save.</p>
+        <p className="text-muted-foreground text-sm">{t("whatsapp.notConfigured")}</p>
       ) : data.actions.length === 0 ? (
-        <p className="text-muted-foreground text-sm">No quick action yet.</p>
+        <p className="text-muted-foreground text-sm">{t("whatsapp.none")}</p>
       ) : (
         <ul className="flex flex-col divide-y rounded-lg border bg-background">
           {data.actions.map((a, i) => (
@@ -72,19 +71,19 @@ export function WhatsAppActions({ refreshKey }: { refreshKey: unknown }) {
                 </span>
                 <span className="truncate text-muted-foreground text-xs">
                   {a.template} · {a.language}
-                  {a.header_link && " · with a file"}
+                  {a.header_link && ` · ${t("whatsapp.withFile")}`}
                 </span>
               </span>
-              <Button aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)} size="icon-xs" variant="ghost">
+              <Button aria-label={t("whatsapp.moveUp")} disabled={i === 0} onClick={() => move(i, -1)} size="icon-xs" variant="ghost">
                 <ArrowUpIcon aria-hidden="true" />
               </Button>
-              <Button aria-label="Move down" disabled={i === data.actions.length - 1} onClick={() => move(i, 1)} size="icon-xs" variant="ghost">
+              <Button aria-label={t("whatsapp.moveDown")} disabled={i === data.actions.length - 1} onClick={() => move(i, 1)} size="icon-xs" variant="ghost">
                 <ArrowDownIcon aria-hidden="true" />
               </Button>
-              <Button aria-label={`Edit ${a.label}`} onClick={() => setEditing(a)} size="icon-xs" variant="ghost">
+              <Button aria-label={t("whatsapp.editLabel", { label: a.label })} onClick={() => setEditing(a)} size="icon-xs" variant="ghost">
                 <PencilIcon aria-hidden="true" />
               </Button>
-              <Button aria-label={`Remove ${a.label}`} onClick={() => remove(a)} size="icon-xs" variant="ghost">
+              <Button aria-label={t("whatsapp.removeLabel", { label: a.label })} onClick={() => remove(a)} size="icon-xs" variant="ghost">
                 <Trash2Icon aria-hidden="true" />
               </Button>
             </li>
@@ -122,24 +121,24 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
   const [saving, setSaving] = React.useState(false);
 
   const templates = data?.templates ?? [];
-  const template = templates.find((t) => templateKey(t) === key);
+  const template = templates.find((tpl) => templateKey(tpl) === key);
   const media = template?.header_format && ["DOCUMENT", "IMAGE", "VIDEO"].includes(template.header_format);
   const sourceItems = [
     ...Object.entries(sources).map(([value, text]) => ({ label: text, value })),
-    { label: "Fixed text", value: FIXED },
+    { label: t("whatsapp.fixedText"), value: FIXED },
   ];
-  const templateItems = templates.map((t) => ({ label: `${t.name} · ${t.language}`, value: templateKey(t) }));
+  const templateItems = templates.map((tpl) => ({ label: `${tpl.name} · ${tpl.language}`, value: templateKey(tpl) }));
 
   const pickTemplate = (value: string) => {
     setKey(value);
-    const t = templates.find((x) => templateKey(x) === value);
+    const picked = templates.find((x) => templateKey(x) === value);
     // The first variable is usually the customer's name.
-    setParams(Object.fromEntries((t?.variables ?? []).map((v, i) => [v, params[v] ?? (i === 0 ? "contact_name" : FIXED)])));
+    setParams(Object.fromEntries((picked?.variables ?? []).map((v, i) => [v, params[v] ?? (i === 0 ? "contact_name" : FIXED)])));
   };
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!template) return setError("Pick a template");
+    if (!template) return setError(t("whatsapp.pickTemplate"));
     setSaving(true);
     setError(null);
     const body = {
@@ -155,7 +154,7 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
         body,
         method: action ? "PUT" : "POST",
       });
-      toastManager.add({ title: action ? "Quick action saved" : "Quick action added", type: "success" });
+      toastManager.add({ title: action ? t("whatsapp.saved") : t("whatsapp.added"), type: "success" });
       onSaved();
     } catch (err) {
       setError((err as Error).message);
@@ -166,11 +165,8 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
   return (
     <Form className="contents" onSubmit={submit}>
       <DialogHeader>
-        <DialogTitle>{action ? `Edit "${action.label}"` : "New quick action"}</DialogTitle>
-        <DialogDescription>
-          WhatsApp only lets a business write first with a template Meta approved. Create templates in WhatsApp
-          Manager; approved ones show up here.
-        </DialogDescription>
+        <DialogTitle>{action ? t("whatsapp.editTitle", { label: action.label }) : t("whatsapp.newTitle")}</DialogTitle>
+        <DialogDescription>{t("whatsapp.formHint")}</DialogDescription>
       </DialogHeader>
       <DialogPanel className="flex flex-col gap-4">
         {(error || loadError) && (
@@ -180,24 +176,24 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
           </Alert>
         )}
         <Field>
-          <FieldLabel>Button name</FieldLabel>
+          <FieldLabel>{t("whatsapp.buttonName")}</FieldLabel>
           <Input
             dir={textDir(label)}
             maxLength={60}
             onChange={(e) => setLabel(e.target.value)}
-            placeholder="e.g. Price list"
+            placeholder={t("whatsapp.buttonNamePlaceholder")}
             required
             type="text"
             value={label}
           />
         </Field>
         <Field>
-          <FieldLabel>Template</FieldLabel>
+          <FieldLabel>{t("whatsapp.template")}</FieldLabel>
           <div className="flex w-full gap-2">
             {data ? (
               <Select items={templateItems} onValueChange={(v) => pickTemplate(v as string)} value={key || null}>
                 <SelectTrigger className="min-w-0 flex-1">
-                  <SelectValue placeholder={templates.length ? "Pick an approved template" : "No approved template"} />
+                  <SelectValue placeholder={templates.length ? t("whatsapp.pickApproved") : t("whatsapp.noApproved")} />
                 </SelectTrigger>
                 <SelectPopup>
                   {templateItems.map((item) => (
@@ -211,7 +207,7 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
               <Skeleton className="h-9 flex-1 rounded-lg" />
             )}
             <Button
-              aria-label="Reload the templates"
+              aria-label={t("whatsapp.reloadTemplates")}
               disabled={loading}
               onClick={() => api("/api/whatsapp/templates?refresh=true").then(reload)}
               size="icon"
@@ -223,7 +219,7 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
           </div>
           {action && data && !template && (
             <FieldDescription className="text-warning-foreground">
-              {action.template} ({action.language}) isn't approved anymore: pick another one.
+              {t("whatsapp.notApprovedAnymore", { language: action.language, template: action.template })}
             </FieldDescription>
           )}
         </Field>
@@ -235,7 +231,13 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
               {media && (
                 <span className="flex items-center gap-1">
                   <FileTextIcon aria-hidden="true" className="size-3.5" />
-                  Sends a {template.header_format?.toLowerCase()}
+                  {t(
+                    template.header_format === "IMAGE"
+                      ? "whatsapp.sendsImage"
+                      : template.header_format === "VIDEO"
+                        ? "whatsapp.sendsVideo"
+                        : "whatsapp.sendsDocument",
+                  )}
                 </span>
               )}
             </span>
@@ -245,7 +247,7 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
             </p>
             {template.footer && <p className="text-muted-foreground text-xs">{template.footer}</p>}
             {template.buttons.length > 0 && (
-              <p className="text-muted-foreground text-xs">Buttons: {template.buttons.map((b) => b.text).join(", ")}</p>
+              <p className="text-muted-foreground text-xs">{t("whatsapp.buttons", { list: template.buttons.map((b) => b.text).join(", ") })}</p>
             )}
           </div>
         )}
@@ -253,13 +255,13 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
         {template && media && (
           <div className="grid gap-4 sm:grid-cols-[3fr_2fr]">
             <Field>
-              <FieldLabel>File link</FieldLabel>
+              <FieldLabel>{t("whatsapp.fileLink")}</FieldLabel>
               <Input dir="ltr" onChange={(e) => setLink(e.target.value)} placeholder="https://…/prices.pdf" required type="url" value={link} />
-              <FieldDescription>A public https link WhatsApp downloads the file from.</FieldDescription>
+              <FieldDescription>{t("whatsapp.fileLinkHint")}</FieldDescription>
             </Field>
             {template.header_format === "DOCUMENT" && (
               <Field>
-                <FieldLabel>File name</FieldLabel>
+                <FieldLabel>{t("whatsapp.fileName")}</FieldLabel>
                 <Input onChange={(e) => setFilename(e.target.value)} placeholder="Prices.pdf" type="text" value={filename} />
               </Field>
             )}
@@ -291,7 +293,7 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
                 </Select>
                 {fixed && (
                   <Input
-                    aria-label={`${variableLabel(v)} text`}
+                    aria-label={t("whatsapp.varText", { name: variableLabel(v) })}
                     className="min-w-40 flex-1"
                     dir={textDir(value.slice(FIXED.length))}
                     onChange={(e) => setParams((p) => ({ ...p, [v]: FIXED + e.target.value }))}
@@ -306,9 +308,9 @@ function ActionForm({ action, sources, onSaved }: { action: WaAction | null; sou
         })}
       </DialogPanel>
       <DialogFooter>
-        <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+        <DialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</DialogClose>
         <Button disabled={!template} loading={saving} type="submit">
-          {action ? "Save" : "Add quick action"}
+          {action ? t("common.save") : t("whatsapp.addQuickAction")}
         </Button>
       </DialogFooter>
     </Form>

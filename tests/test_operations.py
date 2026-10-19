@@ -17,7 +17,8 @@ os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 for key in ("CRM_API_KEY", "CRM_BASE_URL", "SECRET_KEY", "RECORDING_CLOCK_OFFSET_MINUTES"):
     os.environ.pop(key, None)
 
-from call_analyzer import campaigns, crm, db, desk_stats, operations, vault  # noqa: E402
+from call_analyzer import campaigns, crm, db, desk_stats, floor, operations, vault  # noqa: E402
+from call_analyzer.adapters.crm.base import CrmAdapter  # noqa: E402
 from call_analyzer.campaigns import CampaignError  # noqa: E402
 from call_analyzer.operations import OperationError  # noqa: E402
 
@@ -34,10 +35,11 @@ def lead(i: int, phone: str | None = "2260271{i}", stage: str = "NEW") -> dict:
             "updated_at": None, "url": f"https://crm.example.com/object/opportunity/o{i}", "contact": contact}
 
 
-class FakeCrm:
-    """Stands in for every crm function the desk uses, and records what would have been written."""
-    PATCHED = ("is_configured", "leads", "opportunity_stages", "update_opportunity", "update_person", "add_note",
-               "notes", "opportunity", "lookup", "create_person", "create_opportunity")
+class FakeCrm(CrmAdapter):
+    """A CRM adapter that records what would have been written. Whatever it doesn't implement raises
+    NotImplementedError (CrmAdapter), so nothing reaches a real CRM."""
+    name = "fake"
+    label = "Fake CRM"
 
     def __init__(self, leads: list[dict]):
         self.by_stage: dict[str, list[dict]] = {}
@@ -47,28 +49,17 @@ class FakeCrm:
         self.fail_notes = False
 
     def install(self, test: unittest.TestCase):
-        for name in self.PATCHED:
-            original = getattr(crm, name)
-            setattr(crm, name, getattr(self, name))
-            test.addCleanup(setattr, crm, name, original)
-        # Belt and braces: whatever isn't faked must not reach a real CRM.
-        for name in ("_send", "_get_page", "_get_json"):
-            original = getattr(crm, name)
-            setattr(crm, name, self._network)
-            test.addCleanup(setattr, crm, name, original)
-
-    @staticmethod
-    def _network(*args, **kwargs):
-        raise AssertionError("The tests must not talk to the CRM")
+        crm.use(self)
+        test.addCleanup(crm.use, None)
 
     def is_configured(self):
         return True
 
-    def leads(self, stage=crm.LEAD_STAGE, refresh=False, oldest_first=False):
+    def list_opportunities(self, stage, oldest_first):
         found = sorted(self.by_stage.get(stage, []), key=lambda x: x["created_at"], reverse=not oldest_first)
-        return {"configured": True, "stage": stage, "leads": found, "truncated": False}
+        return found, False
 
-    def opportunity_stages(self):
+    def stages(self):
         return STAGES
 
     def update_opportunity(self, opportunity_id, fields):
@@ -77,26 +68,20 @@ class FakeCrm:
     def update_person(self, person_id, fields):
         self.people.append((person_id, fields))
 
-    def add_note(self, title, markdown, opportunity_id=None, person_id=None):
+    def add_note(self, title, markdown, opportunity_id, person_id):
         if self.fail_notes:
             raise crm.CrmError("CRM down")
         self.notes_added.append((title, markdown, opportunity_id, person_id))
         return f"n{len(self.notes_added)}"
 
-    def notes(self, opportunity_id, person_id, limit=20):
+    def notes(self, opportunity_id, person_id, limit):
         return []
 
-    def opportunity(self, opportunity_id):
+    def get_opportunity(self, opportunity_id):
         return next(x for items in self.by_stage.values() for x in items if x["id"] == opportunity_id)
 
-    def lookup(self, number):
-        return {"configured": True, "number": number, "searched": True, "people": []}
-
-    def create_person(self, *args, **kwargs):
-        raise AssertionError("not used here")
-
-    def create_opportunity(self, *args, **kwargs):
-        raise AssertionError("not used here")
+    def find_people(self, key):
+        return []
 
 
 def iso(dt: datetime) -> str:
@@ -107,7 +92,7 @@ class DeskTestCase(unittest.TestCase):
     def setUp(self):
         self.conn = db.connect()
         for table in ("op_calls", "op_agents", "op_campaigns", "op_presence", "calls", "softphones", "user_agents",
-                      "wa_messages"):
+                      "wa_messages", "op_targets", "op_pause_reasons", "op_pauses", "op_settings", "op_inbound"):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.commit()
         self.crm = FakeCrm([lead(1), lead(2, phone=None), lead(3), lead(4), lead(5, stage="ATTEMPTED"), lead(6),
@@ -369,6 +354,18 @@ class CampaignTests(DeskTestCase):
             with self.subTest(questions=questions), self.assertRaises(CampaignError):
                 campaigns.validate_questions(questions)
 
+    def test_translations_keep_known_languages_fields_and_choices(self):
+        [q] = campaigns.validate_questions([
+            {"label": "Shop?", "type": "select", "options": [["a", "A"], ["b", "B"]],
+             "tr": {"fr": {"label": "Commerce ?", "section": " ", "options": {"a": "Aa", "zz": "Z", "b": ""}},
+                    "ar": {"help": "مساعدة", "colour": "x"}, "de": {"label": "Laden?"}}},
+        ])
+        self.assertEqual(q["tr"], {"fr": {"label": "Commerce ?", "options": {"a": "Aa"}}, "ar": {"help": "مساعدة"}})
+        [o] = campaigns.validate_outcomes([{"label": "Won", "tr": {"ar": {"label": "ربح"}, "fr": {"label": ""}}}])
+        self.assertEqual(o["tr"], {"ar": {"label": "ربح"}})
+        [plain] = campaigns.validate_questions([{"label": "Plain", "type": "text", "tr": "junk"}])
+        self.assertNotIn("tr", plain)
+
     def test_a_campaign_with_calls_is_archived_not_deleted_and_one_stays_active(self):
         first = campaigns.get(self.conn, None)
         with self.assertRaises(CampaignError):
@@ -398,6 +395,99 @@ class PresenceTests(DeskTestCase):
         seconds = self.conn.execute("SELECT SUM(ready_seconds) FROM op_presence WHERE username = 'a1'").fetchone()[0]
         self.assertGreaterEqual(seconds, 15)
         self.assertLess(seconds, 20)
+
+
+class PauseTests(DeskTestCase):
+    def reason(self, label: str) -> dict:
+        return next(r for r in floor.reasons(self.conn) if r["label"] == label)
+
+    def test_a_pause_records_its_reason_and_ends_when_taking_calls_again(self):
+        lunch = self.reason("Lunch")
+        operations.set_ready(self.conn, "a1", False, lunch["id"])
+        state = floor.pause_state(self.conn, "a1")
+        self.assertEqual((state["label"], state["limit_minutes"], state["over"]), ("Lunch", 60, False))
+        operations.set_ready(self.conn, "a1", True)
+        self.assertIsNone(floor.pause_state(self.conn, "a1"))
+        rows = self.conn.execute("SELECT label, closed FROM op_pauses WHERE username = 'a1'").fetchall()
+        self.assertEqual([tuple(r) for r in rows], [("Lunch", 1)])
+
+    def test_a_pause_over_its_limit_shows_and_counts_in_the_kpis(self):
+        brk = self.reason("Break")
+        operations.set_ready(self.conn, "a1", False, brk["id"])
+        started = iso(datetime.now().replace(microsecond=0) - timedelta(minutes=20))
+        self.conn.execute("UPDATE op_pauses SET started_at = ? WHERE username = 'a1'", (started,))
+        self.conn.commit()
+        if started[:10] != datetime.now().date().isoformat():
+            self.skipTest("too close to midnight")
+        operations.heartbeat(self.conn, "a1")  # the pause lasts until now
+        self.assertTrue(floor.pause_state(self.conn, "a1")["over"])
+        board = {a["username"]: a for a in operations.board(self.conn)["agents"]}
+        self.assertTrue(board["a1"]["pause"]["over"])
+        team = desk_stats.kpis(self.conn)["team"]
+        self.assertGreaterEqual(team["pause_seconds"], 20 * 60)
+        self.assertEqual(team["pauses_over"], 1)
+        self.assertIn("Break", team["pause_reasons"])
+
+    def test_pausing_without_a_reason_keeps_the_current_pause(self):
+        training = self.reason("Training")
+        operations.set_ready(self.conn, "a1", False, training["id"])
+        operations.start_test("a1", "22602710")
+        self.assertEqual(floor.pause_state(self.conn, "a1")["label"], "Training")
+
+    def test_a_pause_left_open_overnight_ends_at_its_last_check_in(self):
+        operations.set_ready(self.conn, "a1", False, self.reason("Break")["id"])
+        yesterday = iso(datetime.now() - timedelta(days=1))
+        self.conn.execute("UPDATE op_pauses SET started_at = ?, ended_at = ?", (yesterday, yesterday))
+        self.conn.commit()
+        operations.heartbeat(self.conn, "a1")
+        self.assertIsNone(floor.pause_state(self.conn, "a1"))
+        self.assertEqual(self.conn.execute("SELECT ended_at FROM op_pauses").fetchone()[0], yesterday)
+
+    def test_retired_reasons_cant_be_picked_and_unknown_ones_are_refused(self):
+        kept = [r for r in floor.reasons(self.conn) if r["label"] != "Meeting"]
+        meeting = self.reason("Meeting")
+        floor.save_reasons(self.conn, [*kept, {"label": "Coaching", "limit_minutes": 30}])
+        labels = [r["label"] for r in floor.reasons(self.conn)]
+        self.assertNotIn("Meeting", labels)
+        self.assertEqual(labels[-1], "Coaching")
+        with self.assertRaises(OperationError):
+            operations.set_ready(self.conn, "a1", False, meeting["id"])
+        with self.assertRaises(floor.FloorError):
+            floor.save_reasons(self.conn, [{"label": "Break"}, {"label": "break"}])
+
+
+class TargetTests(DeskTestCase):
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("DELETE FROM users")
+        for user in ("a1", "a2"):
+            self.conn.execute("INSERT INTO users (username, password_hash, created_at, role) VALUES (?, '', ?, 'agent')",
+                              (user, iso(datetime.now())))
+        self.conn.commit()
+
+    def test_agents_take_the_team_targets_unless_overridden(self):
+        floor.save_targets(self.conn, {"team": {"calls": 60, "wins": 3}, "agents": {"a2": {"calls": 40, "wins": ""}},
+                                       "workday": {"start": "08:00", "end": "16:00"}})
+        self.assertEqual(floor.resolved(self.conn, "a1"), {"calls": 60, "reached": 0, "wins": 3, "desk_minutes": 0})
+        self.assertEqual(floor.resolved(self.conn, "a2"), {"calls": 40, "reached": 0, "wins": 3, "desk_minutes": 0})
+        self.assertEqual(floor.workday(self.conn), {"start": "08:00", "end": "16:00"})
+
+    def test_progress_and_pace(self):
+        floor.save_targets(self.conn, {"team": {"calls": 40, "wins": 4}, "workday": {"start": "09:00", "end": "17:00"}})
+        self.assertEqual(floor.pace(self.conn, datetime(2026, 10, 12, 13, 0)), 0.5)
+        self.assertEqual(floor.pace(self.conn, datetime(2026, 10, 12, 7, 0)), 0.0)
+        self.close(self.serve("a1"), "interested")
+        today = operations.today(self.conn, "a1")
+        calls = next(p for p in floor.progress(today, floor.resolved(self.conn, "a1"), 0.5) if p["metric"] == "calls")
+        self.assertEqual((calls["value"], calls["target"], calls["expected"]), (1, 40, 20.0))
+        board = operations.board(self.conn)
+        self.assertEqual(next(p for p in board["team_progress"] if p["metric"] == "calls")["target"], 120)
+
+    def test_bad_targets_are_refused(self):
+        with self.assertRaises(floor.FloorError):
+            floor.save_targets(self.conn, {"team": {"calls": -1}, "workday": {"start": "09:00", "end": "17:00"}})
+        with self.assertRaises(floor.FloorError):
+            floor.save_targets(self.conn, {"team": {}, "workday": {"start": "17:00", "end": "09:00"}})
 
 
 class RecordingTests(DeskTestCase):

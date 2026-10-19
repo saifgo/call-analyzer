@@ -5,6 +5,7 @@ import { useRender } from "@base-ui/react/use-render";
 import { ChevronRight, MoreHorizontal } from "lucide-react";
 import type * as React from "react";
 import { cn } from "@/lib/utils";
+import { t } from "@/lib/i18n";
 
 export function Breadcrumb({
   ...props
@@ -85,7 +86,7 @@ export function BreadcrumbSeparator({
       role="presentation"
       {...props}
     >
-      {children ?? <ChevronRight />}
+      {children ?? <ChevronRight className="rtl:rotate-180" />}
     </li>
   );
 }
@@ -103,7 +104,7 @@ export function BreadcrumbEllipsis({
       {...props}
     >
       <MoreHorizontal className="size-4" />
-      <span className="sr-only">More</span>
+      <span className="sr-only">{t("ui.more")}</span>
     </span>
   );
 }

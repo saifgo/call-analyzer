@@ -3,6 +3,7 @@
 import * as React from "react";
 import { api } from "@/lib/api";
 import type { RunsOn, Worker, WorkersState, WorkerStep } from "@/lib/types";
+import { labels } from "@/lib/i18n";
 
 type WorkersContextValue = {
   state: WorkersState | null;
@@ -53,17 +54,17 @@ export function WorkersProvider({
 /** The steps that can run on remote agents, in pipeline order. */
 export const WORKER_STEPS: WorkerStep[] = ["transcribe", "voice", "analyze"];
 
-export const STEP_NAMES: Record<WorkerStep, string> = {
-  analyze: "Analysis",
-  transcribe: "Transcription",
-  voice: "Voice analysis",
-};
+export const STEP_NAMES = labels<WorkerStep>({
+  analyze: "workers.step.analyze",
+  transcribe: "workers.step.transcribe",
+  voice: "workers.step.voice",
+});
 
-export const RUNS_ON_LABELS: Record<RunsOn, string> = {
-  agent: "Remote agents only",
-  auto: "Agents when online, else this server",
-  host: "This server",
-};
+export const RUNS_ON_LABELS = labels<RunsOn>({
+  agent: "workers.runsOn.agent",
+  auto: "workers.runsOn.auto",
+  host: "workers.runsOn.host",
+});
 
 /** Agents that are connected, enabled and set up for `step`. */
 export function liveAgents(workers: Worker[], step?: WorkerStep): Worker[] {

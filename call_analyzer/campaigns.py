@@ -4,6 +4,11 @@ and the hours the queue is served. Admins edit them on Operations > Campaigns; a
 
 The first campaign is created from DEFAULT_QUESTIONS and DEFAULT_OUTCOMES (what the desk asked before campaigns
 existed), and the calls made before then belong to it.
+
+One more campaign, "Incoming calls" (kind inbound, made from INBOUND_QUESTIONS and INBOUND_OUTCOMES), is for the calls
+customers make to us and our callbacks of the ones we missed (see inbound.py). It has no queue, no calling hours and
+no limit on tries: agents don't pick it, and it can't be deleted. Admins edit its questions and outcomes like the
+others'.
 """
 import json
 import re
@@ -79,6 +84,45 @@ DEFAULT_OUTCOMES = [
     {"value": "wrong_number", "label": "Wrong number", "stage": "REJECTED"},
 ]
 
+# Calls customers make to us, and our callbacks when we missed them.
+INBOUND_QUESTIONS = [
+    {"key": "call_reason", "section": "Why they called", "label": "Why are they calling?", "type": "select",
+     "options": [["new_customer", "Wants to become a customer"], ["prices", "Prices / offers"],
+                 ["account", "Their account"], ["recharge", "A recharge or voucher problem"],
+                 ["payment", "Payment / deposit"], ["salesman", "Wants a salesman visit"], ["other", "Other"]]},
+    {"key": "call_reason_other", "section": "Why they called", "label": "What about?", "type": "text",
+     "show_if": {"call_reason": ["other"]}},
+    {"key": "heard_from", "section": "Why they called", "label": "How did they hear about us?", "type": "select",
+     "show_if": {"call_reason": ["new_customer", "prices", "salesman"]},
+     "options": [["facebook", "Facebook / Instagram"], ["friend", "A friend or another shop"],
+                 ["salesman", "One of our salesmen"], ["search", "Google / the website"], ["other", "Other"]]},
+    {"key": "city", "section": "Who they are", "label": "City / area", "type": "text", "crm": "person.city"},
+    {"key": "resolved", "section": "Follow-up", "label": "Was their request solved during the call?",
+     "type": "boolean"},
+    {"key": "follow_up", "section": "Follow-up", "label": "What still has to be done", "type": "textarea",
+     "show_if": {"resolved": ["false"]}, "help": "Who does it, and what the customer was promised"},
+]
+
+INBOUND_OUTCOMES = [
+    {"value": "account_created", "label": "Account created", "stage": "ACCOUNT_MADE", "reached": True,
+     "success": True},
+    {"value": "visit_booked", "label": "Salesman visit booked", "stage": "ACCEPTED", "reached": True, "success": True},
+    {"value": "interested", "label": "Interested", "stage": "IN_TALK", "reached": True},
+    {"value": "info_given", "label": "Information given", "reached": True},
+    {"value": "support_solved", "label": "Support: solved", "reached": True},
+    {"value": "support_open", "label": "Support: to follow up", "reached": True, "callback": True},
+    {"value": "complaint", "label": "Complaint", "reached": True, "callback": True},
+    {"value": "callback_requested", "label": "Asked to be called back", "reached": True, "callback": True},
+    {"value": "not_interested", "label": "Not interested", "stage": "REJECTED", "reached": True},
+    {"value": "no_answer", "label": "No answer", "callback": True},
+    {"value": "busy", "label": "Busy / hung up", "callback": True},
+    {"value": "unreachable", "label": "Phone off / unreachable", "callback": True},
+    {"value": "dropped", "label": "Cut off before we could talk", "callback": True},
+    {"value": "wrong_number", "label": "Wrong number / spam"},
+]
+INBOUND = "inbound"
+OUTBOUND = "outbound"
+
 QUESTION_TYPES = ("select", "multi", "number", "text", "textarea", "boolean")
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _STAGE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,59}$")
@@ -110,6 +154,32 @@ def _text(value, limit: int) -> str:
 
 
 # --- Validation ---------------------------------------------------------------------------------------
+
+# Languages the desk can show a question or outcome in besides the English it's written in (see frontend i18n).
+TRANSLATED = ("fr", "ar")
+
+
+def _translations(raw, fields: dict[str, int], options: list | None = None) -> dict:
+    """The optional `tr` of a question or outcome: {"fr": {"label": ..., "options": {value: label}}, "ar": {...}}.
+    Unknown languages, fields and choices are dropped; empty texts too."""
+    tr = raw.get("tr") if isinstance(raw, dict) else None
+    if not isinstance(tr, dict):
+        return {}
+    values = {o[0] for o in options or []}
+    clean = {}
+    for lang in TRANSLATED:
+        src = tr.get(lang)
+        if not isinstance(src, dict):
+            continue
+        out = {field: text for field, limit in fields.items() if (text := _text(src.get(field), limit))}
+        if values and isinstance(src.get("options"), dict):
+            opts = {v: text for v, label in src["options"].items() if v in values and (text := _text(label, 120))}
+            if opts:
+                out["options"] = opts
+        if out:
+            clean[lang] = out
+    return clean
+
 
 def validate_questions(questions) -> list[dict]:
     if not isinstance(questions, list):
@@ -174,6 +244,8 @@ def validate_questions(questions) -> list[dict]:
             if not _CRM_FIELD_RE.match(crm_field):
                 raise CampaignError(f"\"{label}\": the CRM field is written person.<field name>, e.g. person.city")
             q["crm"] = crm_field
+        if tr := _translations(raw, {"label": 200, "section": 80, "help": 300, "unit": 30}, q.get("options")):
+            q["tr"] = tr
         if show_if := raw.get("show_if"):
             if not isinstance(show_if, dict):
                 raise CampaignError(f"\"{label}\": the condition is not valid")
@@ -223,6 +295,8 @@ def validate_outcomes(outcomes) -> list[dict]:
         reached = bool(raw.get("reached"))
         o = {"value": value, "label": label, "stage": stage, "reached": reached,
              "success": bool(raw.get("success")) and reached, "callback": bool(raw.get("callback"))}
+        if tr := _translations(raw, {"label": 80}):
+            o["tr"] = tr
         clean.append(o)
     return clean
 
@@ -236,11 +310,17 @@ def _clock(value) -> str | None:
     return value
 
 
-def validate(data: dict) -> dict:
-    """The campaign fields to save, checked and cleaned. Raises CampaignError."""
+def validate(data: dict, kind: str = OUTBOUND) -> dict:
+    """The campaign fields to save, checked and cleaned. The incoming calls campaign only keeps its name, description,
+    questions and outcomes. Raises CampaignError."""
     name = _text(data.get("name"), 80)
     if not name:
         raise CampaignError("Give the campaign a name")
+    if kind == INBOUND:
+        return {"name": name, "description": _text(data.get("description"), 500) or None, "stages": [],
+                "questions": validate_questions(data.get("questions") or []),
+                "outcomes": validate_outcomes(data.get("outcomes")), "max_attempts": 0, "retry_minutes": 0,
+                "exhausted_stage": None, "call_start": None, "call_end": None, "call_days": None, "active": True}
     stages = [s for s in (str(v).strip() for v in data.get("stages") or []) if s]
     if not stages:
         raise CampaignError("Pick at least one CRM stage for the queue")
@@ -280,19 +360,21 @@ def to_dict(row) -> dict:
     item["outcomes"] = json.loads(item["outcomes"])
     item["call_days"] = [int(d) for d in item["call_days"].split(",")] if item["call_days"] else None
     item["active"] = bool(item["active"])
+    item["kind"] = item.get("kind") or OUTBOUND
     return item
 
 
 def ensure_default(conn) -> None:
     """The first campaign, from the questions and outcomes the desk had before campaigns existed; the calls made
-    before then are put in it."""
-    if conn.execute("SELECT 1 FROM op_campaigns LIMIT 1").fetchone():
+    before then are put in it. And the incoming calls campaign."""
+    ensure_inbound(conn)
+    if conn.execute("SELECT 1 FROM op_campaigns WHERE kind = ? LIMIT 1", (OUTBOUND,)).fetchone():
         return
     now = _now()
     cur = conn.execute("""INSERT INTO op_campaigns (name, description, stages, questions, outcomes, max_attempts,
                                               retry_minutes, position, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, 0, 120, 0, ?, ?)""",
-                 ("New leads", "The CRM's New contacts, oldest first.", json.dumps([crm.LEAD_STAGE]),
+                 ("New leads", "The CRM's New contacts, oldest first.", json.dumps([crm.lead_stage()]),
                   json.dumps(validate_questions(DEFAULT_QUESTIONS), ensure_ascii=False),
                   json.dumps(validate_outcomes(DEFAULT_OUTCOMES), ensure_ascii=False),
                   now, now))
@@ -300,16 +382,44 @@ def ensure_default(conn) -> None:
     conn.commit()
 
 
-def all_campaigns(conn, active_only: bool = False) -> list[dict]:
+def ensure_inbound(conn) -> None:
+    if conn.execute("SELECT 1 FROM op_campaigns WHERE kind = ? LIMIT 1", (INBOUND,)).fetchone():
+        return
+    now = _now()
+    conn.execute("""INSERT INTO op_campaigns (name, description, stages, questions, outcomes, max_attempts,
+                                              retry_minutes, position, kind, created_at, updated_at)
+                    VALUES (?, ?, '[]', ?, ?, 0, 0, -1, ?, ?, ?)""",
+                 ("Incoming calls", "Calls customers make to us, and our callbacks when we missed them.",
+                  json.dumps(validate_questions(INBOUND_QUESTIONS), ensure_ascii=False),
+                  json.dumps(validate_outcomes(INBOUND_OUTCOMES), ensure_ascii=False), INBOUND, now, now))
+    conn.commit()
+
+
+def all_campaigns(conn, active_only: bool = False, kind: str | None = None) -> list[dict]:
+    """Every campaign (the incoming calls one first), or only the active ones, or only those of a `kind`."""
     ensure_default(conn)
-    where = "WHERE active = 1" if active_only else ""
-    return [to_dict(r) for r in conn.execute(f"SELECT * FROM op_campaigns {where} ORDER BY position, id")]
+    clauses, args = [], []
+    if active_only:
+        clauses.append("active = 1")
+    if kind:
+        clauses.append("kind = ?")
+        args.append(kind)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return [to_dict(r) for r in conn.execute(f"SELECT * FROM op_campaigns {where} ORDER BY position, id", args)]
 
 
 def default_id(conn) -> int:
+    """The first outbound campaign (active ones first)."""
     ensure_default(conn)
-    row = conn.execute("SELECT id FROM op_campaigns ORDER BY active DESC, position, id LIMIT 1").fetchone()
+    row = conn.execute("SELECT id FROM op_campaigns WHERE kind = ? ORDER BY active DESC, position, id LIMIT 1",
+                       (OUTBOUND,)).fetchone()
     return row[0]
+
+
+def inbound_id(conn) -> int:
+    """The incoming calls campaign."""
+    ensure_default(conn)
+    return conn.execute("SELECT id FROM op_campaigns WHERE kind = ?", (INBOUND,)).fetchone()[0]
 
 
 def get(conn, campaign_id: int | None) -> dict:
@@ -324,7 +434,14 @@ def get(conn, campaign_id: int | None) -> dict:
 
 
 def save(conn, campaign_id: int | None, data: dict) -> dict:
-    fields = validate(data)
+    """Add an (outbound) campaign, or change one; a campaign's kind never changes."""
+    kind = OUTBOUND
+    if campaign_id is not None:
+        row = conn.execute("SELECT kind FROM op_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+        if not row:
+            raise CampaignError("This campaign doesn't exist anymore")
+        kind = row[0] or OUTBOUND
+    fields = validate(data, kind)
     values = {**fields, "stages": json.dumps(fields["stages"]),
               "questions": json.dumps(fields["questions"], ensure_ascii=False),
               "outcomes": json.dumps(fields["outcomes"], ensure_ascii=False),
@@ -337,10 +454,9 @@ def save(conn, campaign_id: int | None, data: dict) -> dict:
                            list(values.values()) + [position, values["updated_at"]])
         campaign_id = cur.lastrowid
     else:
-        if not conn.execute("SELECT 1 FROM op_campaigns WHERE id = ?", (campaign_id,)).fetchone():
-            raise CampaignError("This campaign doesn't exist anymore")
         if not fields["active"] and not conn.execute(
-                "SELECT 1 FROM op_campaigns WHERE active = 1 AND id != ?", (campaign_id,)).fetchone():
+                "SELECT 1 FROM op_campaigns WHERE active = 1 AND kind = ? AND id != ?",
+                (OUTBOUND, campaign_id)).fetchone():
             raise CampaignError("Keep at least one campaign active")
         conn.execute(f"UPDATE op_campaigns SET {', '.join(f'{k} = ?' for k in values)} WHERE id = ?",
                      list(values.values()) + [campaign_id])
@@ -351,9 +467,13 @@ def save(conn, campaign_id: int | None, data: dict) -> dict:
 def delete(conn, campaign_id: int) -> str:
     """Delete a campaign nobody called from yet; one with calls is archived instead (its history stays readable).
     Returns "deleted" or "archived"."""
-    if not conn.execute("SELECT 1 FROM op_campaigns WHERE id = ?", (campaign_id,)).fetchone():
+    row = conn.execute("SELECT kind FROM op_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+    if not row:
         raise CampaignError("This campaign doesn't exist anymore")
-    if not conn.execute("SELECT 1 FROM op_campaigns WHERE active = 1 AND id != ?", (campaign_id,)).fetchone():
+    if row[0] == INBOUND:
+        raise CampaignError("The incoming calls campaign can't be deleted")
+    if not conn.execute("SELECT 1 FROM op_campaigns WHERE active = 1 AND kind = ? AND id != ?",
+                        (OUTBOUND, campaign_id)).fetchone():
         raise CampaignError("Keep at least one campaign active")
     if conn.execute("SELECT 1 FROM op_calls WHERE campaign_id = ? LIMIT 1", (campaign_id,)).fetchone():
         conn.execute("UPDATE op_campaigns SET active = 0, updated_at = ? WHERE id = ?", (_now(), campaign_id))

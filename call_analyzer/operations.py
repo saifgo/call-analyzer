@@ -12,6 +12,11 @@ Agents can also call a contact of their choosing (start_direct), a sales call ou
 in the CRM and call the contact found, or add the contact (create_lead) and call them right away or leave them in the
 queue. The call then goes the same way as one from the queue.
 
+Incoming calls (see inbound.py) open a desk call when the agent picks up (source 'inbound'), and the calls nobody
+answered are served back to agents before anything else (source 'missed'). Both belong to the incoming calls campaign.
+A caller who isn't in the CRM gets a desk-only lead (LOCAL_PREFIX), linked to the CRM during the call if the agent
+adds them (link).
+
 Test calls (start_test) serve the agent a made-up contact with a number they choose, to try the desk end to end:
 nothing about them is written to the CRM, their callbacks are kept for the agent who made them, and they don't count
 in the day's figures.
@@ -22,7 +27,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta
 
-from . import campaigns, crm, db
+from . import campaigns, crm, db, floor
 
 OPEN = ("assigned", "in_call")
 # A contact served to an agent whose desk stopped checking in (closed tab, lost connection) goes back to the queue
@@ -34,6 +39,9 @@ SKIP_MINUTES = 60
 OFFLINE_SECONDS = 90
 # The opportunity id of a test call (and of the callbacks booked from it) starts with this.
 TEST_PREFIX = "test:"
+# The opportunity id of a caller who has no opportunity in the CRM: "inbound:<number key>" (see inbound.py). Nothing is
+# written to the CRM for them, but a note when they are a CRM contact.
+LOCAL_PREFIX = "inbound:"
 # Desk time (op_presence) counts the time between two check-ins of a ready agent, when they are at most this far apart.
 PRESENCE_GAP_SECONDS = 60
 
@@ -91,9 +99,15 @@ def is_test(row) -> bool:
     return row["opportunity_id"].startswith(TEST_PREFIX)
 
 
+def in_crm(row) -> bool:
+    """Whether the call is about an opportunity of the CRM (not a test, nor a caller who isn't in the CRM yet)."""
+    return not (is_test(row) or row["opportunity_id"].startswith(LOCAL_PREFIX))
+
+
 def to_dict(row, names: dict[str, str] | None = None) -> dict:
     item = dict(row)
     item["test"] = is_test(row)
+    item["in_crm"] = in_crm(row)
     item["lead"] = json.loads(item["lead"]) if item["lead"] else None
     item["answers"] = json.loads(item["answers"]) if item["answers"] else {}
     if names is not None:
@@ -142,8 +156,12 @@ def heartbeat(conn, username: str) -> bool:
     """The agent's desk checked in. Returns whether they are ready to take calls."""
     now = datetime.now().replace(microsecond=0)
     _tick(conn, username, now)
-    conn.execute("INSERT INTO op_agents (username, ready, last_seen) VALUES (?, 0, ?) "
-                 "ON CONFLICT(username) DO UPDATE SET last_seen = excluded.last_seen", (username, now.isoformat()))
+    away = (now - timedelta(seconds=OFFLINE_SECONDS)).isoformat()
+    conn.execute("INSERT INTO op_agents (username, ready, last_seen, online_since) VALUES (?, 0, ?, ?) "
+                 "ON CONFLICT(username) DO UPDATE SET last_seen = excluded.last_seen, online_since = "
+                 "CASE WHEN COALESCE(op_agents.last_seen, '') < ? THEN excluded.online_since "
+                 "ELSE op_agents.online_since END", (username, now.isoformat(), now.isoformat(), away))
+    floor.touch_pause(conn, username, now)
     conn.commit()
     return bool(conn.execute("SELECT ready FROM op_agents WHERE username = ?", (username,)).fetchone()[0])
 
@@ -152,25 +170,42 @@ def agent_campaign(conn, username: str) -> dict:
     """The campaign the agent works: the one they picked while it's active, else the first active one."""
     row = conn.execute("SELECT campaign_id FROM op_agents WHERE username = ?", (username,)).fetchone()
     campaign = campaigns.get(conn, row[0] if row else None)
-    return campaign if campaign["active"] else campaigns.get(conn, None)
+    return campaign if campaign["active"] and campaign["kind"] == campaigns.OUTBOUND else campaigns.get(conn, None)
 
 
 def set_campaign(conn, username: str, campaign_id: int) -> dict:
-    row = conn.execute("SELECT active FROM op_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+    row = conn.execute("SELECT active, kind FROM op_campaigns WHERE id = ?", (campaign_id,)).fetchone()
     if not row or not row[0]:
         raise OperationError("This campaign isn't running anymore", 404)
+    if row[1] == campaigns.INBOUND:
+        raise OperationError("Incoming calls come to you by themselves: pick a campaign to call")
     conn.execute("INSERT INTO op_agents (username, ready, campaign_id) VALUES (?, 0, ?) "
                  "ON CONFLICT(username) DO UPDATE SET campaign_id = excluded.campaign_id", (username, campaign_id))
     conn.commit()
     return campaigns.get(conn, campaign_id)
 
 
-def set_ready(conn, username: str, ready: bool) -> None:
-    _tick(conn, username, datetime.now().replace(microsecond=0))
-    now = _now()
+def set_ready(conn, username: str, ready: bool, reason_id: int | None = None) -> None:
+    """Start or stop taking calls. Pausing with a reason starts a pause for it (see floor.py); pausing without one
+    (e.g. for a test call) keeps the pause the agent is on, if any. Taking calls ends it."""
+    moment = datetime.now().replace(microsecond=0)
+    _tick(conn, username, moment)
+    now = moment.isoformat()
+    if not ready and reason_id is None:
+        was = conn.execute("SELECT ready, since FROM op_agents WHERE username = ?", (username,)).fetchone()
+        if was and not was["ready"] and was["since"]:
+            now = was["since"]  # already paused: keep when the pause started
     conn.execute("INSERT INTO op_agents (username, ready, since, last_seen) VALUES (?, ?, ?, ?) "
                  "ON CONFLICT(username) DO UPDATE SET ready = excluded.ready, since = excluded.since, "
-                 "last_seen = excluded.last_seen", (username, int(ready), now, now))
+                 "last_seen = excluded.last_seen", (username, int(ready), now, moment.isoformat()))
+    try:
+        if ready:
+            floor.end_pause(conn, username, moment)
+        elif reason_id is not None:
+            floor.start_pause(conn, username, reason_id, moment)
+    except floor.FloorError as exc:
+        conn.rollback()
+        raise OperationError(str(exc), 404) from None
     conn.commit()
 
 
@@ -260,7 +295,7 @@ def queue_counts(conn, campaign: dict) -> dict:
               "open": campaigns.is_open(campaign, datetime.now()), "due_callbacks": due, "scheduled": scheduled,
               "waiting": None, "no_phone": None, "error": None, "truncated": False}
     if not crm.is_configured():
-        result["error"] = "The CRM isn't connected (CRM_API_KEY in Settings)."
+        result["error"] = crm.not_configured_message()
         return result
     try:
         data = _campaign_leads(campaign)
@@ -275,22 +310,28 @@ def queue_counts(conn, campaign: dict) -> dict:
 
 
 def claim_next(username: str) -> tuple[dict | None, str | None]:
-    """Serve the agent their next contact: the one they already hold, else the earliest due callback they may take,
-    else the oldest New opportunity in the CRM nobody has. Returns (op_call, None), or (None, why there's none)."""
+    """Serve the agent their next contact: the one they already hold, else a missed call to call back (see
+    inbound.claim), else the earliest due callback they may take, else the oldest New opportunity in the CRM nobody
+    has. Returns (op_call, None), or (None, why there's none)."""
+    from . import inbound
     with _claim_lock:
         conn = db.connect()
         names = account_names(conn)
         if row := current(conn, username):
             return to_dict(row, names), None
+        if op := inbound.claim(conn, username):
+            return op, None
         campaign = agent_campaign(conn, username)
         now = _now()
         skipped = _skipped(conn, username)
-        # Their own callbacks (whatever the campaign), and the campaign's callbacks for anyone.
+        # Their own callbacks (whatever the campaign), the campaign's callbacks for anyone, and the incoming calls'
+        # callbacks for anyone (nobody works that campaign).
         row = next((r for r in conn.execute("""
             SELECT * FROM op_calls WHERE status = 'scheduled' AND due_at <= ?
-              AND (assign_to = ? OR (assign_to IS NULL AND COALESCE(campaign_id, ?) = ?))
+              AND (assign_to = ? OR (assign_to IS NULL AND (COALESCE(campaign_id, ?) = ? OR campaign_id = ?)))
               AND opportunity_id NOT IN (SELECT opportunity_id FROM op_calls WHERE status IN ('assigned', 'in_call'))
-            ORDER BY due_at, id""", (now, username, campaigns.default_id(conn), campaign["id"]))
+            ORDER BY due_at, id""", (now, username, campaigns.default_id(conn), campaign["id"],
+                                     campaigns.inbound_id(conn)))
                     if r["opportunity_id"] not in skipped), None)
         if row:
             conn.execute("UPDATE op_calls SET status = 'assigned', agent = ?, assigned_at = ? WHERE id = ?",
@@ -301,7 +342,7 @@ def claim_next(username: str) -> tuple[dict | None, str | None]:
             return None, (f"{campaign['name']} is only called {campaigns.hours_label(campaign)}. "
                           "Callbacks that come due are still served.")
         if not crm.is_configured():
-            return None, "The CRM isn't connected yet: an admin needs to add CRM_API_KEY in Settings."
+            return None, crm.not_configured_message()
         try:
             leads = _campaign_leads(campaign)["leads"]
         except crm.CrmError as exc:
@@ -324,7 +365,7 @@ def lookup(phone: str) -> dict:
     if not crm.match_key(phone):
         raise OperationError("Enter the full phone number (8 digits)")
     if not crm.is_configured():
-        raise OperationError("The CRM isn't connected yet: an admin needs to add CRM_API_KEY in Settings.")
+        raise OperationError(crm.not_configured_message())
     try:
         return crm.lookup(phone)
     except crm.CrmError as exc:
@@ -340,7 +381,7 @@ def create_lead(username: str, *, phone: str = "", name: str = "", city: str = "
     if not name:
         raise OperationError("Enter the contact's name")
     if not crm.is_configured():
-        raise OperationError("The CRM isn't connected yet: an admin needs to add CRM_API_KEY in Settings.")
+        raise OperationError(crm.not_configured_message())
     try:
         if not person_id:
             if not crm.match_key(phone):
@@ -387,6 +428,40 @@ def start_direct(username: str, opportunity_id: str) -> dict:
         return to_dict(get_row(conn, cur.lastrowid), names)
 
 
+def link(op_id: int, username: str, *, opportunity_id: str | None = None, person_id: str | None = None,
+         name: str = "", city: str = "", email: str = "") -> dict:
+    """Link a call that came in (or calls back a missed one) to the CRM: to one of the caller's opportunities, to a new
+    opportunity for their CRM contact (`person_id`), or to a new contact made from the details. The call then goes on
+    about that opportunity. Returns the op_call."""
+    conn = db.connect()
+    row = _own_open(conn, op_id, username)
+    if row["source"] not in ("inbound", "missed"):
+        raise OperationError("Only calls that came in can be linked to another contact")
+    if not opportunity_id:
+        lead = json.loads(row["lead"]) if row["lead"] else {}
+        phone = row["phone"] or next(iter((lead.get("contact") or {}).get("phones") or []), "")
+        opportunity_id = create_lead(username, phone=phone, name=name or (lead.get("contact") or {}).get("name") or "",
+                                     city=city, email=email, person_id=person_id)
+    try:
+        lead = crm.opportunity(opportunity_id)
+    except crm.CrmError as exc:
+        raise OperationError(str(exc), 502)
+    with _claim_lock:
+        conn = db.connect()
+        names = account_names(conn)
+        held = conn.execute("SELECT * FROM op_calls WHERE opportunity_id = ? AND status IN ('assigned', 'in_call') "
+                            "AND id != ?", (opportunity_id, op_id)).fetchone()
+        if held and held["status"] == "assigned":
+            release(conn, held["id"])  # served to someone who hasn't called yet: this agent is on the phone with them
+        elif held:
+            raise OperationError(f"{names.get(held['agent'], held['agent'])} is on a call with this contact", 409)
+        conn.execute("UPDATE op_calls SET opportunity_id = ?, person_id = ?, lead = ?, stage_before = ? WHERE id = ?",
+                     (opportunity_id, (lead.get("contact") or {}).get("id"), json.dumps(lead, ensure_ascii=False),
+                      lead.get("stage"), op_id))
+        conn.commit()
+        return to_dict(get_row(conn, op_id), names)
+
+
 def start_test(username: str, phone: str, name: str = "") -> dict:
     """Serve the agent a made-up contact to call on `phone`, and pause them so the queue doesn't serve them a real
     one after it. Only when they aren't holding a contact already."""
@@ -403,13 +478,13 @@ def start_test(username: str, phone: str, name: str = "") -> dict:
         contact = {"id": None, "name": name.strip()[:100] or "Test contact", "email": None, "phones": [phone],
                    "job_title": None, "city": None, "company": None, "created_at": None, "last_contact_at": None,
                    "url": None}
-        lead = {"id": test_id, "name": "Test call (not in the CRM)", "stage": crm.LEAD_STAGE, "amount": None,
+        lead = {"id": test_id, "name": "Test call (not in the CRM)", "stage": crm.lead_stage(), "amount": None,
                 "currency": None, "close_date": None, "company": None, "owner": None, "created_at": None,
                 "updated_at": None, "url": None, "contact": contact}
         cur = conn.execute("""INSERT INTO op_calls (opportunity_id, lead, source, status, agent, assigned_at,
                                                     stage_before, campaign_id, created_at)
                               VALUES (?, ?, 'test', 'assigned', ?, ?, ?, ?, ?)""",
-                           (test_id, json.dumps(lead, ensure_ascii=False), username, now, crm.LEAD_STAGE,
+                           (test_id, json.dumps(lead, ensure_ascii=False), username, now, lead["stage"],
                             agent_campaign(conn, username)["id"], now))
         conn.commit()
         return to_dict(get_row(conn, cur.lastrowid), account_names(conn))
@@ -518,6 +593,8 @@ def finish(op_id: int, username: str, *, answers: dict, outcome: str, note: str,
     due = _parse_due(callback_at) if callback_at else None
     conn = db.connect()
     row = _own_open(conn, op_id, username)
+    if not in_crm(row) and not is_test(row):
+        stage = None  # a caller with no opportunity in the CRM has no stage to move
     campaign = campaign_of(conn, row)
     chosen = campaigns.outcome(campaign, outcome)
     if not chosen:
@@ -624,15 +701,16 @@ def sync_crm(op_id: int) -> None:
     Each step that fails is noted in crm_error; running it again skips the note if it was already written."""
     conn = db.connect()
     row = get_row(conn, op_id)
-    if is_test(row):
-        return
+    if is_test(row) or not (in_crm(row) or row["person_id"]):
+        return  # nothing in the CRM to write to
     if not crm.is_configured():
         conn.execute("UPDATE op_calls SET crm_error = ? WHERE id = ?", ("The CRM isn't connected", op_id))
         conn.commit()
         return
     names = account_names(conn)
     errors = []
-    if row["stage_after"] and row["stage_after"] != row["stage_before"]:
+    opportunity_id = row["opportunity_id"] if in_crm(row) else None  # else: a note for the contact only
+    if opportunity_id and row["stage_after"] and row["stage_after"] != row["stage_before"]:
         try:
             crm.update_opportunity(row["opportunity_id"], {"stage": row["stage_after"]})
         except crm.CrmError as exc:
@@ -650,7 +728,7 @@ def sync_crm(op_id: int) -> None:
     if not note_id:
         outcome = campaigns.outcome(campaign, row["outcome"]).get("label", row["outcome"])
         try:
-            note_id = crm.add_note(f"Call · {outcome}", note_markdown(conn, row, names), row["opportunity_id"],
+            note_id = crm.add_note(f"Call · {outcome}", note_markdown(conn, row, names), opportunity_id,
                                    row["person_id"])
         except crm.CrmError as exc:
             errors.append(f"Note not written: {exc}")
@@ -688,11 +766,24 @@ def context(conn, row) -> dict:
     recorded.sort(key=lambda c: c["date_call"] or "", reverse=True)
 
     notes, notes_error = [], None
-    if not is_test(row):
+    if not is_test(row) and (in_crm(row) or row["person_id"]):
         try:
-            notes = crm.notes(row["opportunity_id"], row["person_id"])
+            notes = crm.notes(row["opportunity_id"] if in_crm(row) else None, row["person_id"])
         except crm.CrmError as exc:
             notes_error = str(exc)
+
+    # A call that came in (or calls back one we missed): when it rang, and the CRM's contacts with the number, to
+    # link the call to the right one.
+    from . import inbound
+    rang = inbound.of_op(conn, row)
+    people, people_error = None, None
+    if row["source"] in ("inbound", "missed") and crm.is_configured():
+        number = row["phone"] or next(iter((lead.get("contact") or {}).get("phones") or []), "")
+        if crm.match_key(number):
+            try:
+                people = crm.lookup(number)["people"]
+            except crm.CrmError as exc:
+                people_error = str(exc)
 
     # The campaign's rules for an unanswered call: is this the last try, and when to try again.
     campaign = campaign_of(conn, row)
@@ -704,7 +795,8 @@ def context(conn, row) -> dict:
         retry_at = retry_at.replace(second=0, microsecond=0).isoformat(timespec="seconds")
     return {"history": history, "previous_answers": previous_answers, "callback_from": callback_from,
             "recorded_calls": recorded[:10], "notes": notes, "notes_error": notes_error,
-            "attempts": tries, "max_attempts": campaign["max_attempts"], "last_try": last_try, "retry_at": retry_at}
+            "attempts": tries, "max_attempts": campaign["max_attempts"], "last_try": last_try, "retry_at": retry_at,
+            "inbound": rang, "crm_people": people, "crm_people_error": people_error}
 
 
 def today(conn, username: str) -> dict:
@@ -721,8 +813,21 @@ def today(conn, username: str) -> dict:
             pass
     lookup = outcome_lookup(conn)
     found = [lookup(r["campaign_id"], r["outcome"]) for r in rows]
+    day = start[:10]
+    desk = conn.execute("SELECT ready_seconds FROM op_presence WHERE username = ? AND day = ?",
+                        (username, day)).fetchone()
+    tomorrow = (datetime.fromisoformat(start) + timedelta(days=1)).date().isoformat()
+    paused = floor.pause_totals(conn, day, tomorrow, username).get(username, {})
     return {"done": len(rows), "reached": sum(bool(o.get("reached")) for o in found),
-            "success": sum(bool(o.get("success")) for o in found), "talk_seconds": talk}
+            "success": sum(bool(o.get("success")) for o in found), "talk_seconds": talk,
+            "desk_seconds": desk[0] if desk else 0, "pause_seconds": paused.get("pause_seconds", 0)}
+
+
+def goals(conn, username: str, done: dict) -> dict:
+    """The agent's targets for today and how far along they are (see floor.progress)."""
+    day_pace = floor.pace(conn)
+    return {"pace": day_pace, "workday": floor.workday(conn),
+            "progress": floor.progress(done, floor.resolved(conn, username), day_pace)}
 
 
 def my_callbacks(conn, username: str) -> list[dict]:
@@ -739,8 +844,23 @@ def board(conn) -> dict:
     online_after = (now - timedelta(seconds=OFFLINE_SECONDS)).isoformat(timespec="seconds")
     start = now.strftime("%Y-%m-%dT00:00:00")
     real = f"opportunity_id NOT LIKE '{TEST_PREFIX}%'"
-    done_today = dict(conn.execute(f"SELECT agent, COUNT(*) FROM op_calls WHERE status = 'done' AND finished_at >= ? "
-                                   f"AND {real} GROUP BY agent", (start,)).fetchall())
+    lookup = outcome_lookup(conn)
+    done_today: dict[str, dict] = {}
+    for r in conn.execute(f"SELECT agent, outcome, campaign_id FROM op_calls WHERE status = 'done' AND finished_at >= ? "
+                          f"AND {real}", (start,)):
+        o = lookup(r["campaign_id"], r["outcome"])
+        d = done_today.setdefault(r["agent"], {"done": 0, "reached": 0, "success": 0})
+        d["done"] += 1
+        d["reached"] += bool(o.get("reached"))
+        d["success"] += bool(o.get("success"))
+    day = start[:10]
+    tomorrow = (now + timedelta(days=1)).date().isoformat()
+    desk_today = dict(conn.execute("SELECT username, ready_seconds FROM op_presence WHERE day = ?", (day,)).fetchall())
+    pauses_today = floor.pause_totals(conn, day, tomorrow)
+    table = floor.targets(conn)
+    day_pace = floor.pace(conn, now)
+    team_done = {"done": 0, "reached": 0, "success": 0, "desk_seconds": 0}
+    team_goal = {m: 0 for m in floor.METRICS}
     holding = {r["agent"]: to_dict(r, names) for r in
                conn.execute("SELECT * FROM op_calls WHERE status IN ('assigned', 'in_call')")}
     campaign_names = {c["id"]: c["name"] for c in campaigns.all_campaigns(conn)}
@@ -754,9 +874,27 @@ def board(conn) -> dict:
                  "serving" if op else
                  "offline" if not online else
                  "ready" if a["ready"] else "paused")
-        agents.append({"username": a["username"], "name": names.get(a["username"], a["username"]),
+        user = a["username"]
+        today_done = {**done_today.get(user, {"done": 0, "reached": 0, "success": 0}),
+                      "desk_seconds": desk_today.get(user, 0),
+                      "pause_seconds": pauses_today.get(user, {}).get("pause_seconds", 0)}
+        goal = floor.resolved(conn, user, table)
+        # The team's target counts the agents who came to the desk today.
+        if (a["last_seen"] or "") >= start:
+            for m in floor.METRICS:
+                team_goal[m] += goal[m]
+            for k in team_done:
+                team_done[k] += today_done[k]
+        state_since = (op["call_ended_at"] if state == "wrap_up" else
+                       op["call_started_at"] if state == "on_call" else
+                       op["assigned_at"] if state == "serving" else
+                       a["last_seen"] if state == "offline" else a["since"])
+        agents.append({"username": user, "name": names.get(user, user),
                        "state": state, "ready": bool(a["ready"]), "online": online, "since": a["since"],
-                       "last_seen": a["last_seen"], "current": op, "done_today": done_today.get(a["username"], 0),
+                       "state_since": state_since, "last_seen": a["last_seen"], "current": op,
+                       "done_today": today_done["done"], "today": today_done,
+                       "pause": floor.pause_state(conn, user, now.replace(microsecond=0)) if not a["ready"] else None,
+                       "progress": floor.progress(today_done, goal, day_pace),
                        "campaign": campaign_names.get(a["campaign_id"] or default)})
     callbacks = [to_dict(r, names) for r in conn.execute(
         "SELECT * FROM op_calls WHERE status = 'scheduled' ORDER BY due_at LIMIT 100")]
@@ -764,7 +902,8 @@ def board(conn) -> dict:
         "SELECT * FROM op_calls WHERE status = 'done' ORDER BY finished_at DESC LIMIT 50")]
     outcomes = dict(conn.execute(f"SELECT outcome, COUNT(*) FROM op_calls WHERE status = 'done' AND finished_at >= ? "
                                  f"AND {real} GROUP BY outcome", (start,)).fetchall())
-    queues = [queue_counts(conn, c) for c in campaigns.all_campaigns(conn, active_only=True)]
+    queues = [queue_counts(conn, c)
+              for c in campaigns.all_campaigns(conn, active_only=True, kind=campaigns.OUTBOUND)]
     waiting = [q["waiting"] for q in queues if q["waiting"] is not None]
     no_phone = [q["no_phone"] for q in queues if q["no_phone"] is not None]
     total = {"due_callbacks": sum(q["due_callbacks"] for q in queues),
@@ -773,5 +912,6 @@ def board(conn) -> dict:
              "error": next((q["error"] for q in queues if q["error"]), None),
              "truncated": any(q["truncated"] for q in queues)}
     return {"agents": agents, "queue": total, "queues": queues, "callbacks": callbacks, "recent": recent,
-            "outcomes_today": outcomes}
+            "outcomes_today": outcomes, "pace": day_pace, "workday": floor.workday(conn),
+            "team_progress": floor.progress(team_done, team_goal, day_pace)}
 

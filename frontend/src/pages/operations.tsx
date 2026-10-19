@@ -5,6 +5,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
+  CoffeeIcon,
   CopyIcon,
   ExternalLinkIcon,
   FlaskConicalIcon,
@@ -12,14 +13,19 @@ import {
   HistoryIcon,
   LightbulbIcon,
   ListChecksIcon,
+  MonitorPlayIcon,
   MailIcon,
   MapPinIcon,
   PhoneCallIcon,
   PhoneIcon,
+  PhoneIncomingIcon,
+  PhoneMissedIcon,
   PhoneOffIcon,
   PlayIcon,
   PlusIcon,
+  TargetIcon,
   Undo2Icon,
+  UserPlusIcon,
   XIcon,
   ZapIcon,
 } from "lucide-react";
@@ -28,6 +34,8 @@ import { OperationsBoard } from "@/pages/operations-board";
 import { OperationsCampaigns } from "@/pages/operations-campaigns";
 import { OperationsInsights } from "@/pages/operations-insights";
 import { OperationsKpis } from "@/pages/operations-kpis";
+import { OperationsTargets } from "@/pages/operations-targets";
+import { GoalBars, PauseBadge } from "@/components/goal-progress";
 import { PageHeader } from "@/components/page-header";
 import { QuickActions } from "@/components/quick-actions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -54,14 +62,31 @@ import { Textarea } from "@/components/ui/textarea";
 import { toastManager } from "@/components/ui/toast";
 import { Toggle } from "@/components/ui/toggle";
 import { api, useApi } from "@/lib/api";
+import { useOpConfig } from "@/lib/campaign-text";
 import { Bidi, textDir } from "@/lib/bidi";
 import { fmtDate, fmtDateTime, fmtDuration, fmtRelative, humanize, parseDate } from "@/lib/format";
+import { DESK_REFRESH, useIncoming } from "@/lib/inbound";
 import { useMe } from "@/lib/me";
-import { outcomeVariant, STAGE_VARIANT, useNow } from "@/lib/operations";
+import { outcomeVariant, pauseOver, STAGE_VARIANT, useNow } from "@/lib/operations";
 import { href, navigate, type Route } from "@/lib/router";
 import { type CallEnd, useSoftphone } from "@/lib/softphone";
-import type { CrmLookup, OpAnswers, OpCall, OpCampaign, OpConfig, OpContext, OpDesk, OpOutcome, OpQuestion } from "@/lib/types";
+import type {
+  CrmLookup,
+  OpAnswers,
+  OpCall,
+  OpCampaign,
+  OpConfig,
+  OpContext,
+  OpDesk,
+  OpEarnedBreak,
+  OpIdlePrompt,
+  OpMissed,
+  OpOutcome,
+  OpPauseReason,
+  OpQuestion,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { t, type TKey, tx } from "@/lib/i18n";
 
 /** How often the desk checks in (also what keeps the agent's contact reserved for them). */
 const POLL_MS = 15_000;
@@ -69,6 +94,8 @@ const POLL_MS = 15_000;
 const TEST_PHONE_KEY = "operations.testPhone";
 /** Whether the power dialer is on (kept per browser). */
 const POWER_DIAL_KEY = "operations.powerDial";
+/** The earned break the agent put off ("day:breaks taken"), so it isn't offered again until the next one. */
+const BREAK_LATER_KEY = "operations.earnedBreakLater";
 /** Power dialer: seconds before a served contact is dialed, and before an unanswered call is closed. */
 const AUTO_DIAL_SECONDS = 3;
 const AUTO_CLOSE_SECONDS = 5;
@@ -124,17 +151,17 @@ function useCountdown(active: boolean, seconds: number, onDone: () => void): num
     }
     setLeft(seconds);
     const end = Date.now() + seconds * 1000;
-    const t = window.setInterval(() => {
+    const timer = window.setInterval(() => {
       const remaining = Math.ceil((end - Date.now()) / 1000);
       if (remaining <= 0) {
-        window.clearInterval(t);
+        window.clearInterval(timer);
         setLeft(null);
         done.current();
       } else {
         setLeft(remaining);
       }
     }, 250);
-    return () => window.clearInterval(t);
+    return () => window.clearInterval(timer);
   }, [active, seconds]);
   return left;
 }
@@ -143,7 +170,7 @@ function CopyNumber({ number }: { number: string }) {
   const [copied, setCopied] = React.useState(false);
   return (
     <Button
-      aria-label={`Copy ${number}`}
+      aria-label={t("leads.copyNumber", { number })}
       onClick={async () => {
         await navigator.clipboard.writeText(number.replace(/\s/g, ""));
         setCopied(true);
@@ -191,13 +218,26 @@ function ContactDetails({ op, config, context }: { op: OpCall; config: OpConfig;
   return (
     <Card>
       <CardPanel className="flex flex-col gap-4 p-4">
+        {op.source === "missed" && context?.inbound && (
+          <Alert variant="warning">
+            <PhoneMissedIcon aria-hidden="true" />
+            <AlertTitle>
+              {t("inbound.missedAt", { count: context.inbound.tries, time: fmtDateTime(context.inbound.rang_at) })}
+            </AlertTitle>
+            <AlertDescription>{t("inbound.missedHint")}</AlertDescription>
+          </Alert>
+        )}
         {op.source === "callback" && (
           <Alert variant="warning">
             <CalendarClockIcon aria-hidden="true" />
-            <AlertTitle>Callback planned for {fmtDateTime(op.due_at)}</AlertTitle>
+            <AlertTitle>{t("desk.callbackPlanned", { time: fmtDateTime(op.due_at) })}</AlertTitle>
             <AlertDescription>
-              Booked by {op.scheduled_by_name ?? op.scheduled_by ?? "an agent"}
-              {booked?.outcome && ` after "${outcomes[booked.outcome]?.label ?? humanize(booked.outcome)}"`}.
+              {booked?.outcome
+                ? t("desk.bookedByAfter", {
+                    name: op.scheduled_by_name ?? op.scheduled_by ?? t("desk.anAgent"),
+                    outcome: outcomes[booked.outcome]?.label ?? humanize(booked.outcome),
+                  })
+                : t("desk.bookedBy", { name: op.scheduled_by_name ?? op.scheduled_by ?? t("desk.anAgent") })}
               {op.callback_note && <Bidi className="mt-1 text-foreground" text={op.callback_note} />}
             </AlertDescription>
           </Alert>
@@ -210,12 +250,12 @@ function ContactDetails({ op, config, context }: { op: OpCall; config: OpConfig;
           {contact?.email && <InfoLine icon={MailIcon}>{contact.email}</InfoLine>}
           <span className="flex flex-wrap items-center justify-between gap-2 text-xs">
             <span>
-              {lead?.created_at && `In the CRM since ${fmtDate(lead.created_at)}`}
-              {lead?.owner && ` · Owner: ${lead.owner}`}
+              {lead?.created_at && t("detail.inCrmSince", { date: fmtDate(lead.created_at) })}
+              {lead?.owner && ` · ${t("detail.owner", { name: lead.owner })}`}
             </span>
             {lead?.url && (
               <a className="inline-flex items-center gap-1 hover:underline" href={lead.url} rel="noreferrer" target="_blank">
-                Open in CRM
+                {t("leads.openInCrm")}
                 <ExternalLinkIcon aria-hidden="true" className="size-3" />
               </a>
             )}
@@ -230,20 +270,23 @@ function ContactDetails({ op, config, context }: { op: OpCall; config: OpConfig;
             <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 text-start text-sm">
               <span className="flex flex-col gap-0.5">
                 <span className="font-medium">
-                  History
+                  {t("desk.history")}
                   <span className="ms-1.5 font-normal text-muted-foreground tabular-nums">{total}</span>
                 </span>
                 <span className="text-muted-foreground text-xs">
                   {last
-                    ? `Last call: ${outcomes[last.outcome ?? ""]?.label ?? humanize(last.outcome)} · ${fmtDateTime(last.finished_at)}`
-                    : "Never called from the desk before."}
+                    ? t("desk.lastCall", {
+                        outcome: outcomes[last.outcome ?? ""]?.label ?? humanize(last.outcome),
+                        time: fmtDateTime(last.finished_at),
+                      })
+                    : t("desk.neverCalled")}
                 </span>
               </span>
               <ChevronDownIcon aria-hidden="true" className="size-4 shrink-0 transition-transform [[data-panel-open]>&]:rotate-180" />
             </CollapsibleTrigger>
             <CollapsiblePanel>
               <div className="flex flex-col gap-5 pt-4">
-                <HistorySection count={context.history.length} title="Earlier calls from the desk">
+                <HistorySection count={context.history.length} title={t("desk.earlierCalls")}>
                   {context.history.length ? (
                     <ul className="flex flex-col gap-2">
                       {context.history.map((h) => (
@@ -259,26 +302,26 @@ function ContactDetails({ op, config, context }: { op: OpCall; config: OpConfig;
                           {h.note && <Bidi className="whitespace-pre-line" text={h.note} />}
                           {h.call_id && (
                             <a className="inline-flex items-center gap-1 text-muted-foreground text-xs hover:underline" href={href("calls", h.call_id)}>
-                              <PlayIcon aria-hidden="true" className="size-3" />
-                              Recording and AI feedback
+                              <PlayIcon aria-hidden="true" className="size-3 rtl:-scale-x-100" />
+                              {t("desk.recordingFeedback")}
                             </a>
                           )}
                         </li>
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-muted-foreground text-sm">First time this contact is called from the desk.</p>
+                    <p className="text-muted-foreground text-sm">{t("desk.firstTime")}</p>
                   )}
                 </HistorySection>
 
-                <HistorySection count={context.notes.length} title="CRM notes">
+                <HistorySection count={context.notes.length} title={t("desk.crmNotes")}>
                   {context.notes_error && <p className="text-destructive-foreground text-sm">{context.notes_error}</p>}
                   {context.notes.length ? (
                     <ul className="flex max-h-72 flex-col gap-2 overflow-y-auto">
                       {context.notes.map((n) => (
                         <li className="flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm" key={n.id}>
                           <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground text-xs">
-                            <span className="font-medium text-foreground">{n.title || "Note"}</span>
+                            <span className="font-medium text-foreground">{n.title || t("board.note")}</span>
                             <span>
                               {n.author && `${n.author} · `}
                               {fmtDate(n.created_at)}
@@ -289,18 +332,18 @@ function ContactDetails({ op, config, context }: { op: OpCall; config: OpConfig;
                       ))}
                     </ul>
                   ) : (
-                    !context.notes_error && <p className="text-muted-foreground text-sm">No notes in the CRM.</p>
+                    !context.notes_error && <p className="text-muted-foreground text-sm">{t("desk.noNotes")}</p>
                   )}
                 </HistorySection>
 
-                <HistorySection count={context.recorded_calls.length} title="Recorded calls with this number">
+                <HistorySection count={context.recorded_calls.length} title={t("desk.recordedCalls")}>
                   {context.recorded_calls.length ? (
                     <ul className="flex flex-col gap-2">
                       {context.recorded_calls.map((c) => (
                         <li className="flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm" key={c.id}>
                           <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground text-xs">
                             <span>
-                              {fmtDateTime(c.date_call)} · {fmtDuration(c.duration)} · ext. {c.agent}
+                              {fmtDateTime(c.date_call)} · {fmtDuration(c.duration)} · {t("desk.ext", { ext: c.agent })}
                             </span>
                             {c.outcome && <Badge variant="secondary">{humanize(c.outcome)}</Badge>}
                           </div>
@@ -309,7 +352,7 @@ function ContactDetails({ op, config, context }: { op: OpCall; config: OpConfig;
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-muted-foreground text-sm">No recorded call with this number yet.</p>
+                    <p className="text-muted-foreground text-sm">{t("desk.noRecorded")}</p>
                   )}
                 </HistorySection>
               </div>
@@ -377,10 +420,10 @@ function QuestionInput({ q, value, onChange }: { q: OpQuestion; value: OpAnswers
       return (
         <div className="flex flex-wrap gap-1.5">
           <Chip onPressedChange={(on) => onChange(on ? true : undefined)} pressed={value === true}>
-            Yes
+            {t("common.yes")}
           </Chip>
           <Chip onPressedChange={(on) => onChange(on ? false : undefined)} pressed={value === false}>
-            No
+            {t("common.no")}
           </Chip>
         </div>
       );
@@ -445,13 +488,17 @@ function Questionnaire({
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
         <div className="flex flex-col gap-1">
-          <CardTitle>Questions</CardTitle>
-          <CardDescription>
-            {filled} of {shown} answered · skip what doesn't come up
-          </CardDescription>
+          <CardTitle>{t("campaigns.questions")}</CardTitle>
+          <CardDescription>{t("desk.answered", { filled, shown })}</CardDescription>
         </div>
         <span className="text-muted-foreground text-xs" role="status">
-          {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Not saved" : ""}
+          {saveState === "saving"
+            ? t("desk.saving")
+            : saveState === "saved"
+              ? t("board.saved")
+              : saveState === "error"
+                ? t("common.notSaved")
+                : ""}
         </span>
       </CardHeader>
       <CardPanel className="flex flex-col gap-6">
@@ -538,11 +585,11 @@ function outcomePatch(w: WrapUp, o: OpOutcome, op: OpCall, context: OpContext | 
 /** The usual appointment times, from now. */
 function quickPicks(): [string, string][] {
   return [
-    ["In 1 hour", inHours(1)],
-    ["In 3 hours", inHours(3)],
-    ...(new Date().getHours() < 17 ? ([["Today 18:00", todayAt(18)]] as [string, string][]) : []),
-    ["Tomorrow 10:00", tomorrowAt(10)],
-    ["Tomorrow 15:00", tomorrowAt(15)],
+    [t("desk.inHours", { count: 1 }), inHours(1)],
+    [t("desk.inHours", { count: 3 }), inHours(3)],
+    ...(new Date().getHours() < 17 ? ([[t("desk.todayAt", { time: "18:00" }), todayAt(18)]] as [string, string][]) : []),
+    [t("desk.tomorrowAt", { time: "10:00" }), tomorrowAt(10)],
+    [t("desk.tomorrowAt", { time: "15:00" }), tomorrowAt(15)],
   ];
 }
 
@@ -567,13 +614,13 @@ function AppointmentButton({ op, value, onChange }: { op: OpCall; value: WrapUp;
         }
       >
         <CalendarClockIcon aria-hidden="true" />
-        {booked ? fmtDateTime(value.callbackAt) : "Appointment"}
+        {booked ? fmtDateTime(value.callbackAt) : t("desk.appointment")}
       </PopoverTrigger>
       <PopoverPopup align="end" className="w-80">
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-0.5">
-            <span className="font-medium">{booked ? "Call back on" : "When should we call back?"}</span>
-            <span className="text-muted-foreground text-xs">Saved with the call when you close it.</span>
+            <span className="font-medium">{booked ? t("desk.callBackOn") : t("desk.whenCallBack")}</span>
+            <span className="text-muted-foreground text-xs">{t("desk.savedWithCall")}</span>
           </div>
           <div className="grid grid-cols-2 gap-1.5">
             {picks.map(([label, at]) => (
@@ -588,7 +635,7 @@ function AppointmentButton({ op, value, onChange }: { op: OpCall; value: WrapUp;
             ))}
           </div>
           <Input
-            aria-label="Appointment date and time"
+            aria-label={t("desk.appointmentDateTime")}
             onChange={(e) => onChange({ callback: !!e.target.value, callbackAt: e.target.value })}
             type="datetime-local"
             value={booked ? value.callbackAt : ""}
@@ -596,10 +643,10 @@ function AppointmentButton({ op, value, onChange }: { op: OpCall; value: WrapUp;
           {booked && (
             <>
               <Input
-                aria-label="Appointment note"
+                aria-label={t("desk.appointmentNote")}
                 dir={textDir(value.callbackNote)}
                 onChange={(e) => onChange({ callbackNote: e.target.value })}
-                placeholder="Why (optional), e.g. owner is back after 17:00"
+                placeholder={t("desk.appointmentNotePlaceholder")}
                 type="text"
                 value={value.callbackNote}
               />
@@ -609,15 +656,15 @@ function AppointmentButton({ op, value, onChange }: { op: OpCall; value: WrapUp;
                   disabled={op.test}
                   onCheckedChange={(on) => onChange({ callbackMine: !!on })}
                 />
-                Keep it for me
+                {t("desk.keepForMe")}
               </Label>
               <div className="flex justify-between gap-2">
                 <Button onClick={() => onChange({ callback: false, callbackAt: "" })} size="sm" variant="ghost">
                   <XIcon aria-hidden="true" />
-                  Remove
+                  {t("common.remove")}
                 </Button>
                 <Button onClick={() => setOpen(false)} size="sm">
-                  Done
+                  {t("common.done")}
                 </Button>
               </div>
             </>
@@ -674,42 +721,47 @@ function WrapUpForm({
   const [changingStage, setChangingStage] = React.useState(value.stageTouched);
   const stageLabel = (v: string | null | undefined) => config.stages.find((s) => s.value === v)?.label ?? humanize(v);
   const stageItems = [
-    { label: `Keep at ${stageLabel(op.lead?.stage) || "its stage"}`, value: KEEP_STAGE },
+    { label: t("desk.keepAt", { stage: stageLabel(op.lead?.stage) || t("desk.itsStage") }), value: KEEP_STAGE },
     ...config.stages.filter((s) => s.value !== op.lead?.stage).map((s) => ({ label: s.label, value: s.value })),
   ];
   return (
     <Card className="border-primary/40">
       <CardHeader>
-        <CardTitle>How did it go?</CardTitle>
-        <CardDescription>Pick one, then save. Your note and appointment are saved with it.</CardDescription>
+        <CardTitle>{t("desk.howDidItGo")}</CardTitle>
+        <CardDescription>{t("desk.howDidItGoHint")}</CardDescription>
       </CardHeader>
       <CardPanel className="flex flex-col gap-5">
         <OutcomeButtons
           onPick={onOutcome}
           outcomes={campaign.outcomes.filter((o) => o.reached)}
-          title="Spoke with them"
+          title={t("desk.spokeWith")}
           value={value.outcome}
         />
         <OutcomeButtons
           onPick={onOutcome}
           outcomes={campaign.outcomes.filter((o) => !o.reached)}
-          title="Didn't speak with them"
+          title={t("desk.didntSpeak")}
           value={value.outcome}
         />
         {context?.last_try && value.outcome && !campaign.outcomes.find((o) => o.value === value.outcome)?.reached && (
           <Alert variant="warning">
             <CircleAlertIcon aria-hidden="true" />
             <AlertDescription>
-              Last try: {context.attempts + 1} unanswered calls in a row. No callback is booked
-              {campaign.exhausted_stage && `, and the contact moves to ${config.stages.find((s) => s.value === campaign.exhausted_stage)?.label ?? humanize(campaign.exhausted_stage)}`}.
+              {campaign.exhausted_stage
+                ? t("desk.lastTryMoves", {
+                    count: context.attempts + 1,
+                    stage: config.stages.find((s) => s.value === campaign.exhausted_stage)?.label ?? humanize(campaign.exhausted_stage),
+                  })
+                : t("desk.lastTry", { count: context.attempts + 1 })}
             </AlertDescription>
           </Alert>
         )}
 
         {value.outcome &&
+          (op.in_crm || op.test) &&
           (changingStage ? (
             <Field>
-              <FieldLabel>Move the contact to</FieldLabel>
+              <FieldLabel>{t("desk.moveContactTo")}</FieldLabel>
               <Select
                 items={stageItems}
                 onValueChange={(v) => onChange({ stage: v as string, stageTouched: true })}
@@ -729,13 +781,15 @@ function WrapUpForm({
             </Field>
           ) : (
             <p className="text-muted-foreground text-sm">
-              {value.stage === KEEP_STAGE ? "The contact stays at " : "The contact moves to "}
-              <span className="font-medium text-foreground">
-                {stageLabel(value.stage === KEEP_STAGE ? op.lead?.stage : value.stage)}
-              </span>
-              .{" "}
+              {tx(value.stage === KEEP_STAGE ? "desk.staysAt" : "desk.movesTo", {
+                stage: (
+                  <span className="font-medium text-foreground">
+                    {stageLabel(value.stage === KEEP_STAGE ? op.lead?.stage : value.stage)}
+                  </span>
+                ),
+              })}{" "}
               <button className="underline underline-offset-2 hover:text-foreground" onClick={() => setChangingStage(true)} type="button">
-                Change
+                {t("desk.change")}
               </button>
             </p>
           ))}
@@ -744,19 +798,21 @@ function WrapUpForm({
           <CalendarClockIcon aria-hidden="true" className="size-4" />
           {value.callback && value.callbackAt ? (
             <span>
-              Appointment: <span className="font-medium text-foreground">{fmtDateTime(value.callbackAt)}</span>
+              {tx("desk.appointmentAt", {
+                time: <span className="font-medium text-foreground">{fmtDateTime(value.callbackAt)}</span>,
+              })}
             </span>
           ) : (
-            "No appointment booked."
+            t("desk.noAppointment")
           )}
         </p>
 
         <div className="flex flex-wrap justify-end gap-2">
           <Button disabled={!value.outcome || saving} onClick={() => onSubmit(true)} variant="outline">
-            Save and pause
+            {t("desk.savePause")}
           </Button>
           <Button disabled={!value.outcome} loading={saving} onClick={() => onSubmit(false)} size="lg">
-            Save and next contact
+            {t("desk.saveNext")}
           </Button>
         </div>
       </CardPanel>
@@ -787,7 +843,14 @@ function ServingDesk({
   const sp = useSoftphone();
   const [op, setOp] = React.useState(initial);
   const campaign = campaignOf(config, op.campaign_id);
-  const { data: context } = useApi<OpContext>(`/api/operations/${op.id}/context`);
+  const { data: context } = useApi<OpContext>(`/api/operations/${op.id}/context`, [op.opportunity_id]);
+  // An incoming call ends on the phone (lib/inbound.tsx tells the server): the desk's next check-in brings it here.
+  // Only that step is taken from it, so a check-in older than the agent's own actions can't undo them.
+  React.useEffect(() => {
+    if (initial.call_ended_at && !op.call_ended_at) {
+      setOp((o) => ({ ...o, call_ended_at: initial.call_ended_at, status: initial.status }));
+    }
+  }, [initial.call_ended_at, initial.status, op.call_ended_at]);
   // The softphone's call-ended handler outlives renders: it reads these through refs.
   const contextRef = React.useRef(context);
   const powerDialRef = React.useRef(powerDial);
@@ -825,7 +888,7 @@ function ServingDesk({
   // Save answers a moment after the agent stops typing.
   React.useEffect(() => {
     if (!dirty) return;
-    const t = window.setTimeout(async () => {
+    const timer = window.setTimeout(async () => {
       setSaveState("saving");
       try {
         await api(`/api/operations/${op.id}/answers`, { body: { answers }, method: "PUT" });
@@ -835,7 +898,7 @@ function ServingDesk({
         setSaveState("error");
       }
     }, 800);
-    return () => window.clearTimeout(t);
+    return () => window.clearTimeout(timer);
   }, [answers, dirty, op.id]);
 
   const onCall = op.status === "in_call" && !op.call_ended_at;
@@ -856,7 +919,7 @@ function ServingDesk({
       try {
         setOp(await api<OpCall>(`/api/operations/${op.id}/${action}`, { body, method: "POST" }));
       } catch (err) {
-        toastManager.add({ description: (err as Error).message, title: "Couldn't update the call", type: "error" });
+        toastManager.add({ description: (err as Error).message, title: t("desk.updateFailed"), type: "error" });
       } finally {
         setBusy(false);
       }
@@ -879,7 +942,7 @@ function ServingDesk({
       },
     });
     if (placed) act("call", { phone });
-    else toastManager.add({ description: "Dial it on your phone, then press Start call.", title: "The browser phone can't call right now", type: "warning" });
+    else toastManager.add({ description: t("desk.dialOnPhone"), title: t("desk.browserPhoneCant"), type: "warning" });
   };
 
   const giveBack = async () => {
@@ -887,17 +950,19 @@ function ServingDesk({
     try {
       await api(`/api/operations/${op.id}/give-back`, { method: "POST" });
       localStorage.removeItem(wrapKey(op.id));
-      toastManager.add({ title: "Contact given back to the queue", type: "success" });
+      toastManager.add({ title: t("board.givenBack"), type: "success" });
       onFinished(false);
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't give the contact back", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("desk.giveBackFailed"), type: "error" });
       setBusy(false);
     }
   };
 
   const endCall = () => {
-    if (sp.active) sp.hangup(); // its onEnded closes the call here
-    else act("end");
+    const incoming = op.source === "inbound";
+    // An outgoing call's onEnded closes the call here; an incoming one is closed here straight away.
+    if (sp.active) sp.hangup();
+    if (!sp.active || incoming) act("end");
   };
 
   const submit = async (pauseAfter: boolean) => {
@@ -918,21 +983,21 @@ function ServingDesk({
       localStorage.removeItem(wrapKey(op.id));
       if (done.attempts_exhausted) {
         toastManager.add({
-          description: "That was the campaign's last try: no callback was booked.",
-          title: "Contact never answered",
+          description: t("desk.lastTryToast"),
+          title: t("desk.neverAnswered"),
           type: "info",
         });
       }
       if (done.test) {
-        toastManager.add({ title: "Test call saved (nothing was sent to the CRM)", type: "success" });
+        toastManager.add({ title: t("desk.testSaved"), type: "success" });
       } else if (done.crm_error) {
-        toastManager.add({ description: done.crm_error, title: "Call saved, but the CRM wasn't fully updated", type: "warning" });
+        toastManager.add({ description: done.crm_error, title: t("desk.savedCrmPartial"), type: "warning" });
       } else {
-        toastManager.add({ title: "Call saved and written to the CRM", type: "success" });
+        toastManager.add({ title: t("desk.savedCrm"), type: "success" });
       }
       onFinished(pauseAfter);
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't save the call", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("desk.saveFailed"), type: "error" });
       setBusy(false);
     }
   };
@@ -955,20 +1020,20 @@ function ServingDesk({
       {op.test && (
         <Alert variant="info">
           <FlaskConicalIcon aria-hidden="true" />
-          <AlertDescription>Test call: nothing is written to the CRM and it doesn't count in your figures.</AlertDescription>
+          <AlertDescription>{t("desk.testCallHint")}</AlertDescription>
         </Alert>
       )}
       {dialIn !== null && (
         <Alert variant="info">
           <ZapIcon aria-hidden="true" />
-          <AlertTitle>Calling {lead?.contact?.name ?? phones[0]} in {dialIn}s</AlertTitle>
+          <AlertTitle>{t("desk.callingIn", { name: lead?.contact?.name ?? phones[0], s: dialIn })}</AlertTitle>
           <AlertDescription className="flex flex-wrap gap-2">
             <Button onClick={() => dial(phones[0])} size="sm">
               <PhoneCallIcon aria-hidden="true" />
-              Call now
+              {t("desk.callNow")}
             </Button>
             <Button onClick={() => setDialCancelled(true)} size="sm" variant="outline">
-              Wait
+              {t("desk.wait")}
             </Button>
           </AlertDescription>
         </Alert>
@@ -977,14 +1042,14 @@ function ServingDesk({
         <Alert variant="info">
           <ZapIcon aria-hidden="true" />
           <AlertTitle>
-            No answer: saving as "{campaign.outcomes.find((o) => o.value === wrap.outcome)?.label}" and moving on in {closeIn}s
+            {t("desk.autoClose", { label: campaign.outcomes.find((o) => o.value === wrap.outcome)?.label, s: closeIn })}
           </AlertTitle>
           <AlertDescription className="flex flex-wrap gap-2">
             <Button onClick={() => submit(false)} size="sm">
-              Save now
+              {t("desk.saveNow")}
             </Button>
             <Button onClick={() => setAutoClose(false)} size="sm" variant="outline">
-              Keep it open
+              {t("desk.keepOpen")}
             </Button>
           </AlertDescription>
         </Alert>
@@ -998,21 +1063,38 @@ function ServingDesk({
               {op.source === "callback" && (
                 <Badge variant="warning">
                   <CalendarClockIcon aria-hidden="true" />
-                  Callback
+                  {t("board.callback")}
                 </Badge>
               )}
-              {op.source === "direct" && <Badge variant="info">Sales call</Badge>}
-              {config.campaigns.filter((c) => c.active).length > 1 && <Badge variant="outline">{campaign.name}</Badge>}
+              {op.source === "direct" && <Badge variant="info">{t("board.salesCall")}</Badge>}
+              {op.source === "inbound" && (
+                <Badge variant="success">
+                  <PhoneIncomingIcon aria-hidden="true" />
+                  {t("inbound.badge")}
+                </Badge>
+              )}
+              {op.source === "missed" && (
+                <Badge variant="warning">
+                  <PhoneMissedIcon aria-hidden="true" />
+                  {t("inbound.missedBadge")}
+                </Badge>
+              )}
+              {!op.in_crm && !op.test && <Badge variant="outline">{t("inbound.notInCrmBadge")}</Badge>}
+              {campaign.kind !== "inbound" && config.campaigns.filter((c) => c.active && c.kind !== "inbound").length > 1 && (
+                <Badge variant="outline">{campaign.name}</Badge>
+              )}
               {context && context.attempts > 0 && (
                 <Badge variant={context.last_try ? "error" : "secondary"}>
                   {context.last_try
-                    ? `Last try (${context.attempts} unanswered)`
-                    : `Try ${context.attempts + 1}${context.max_attempts ? ` of ${context.max_attempts}` : ""}`}
+                    ? t("desk.lastTryBadge", { count: context.attempts })
+                    : context.max_attempts
+                      ? t("desk.tryOf", { max: context.max_attempts, n: context.attempts + 1 })
+                      : t("desk.tryN", { n: context.attempts + 1 })}
                 </Badge>
               )}
               {lead?.stage && <Badge variant={STAGE_VARIANT[lead.stage] ?? "secondary"}>{stage?.label ?? humanize(lead.stage)}</Badge>}
             </div>
-            <Bidi as="div" className="font-heading font-semibold text-xl" text={lead?.contact?.name ?? "No point of contact"} />
+            <Bidi as="div" className="font-heading font-semibold text-xl" text={lead?.contact?.name ?? t("leads.noContact")} />
             <Bidi className="text-muted-foreground text-sm" text={lead?.name} />
           </div>
 
@@ -1024,7 +1106,7 @@ function ServingDesk({
                 </span>
                 <CopyNumber number={phone} />
                 {op.status === "assigned" && browserPhone && phones.length > 1 && (
-                  <Button aria-label={`Call ${phone}`} disabled={busy} onClick={() => dial(phone)} size="icon-xs" variant="ghost">
+                  <Button aria-label={t("desk.callNumber", { phone })} disabled={busy} onClick={() => dial(phone)} size="icon-xs" variant="ghost">
                     <PhoneIcon aria-hidden="true" />
                   </Button>
                 )}
@@ -1039,13 +1121,19 @@ function ServingDesk({
             />
             <span className="flex flex-col text-sm">
               <span className="font-medium">
-                {op.status === "assigned" ? "Not called yet" : ringing ? "Ringing…" : onCall ? "On the call" : "Call ended"}
+                {op.status === "assigned"
+                  ? t("leads.notCalledYet")
+                  : ringing
+                    ? t("desk.ringing")
+                    : onCall
+                      ? t("desk.onTheCall")
+                      : t("desk.callEnded")}
               </span>
               <span className="text-muted-foreground tabular-nums">
                 {op.status === "assigned"
                   ? browserPhone
-                    ? "Press Call to dial"
-                    : "Dial on your phone, then Start call"
+                    ? t("desk.pressCall")
+                    : t("desk.dialThenStart")
                   : fmtDuration(secondsSince(op.call_started_at, now, op.call_ended_at))}
               </span>
             </span>
@@ -1054,8 +1142,8 @@ function ServingDesk({
           <div className="ms-auto flex flex-wrap items-center gap-2">
             {op.status === "assigned" && (
               <Button disabled={busy} onClick={giveBack} size="lg" variant="ghost">
-                <Undo2Icon aria-hidden="true" />
-                Give back
+                <Undo2Icon aria-hidden="true" className="rtl:-scale-x-100" />
+                {t("desk.giveBack")}
               </Button>
             )}
             <AppointmentButton onChange={patchWrap} op={op} value={wrap} />
@@ -1063,18 +1151,18 @@ function ServingDesk({
               (browserPhone ? (
                 <Button disabled={busy || !phones.length} onClick={() => dial(phones[0])} size="lg">
                   <PhoneCallIcon aria-hidden="true" />
-                  Call
+                  {t("phone.call")}
                 </Button>
               ) : (
                 <Button loading={busy} onClick={() => act("call")} size="lg">
                   <PhoneCallIcon aria-hidden="true" />
-                  Start call
+                  {t("desk.startCall")}
                 </Button>
               ))}
             {onCall && (
               <Button loading={busy} onClick={endCall} size="lg" variant="destructive">
                 <PhoneOffIcon aria-hidden="true" />
-                End call
+                {t("desk.endCall")}
               </Button>
             )}
           </div>
@@ -1113,18 +1201,19 @@ function ServingDesk({
           )}
         </div>
         <div className="flex flex-col gap-4 lg:sticky lg:top-48">
+          <CallerLink context={context} onLinked={setOp} op={op} />
           <QuickActions op={op} />
           <Card>
             <CardPanel className="flex flex-col gap-2 p-4">
               <Label className="font-medium" htmlFor="op-note">
-                Notes
+                {t("desk.notes")}
               </Label>
               <Textarea
                 className="min-h-28"
                 dir={textDir(wrap.note)}
                 id="op-note"
                 onChange={(e) => patchWrap({ note: e.target.value })}
-                placeholder="What was said, what was promised…"
+                placeholder={t("desk.notesPlaceholder")}
                 value={wrap.note}
               />
             </CardPanel>
@@ -1136,6 +1225,231 @@ function ServingDesk({
   );
 }
 
+
+// --- Calls that came in -------------------------------------------------------------------------------
+
+/** For a call that came in (or calls back a missed one): link it to the caller in the CRM, add them if they aren't in
+ * it, or switch to another of their opportunities. */
+function CallerLink({ op, context, onLinked }: { op: OpCall; context: OpContext | undefined; onLinked: (op: OpCall) => void }) {
+  const [busy, setBusy] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [name, setName] = React.useState(op.lead?.contact?.name ?? "");
+  const [city, setCity] = React.useState("");
+  if ((op.source !== "inbound" && op.source !== "missed") || !context || context.crm_people === null) return null;
+  const people = context.crm_people;
+  const link = async (key: string, body: Record<string, unknown>) => {
+    setBusy(key);
+    setError(null);
+    try {
+      const linked = await api<OpCall>(`/api/operations/${op.id}/link`, { body, method: "POST" });
+      toastManager.add({ title: t("inbound.linked"), type: "success" });
+      onLinked(linked);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (op.in_crm) {
+    const person = people.find((p) => p.id === op.person_id);
+    const others = person?.opportunities.filter((o) => o.id !== op.opportunity_id) ?? [];
+    if (!others.length) return null;
+    return (
+      <Card>
+        <CardPanel className="flex flex-col gap-2 p-4 text-sm">
+          <span className="font-medium">{t("inbound.otherOpportunities")}</span>
+          {error && <p className="text-destructive-foreground text-xs">{error}</p>}
+          {others.map((o) => (
+            <div className="flex items-center justify-between gap-2" key={o.id}>
+              <span className="flex min-w-0 items-center gap-2">
+                {o.stage && <Badge variant={STAGE_VARIANT[o.stage] ?? "secondary"}>{humanize(o.stage)}</Badge>}
+                <Bidi as="span" className="truncate text-muted-foreground" text={o.name} />
+              </span>
+              <Button disabled={!!busy} loading={busy === o.id} onClick={() => link(o.id, { opportunity_id: o.id })} size="xs" variant="outline">
+                {t("inbound.switch")}
+              </Button>
+            </div>
+          ))}
+        </CardPanel>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="border-info/50">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <UserPlusIcon aria-hidden="true" className="size-4" />
+          {people.length ? t("inbound.noOpportunity") : t("inbound.notInCrmTitle")}
+        </CardTitle>
+        <CardDescription>{people.length ? t("inbound.noOpportunityHint") : t("inbound.notInCrmHint")}</CardDescription>
+      </CardHeader>
+      <CardPanel className="flex flex-col gap-3">
+        {error && (
+          <Alert variant="error">
+            <CircleAlertIcon aria-hidden="true" />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        {context.crm_people_error && <p className="text-destructive-foreground text-xs">{context.crm_people_error}</p>}
+        {people.map((person) => (
+          <div className="flex flex-col gap-2 rounded-lg border p-3 text-sm" key={person.id}>
+            <span className="flex items-center justify-between gap-2">
+              <Bidi as="span" className="font-semibold" text={person.name} />
+              {!person.opportunities.length && (
+                <Button
+                  disabled={!!busy}
+                  loading={busy === person.id}
+                  onClick={() => link(person.id, { name: person.name, person_id: person.id })}
+                  size="xs"
+                >
+                  {t("inbound.addAsLead")}
+                </Button>
+              )}
+            </span>
+            {person.opportunities.map((o) => (
+              <div className="flex items-center justify-between gap-2" key={o.id}>
+                <span className="flex min-w-0 items-center gap-2">
+                  {o.stage && <Badge variant={STAGE_VARIANT[o.stage] ?? "secondary"}>{humanize(o.stage)}</Badge>}
+                  <Bidi as="span" className="truncate text-muted-foreground" text={o.name} />
+                </span>
+                <Button disabled={!!busy} loading={busy === o.id} onClick={() => link(o.id, { opportunity_id: o.id })} size="xs">
+                  {t("inbound.link")}
+                </Button>
+              </div>
+            ))}
+          </div>
+        ))}
+        {!people.length && (
+          <Form
+            className="flex flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              link("new", { city, name });
+            }}
+          >
+            <Field>
+              <FieldLabel>{t("campaigns.name")}</FieldLabel>
+              <Input dir={textDir(name)} maxLength={100} onChange={(e) => setName(e.target.value)} required type="text" value={name} />
+            </Field>
+            <Field>
+              <FieldLabel>{t("desk.cityArea")}</FieldLabel>
+              <Input dir={textDir(city)} maxLength={200} onChange={(e) => setCity(e.target.value)} type="text" value={city} />
+            </Field>
+            <Button className="self-end" disabled={!!busy || !name.trim()} loading={busy === "new"} size="sm" type="submit">
+              <UserPlusIcon aria-hidden="true" />
+              {t("inbound.addToCrm")}
+            </Button>
+          </Form>
+        )}
+      </CardPanel>
+    </Card>
+  );
+}
+
+/** The team's missed calls: who called, how long ago, who calls back. The desk serves them before anything else;
+ * here an agent can call one back now, or dismiss it (spam, dealt with elsewhere). */
+function MissedCalls({
+  missed,
+  current,
+  onTaken,
+  onChange,
+}: {
+  missed: OpMissed[];
+  current: OpCall | null;
+  onTaken: (op: OpCall) => void;
+  onChange: () => void;
+}) {
+  const { user: username } = useMe();
+  const [busy, setBusy] = React.useState<string | null>(null);
+  if (!missed.length) return null;
+  const run = async (m: OpMissed, action: "take" | "dismiss") => {
+    setBusy(`${m.key}:${action}`);
+    try {
+      const res = await api<{ current?: OpCall }>(`/api/operations/missed/${encodeURIComponent(m.key)}/${action}`, { method: "POST" });
+      if (res.current) onTaken(res.current);
+      else {
+        toastManager.add({ title: t("inbound.dismissed"), type: "success" });
+        onChange();
+      }
+    } catch (err) {
+      toastManager.add({ description: (err as Error).message, title: t("desk.updateFailed"), type: "error" });
+      onChange();
+    } finally {
+      setBusy(null);
+    }
+  };
+  const onCall = current?.status === "in_call";
+  return (
+    <Card className="border-warning/50">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <PhoneMissedIcon aria-hidden="true" className="size-4" />
+          {t("inbound.missedTitle")}
+          <Badge variant="warning">{missed.length}</Badge>
+        </CardTitle>
+        <CardDescription>{t("inbound.missedListHint")}</CardDescription>
+      </CardHeader>
+      <CardPanel>
+        <ul className="flex flex-col divide-y">
+          {missed.map((m) => {
+            const mine = m.serving?.agent === username;
+            return (
+              <li className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm" key={m.key}>
+                <div className="flex min-w-0 flex-col">
+                  <span className="flex items-center gap-2">
+                    <Bidi as="span" className="font-medium" text={m.contact_name ?? m.number} />
+                    {m.contact_name && (
+                      <span className="text-muted-foreground text-xs tabular-nums" dir="ltr">
+                        {m.number}
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    {t("inbound.rang", { count: m.tries, when: fmtRelative(m.first_rang_at) })}
+                    {" · "}
+                    {m.serving
+                      ? t("inbound.callingBack", { name: m.serving.agent_name })
+                      : m.prefer === username
+                        ? t("inbound.forYouFirst")
+                        : t("inbound.goesTo", { name: m.prefer_name })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Badge variant={m.waiting_minutes >= 10 ? "error" : "warning"}>{fmtDuration(m.waiting_minutes * 60)}</Badge>
+                  {!m.serving && (
+                    <Button
+                      disabled={!!busy || onCall}
+                      loading={busy === `${m.key}:take`}
+                      onClick={() => run(m, "take")}
+                      size="xs"
+                    >
+                      <PhoneCallIcon aria-hidden="true" />
+                      {t("inbound.callBack")}
+                    </Button>
+                  )}
+                  {!mine && (
+                    <Button
+                      aria-label={t("inbound.dismiss")}
+                      disabled={!!busy}
+                      loading={busy === `${m.key}:dismiss`}
+                      onClick={() => run(m, "dismiss")}
+                      size="icon-xs"
+                      variant="ghost"
+                    >
+                      <XIcon aria-hidden="true" />
+                    </Button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </CardPanel>
+    </Card>
+  );
+}
 
 // --- A sales call outside the queue -------------------------------------------------------------------
 
@@ -1178,7 +1492,7 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
   React.useEffect(() => {
     if (!searchable(phone)) return;
     let cancelled = false;
-    const t = window.setTimeout(async () => {
+    const timer = window.setTimeout(async () => {
       setSearching(true);
       try {
         const found = await api<CrmLookup>(`/api/operations/lookup?phone=${encodeURIComponent(phone)}`);
@@ -1194,7 +1508,7 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
     }, 400);
     return () => {
       cancelled = true;
-      window.clearTimeout(t);
+      window.clearTimeout(timer);
     };
   }, [phone]);
 
@@ -1205,7 +1519,7 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
       const res = await request();
       if (res.current) onStarted(res.current);
       else {
-        toastManager.add({ title: queued ?? "Added to the queue", type: "success" });
+        toastManager.add({ title: queued ?? t("desk.addedToQueue"), type: "success" });
         onDone();
       }
     } catch (err) {
@@ -1220,7 +1534,7 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
     run(
       `${key}:${call}`,
       () => api("/api/operations/leads", { body: { ...body, call }, method: "POST" }),
-      "Added to the CRM and to the queue",
+      t("desk.addedToCrmQueue"),
     );
 
   const stageLabel = (v: string | null) => config.stages.find((s) => s.value === v)?.label ?? humanize(v);
@@ -1229,8 +1543,8 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
   return (
     <>
       <DialogHeader>
-        <DialogTitle>New sales call</DialogTitle>
-        <DialogDescription>Type the number: we look for the contact in the CRM, or you add them.</DialogDescription>
+        <DialogTitle>{t("desk.newSalesCall")}</DialogTitle>
+        <DialogDescription>{t("desk.newSalesCallHint")}</DialogDescription>
       </DialogHeader>
       <DialogPanel className="flex flex-col gap-4">
         <InputGroup>
@@ -1238,12 +1552,12 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
             <PhoneIcon aria-hidden="true" />
           </InputGroupAddon>
           <InputGroupInput
-            aria-label="Phone number"
+            aria-label={t("desk.phoneNumber")}
             autoFocus
             dir="ltr"
             maxLength={40}
             onChange={(e) => setPhone(e.target.value)}
-            placeholder="e.g. 20 123 456"
+            placeholder={t("users.eg", { example: "20 123 456" })}
             type="tel"
             value={phone}
           />
@@ -1265,7 +1579,7 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
           <div className="flex flex-col gap-3">
             <span className="flex items-center gap-1.5 font-medium text-sm">
               <CheckIcon aria-hidden="true" className="size-4 text-success" />
-              Found in the CRM
+              {t("desk.foundInCrm")}
             </span>
             {matches.map((person) => (
               <div className="flex flex-col gap-3 rounded-lg border p-3" key={person.id}>
@@ -1287,7 +1601,7 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
                         </span>
                         <Button disabled={!!busy} loading={busy === o.id} onClick={() => callOpportunity(o.id)} size="sm">
                           <PhoneCallIcon aria-hidden="true" />
-                          Call
+                          {t("phone.call")}
                         </Button>
                       </li>
                     ))}
@@ -1301,7 +1615,7 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
                       size="sm"
                       variant="outline"
                     >
-                      Add to the queue
+                      {t("desk.addToQueue")}
                     </Button>
                     <Button
                       disabled={!!busy}
@@ -1310,7 +1624,7 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
                       size="sm"
                     >
                       <PhoneCallIcon aria-hidden="true" />
-                      Call
+                      {t("phone.call")}
                     </Button>
                   </div>
                 )}
@@ -1327,25 +1641,25 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
               addLead("new", { city, email, name, phone }, true);
             }}
           >
-            <p className="text-muted-foreground text-sm">Not in the CRM yet. Add them to call them now or later:</p>
+            <p className="text-muted-foreground text-sm">{t("desk.notInCrmYet")}</p>
             <Field>
-              <FieldLabel>Name</FieldLabel>
+              <FieldLabel>{t("campaigns.name")}</FieldLabel>
               <Input
                 dir={textDir(name)}
                 maxLength={100}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Full name or shop name"
+                placeholder={t("desk.namePlaceholder")}
                 required
                 type="text"
                 value={name}
               />
             </Field>
             <Field>
-              <FieldLabel>City / area</FieldLabel>
+              <FieldLabel>{t("desk.cityArea")}</FieldLabel>
               <Input dir={textDir(city)} maxLength={200} onChange={(e) => setCity(e.target.value)} type="text" value={city} />
             </Field>
             <Field>
-              <FieldLabel>Email (optional)</FieldLabel>
+              <FieldLabel>{t("desk.emailOptional")}</FieldLabel>
               <Input dir="ltr" maxLength={200} onChange={(e) => setEmail(e.target.value)} type="email" value={email} />
             </Field>
             <div className="flex flex-wrap justify-end gap-2">
@@ -1356,11 +1670,11 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
                 type="button"
                 variant="outline"
               >
-                Add to the queue
+                {t("desk.addToQueue")}
               </Button>
               <Button disabled={!!busy || !name.trim()} loading={busy === "new:true"} type="submit">
                 <PhoneCallIcon aria-hidden="true" />
-                Add and call
+                {t("desk.addAndCall")}
               </Button>
             </div>
           </Form>
@@ -1378,10 +1692,10 @@ function MyCallbacks({ callbacks, onChange }: { callbacks: OpCall[]; onChange: (
   const cancel = async (cb: OpCall) => {
     try {
       await api(`/api/operations/callbacks/${cb.id}`, { method: "DELETE" });
-      toastManager.add({ title: "Callback cancelled", type: "success" });
+      toastManager.add({ title: t("board.callbackCancelled"), type: "success" });
       onChange();
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't cancel", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("agents.cancelFailed"), type: "error" });
     }
   };
   return (
@@ -1389,9 +1703,9 @@ function MyCallbacks({ callbacks, onChange }: { callbacks: OpCall[]; onChange: (
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <CalendarClockIcon aria-hidden="true" className="size-4" />
-          My callbacks
+          {t("desk.myCallbacks")}
         </CardTitle>
-        <CardDescription>Served to you (or to the first free agent) when they're due.</CardDescription>
+        <CardDescription>{t("desk.myCallbacksHint")}</CardDescription>
       </CardHeader>
       <CardPanel>
         <ul className="flex flex-col divide-y">
@@ -1400,18 +1714,18 @@ function MyCallbacks({ callbacks, onChange }: { callbacks: OpCall[]; onChange: (
             return (
               <li className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm" key={cb.id}>
                 <div className="flex min-w-0 flex-col">
-                  <Bidi as="span" className="font-medium" text={cb.lead?.contact?.name ?? cb.lead?.name ?? "Contact"} />
+                  <Bidi as="span" className="font-medium" text={cb.lead?.contact?.name ?? cb.lead?.name ?? t("ops.contact")} />
                   <span className="text-muted-foreground text-xs">
-                    {cb.test && "Test · "}
-                    {cb.assign_to ? "Kept for you" : "Anyone"}
+                    {cb.test && `${t("desk.test")} · `}
+                    {cb.assign_to ? t("desk.keptForYou") : t("board.anyone")}
                     {cb.callback_note && ` · ${cb.callback_note}`}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant={due ? "warning" : "secondary"}>
-                    {due ? "Due" : fmtRelative(cb.due_at)} · {fmtDateTime(cb.due_at)}
+                    {due ? t("board.due") : fmtRelative(cb.due_at)} · {fmtDateTime(cb.due_at)}
                   </Badge>
-                  <Button aria-label="Cancel callback" onClick={() => cancel(cb)} size="icon-xs" variant="ghost">
+                  <Button aria-label={t("board.cancelCallback")} onClick={() => cancel(cb)} size="icon-xs" variant="ghost">
                     <XIcon aria-hidden="true" />
                   </Button>
                 </div>
@@ -1458,11 +1772,8 @@ function TestCallForm({ onStarted }: { onStarted: (op: OpCall) => void }) {
   return (
     <Form className="contents" onSubmit={submit}>
       <DialogHeader>
-        <DialogTitle>Test call</DialogTitle>
-        <DialogDescription>
-          Try the desk on a number of your own. You get a made-up contact and go through the call as usual, but nothing is
-          written to the CRM. You're paused, so no real contact comes after it.
-        </DialogDescription>
+        <DialogTitle>{t("desk.testCall")}</DialogTitle>
+        <DialogDescription>{t("desk.testCallDescription")}</DialogDescription>
       </DialogHeader>
       <DialogPanel className="flex flex-col gap-4">
         {error && (
@@ -1472,39 +1783,97 @@ function TestCallForm({ onStarted }: { onStarted: (op: OpCall) => void }) {
           </Alert>
         )}
         <Field>
-          <FieldLabel>Number to call</FieldLabel>
+          <FieldLabel>{t("phone.numberToCall")}</FieldLabel>
           <Input
             autoFocus
             dir="ltr"
             maxLength={40}
             onChange={(e) => setPhone(e.target.value)}
-            placeholder="e.g. +216 20 123 456"
+            placeholder={t("users.eg", { example: "+216 20 123 456" })}
             required
             type="tel"
             value={phone}
           />
-          <FieldDescription>Your own mobile, or a colleague's who knows it's a test.</FieldDescription>
+          <FieldDescription>{t("desk.testNumberHint")}</FieldDescription>
         </Field>
         <Field>
-          <FieldLabel>Contact name</FieldLabel>
+          <FieldLabel>{t("desk.contactName")}</FieldLabel>
           <Input
             dir={textDir(name)}
             maxLength={100}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Test contact"
+            placeholder={t("desk.testContact")}
             type="text"
             value={name}
           />
         </Field>
       </DialogPanel>
       <DialogFooter>
-        <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+        <DialogClose render={<Button variant="ghost" />}>{t("common.cancel")}</DialogClose>
         <Button loading={saving} type="submit">
           <FlaskConicalIcon aria-hidden="true" />
-          Start test call
+          {t("desk.startTestCall")}
         </Button>
       </DialogFooter>
     </Form>
+  );
+}
+
+/** Why the agent pauses: "pause" when they stop taking calls (cancelling keeps them on), "reason" when they are
+ * already paused and say why, or change the reason. */
+type PauseAsk = "pause" | "reason";
+
+function PauseDialog({
+  ask,
+  reasons,
+  current,
+  onPick,
+  onClose,
+}: {
+  ask: PauseAsk | null;
+  reasons: OpPauseReason[];
+  current: number | null;
+  onPick: (reasonId: number) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = React.useState<number | null>(null);
+  const pick = async (id: number) => {
+    setBusy(id);
+    try {
+      await onPick(id);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <Dialog onOpenChange={(open) => !open && onClose()} open={ask !== null}>
+      <DialogPopup className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{ask === "pause" ? t("desk.whyPausing") : t("desk.whatDoing")}</DialogTitle>
+          <DialogDescription>{t("desk.pauseHint")}</DialogDescription>
+        </DialogHeader>
+        <DialogPanel className="grid grid-cols-2 gap-2">
+          {reasons.map((r) => (
+            <Button
+              className="h-auto flex-col items-start gap-0 py-2 text-start sm:h-auto"
+              disabled={busy !== null}
+              key={r.id}
+              loading={busy === r.id}
+              onClick={() => pick(r.id)}
+              variant={r.id === current ? "default" : "outline"}
+            >
+              <span>{r.label}</span>
+              <span className="font-normal text-xs opacity-70">
+                {r.limit_minutes ? t("desk.upToMin", { count: r.limit_minutes }) : t("desk.noTimeLimit")}
+              </span>
+            </Button>
+          ))}
+        </DialogPanel>
+        <DialogFooter>
+          <DialogClose render={<Button variant="ghost" />}>{ask === "pause" ? t("desk.keepTaking") : t("desk.later")}</DialogClose>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
@@ -1512,9 +1881,11 @@ function DeskBar({
   desk,
   config,
   onReady,
+  onAskReason,
   onCampaign,
   onNewCall,
   onTest,
+  onTakeBreak,
   powerDial,
   onPowerDial,
   toggling,
@@ -1522,6 +1893,8 @@ function DeskBar({
   desk: OpDesk;
   config: OpConfig;
   onReady: (ready: boolean) => void;
+  onAskReason: () => void;
+  onTakeBreak: () => void;
   onCampaign: (id: number) => void;
   onNewCall: () => void;
   onTest: () => void;
@@ -1530,24 +1903,37 @@ function DeskBar({
   toggling: boolean;
 }) {
   const sp = useSoftphone();
+  const now = useNow(!desk.ready && !!desk.pause);
   const q = desk.queue;
-  const active = config.campaigns.filter((c) => c.active);
+  const active = config.campaigns.filter((c) => c.active && c.kind !== "inbound");
   const items = active.map((c) => ({ label: c.name, value: String(c.id) }));
+  const canSayWhy = !desk.ready && desk.pause_reasons.length > 0;
   return (
     <Card>
       <CardPanel className="flex flex-wrap items-center justify-between gap-4 p-4">
-        <Label className="flex items-center gap-3 font-medium">
-          <Switch checked={desk.ready} disabled={toggling} onCheckedChange={onReady} />
-          <span className="flex flex-col">
-            {desk.ready ? "Taking calls" : "Paused"}
-            <span className="font-normal text-muted-foreground text-xs">
-              {desk.ready ? "You get the next contact as soon as you're free." : "Turn on to get contacts from the queue."}
+        <div className="flex flex-wrap items-center gap-3">
+          <Label className="flex items-center gap-3 font-medium">
+            <Switch checked={desk.ready} disabled={toggling} onCheckedChange={onReady} />
+            <span className="flex flex-col">
+              {desk.ready ? t("desk.takingCalls") : t("ops.state.paused")}
+              {(desk.ready || !desk.pause) && (
+                <span className="font-normal text-muted-foreground text-xs">
+                  {desk.ready ? t("desk.takingCallsHint") : t("desk.pausedHint")}
+                </span>
+              )}
             </span>
-          </span>
-        </Label>
+          </Label>
+          {!desk.ready && desk.pause && <PauseBadge now={now} pause={desk.pause} />}
+          {canSayWhy && (
+            <Button onClick={onAskReason} size="xs" variant="ghost">
+              {desk.pause ? t("desk.change") : t("desk.sayWhy")}
+            </Button>
+          )}
+          <EarnedBreakChip desk={desk} onTake={onTakeBreak} />
+        </div>
         {active.length > 1 && (
           <Field className="w-auto min-w-48">
-            <FieldLabel className="text-muted-foreground text-xs">Campaign</FieldLabel>
+            <FieldLabel className="text-muted-foreground text-xs">{t("board.campaign")}</FieldLabel>
             <Select
               disabled={desk.current?.status === "in_call"}
               items={items}
@@ -1572,60 +1958,75 @@ function DeskBar({
           <span className="flex flex-col">
             <span className="flex items-center gap-1">
               <ZapIcon aria-hidden="true" className="size-3.5" />
-              Power dial
+              {t("desk.powerDial")}
             </span>
             <span className="font-normal text-muted-foreground text-xs">
-              {sp.status === "registered" ? "Dial each contact by itself" : "Needs the browser phone"}
+              {sp.status === "registered" ? t("desk.powerDialHint") : t("desk.needsBrowserPhone")}
             </span>
           </span>
         </Label>
         <dl className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
           <div className="flex flex-col">
-            <dt className="text-muted-foreground text-xs">Calls today</dt>
+            <dt className="text-muted-foreground text-xs">{t("desk.callsToday")}</dt>
             <dd className="font-semibold tabular-nums">{desk.today.done}</dd>
           </div>
           <div className="flex flex-col">
-            <dt className="text-muted-foreground text-xs">Reached</dt>
+            <dt className="text-muted-foreground text-xs">{t("ops.metric.reached")}</dt>
             <dd className="font-semibold tabular-nums">{desk.today.reached}</dd>
           </div>
           <div className="flex flex-col">
-            <dt className="text-muted-foreground text-xs">Wins</dt>
+            <dt className="text-muted-foreground text-xs">{t("ops.metric.wins")}</dt>
             <dd className="font-semibold tabular-nums">{desk.today.success}</dd>
           </div>
           <div className="flex flex-col">
-            <dt className="text-muted-foreground text-xs">Talk time</dt>
+            <dt className="text-muted-foreground text-xs">{t("desk.talkTime")}</dt>
             <dd className="font-semibold tabular-nums">{fmtDuration(desk.today.talk_seconds)}</dd>
           </div>
           <div className="flex flex-col">
-            <dt className="text-muted-foreground text-xs">In the queue</dt>
+            <dt className="text-muted-foreground text-xs">{t("inbound.missedTitle")}</dt>
+            <dd className={cn("font-semibold tabular-nums", desk.missed.length > 0 && "text-warning-foreground")}>{desk.missed.length}</dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-muted-foreground text-xs">{t("wall.inQueue")}</dt>
             <dd className="font-semibold tabular-nums">
               {q.waiting ?? "–"}
-              {q.due_callbacks > 0 && <span className="ms-1 font-normal text-warning-foreground">+{q.due_callbacks} due</span>}
+              {q.due_callbacks > 0 && <span className="ms-1 font-normal text-warning-foreground">{t("desk.plusDue", { count: q.due_callbacks })}</span>}
             </dd>
           </div>
         </dl>
         <div className="flex flex-wrap gap-2">
           <Button disabled={!!desk.current} onClick={onTest} size="sm" variant="ghost">
             <FlaskConicalIcon aria-hidden="true" />
-            Test call
+            {t("desk.testCall")}
           </Button>
           <Button disabled={desk.current?.status === "in_call"} onClick={onNewCall} size="sm">
             <PlusIcon aria-hidden="true" />
-            New call
+            {t("desk.newCall")}
           </Button>
         </div>
       </CardPanel>
+      {desk.goals.progress.length > 0 && (
+        <CardPanel className="border-t p-4">
+          <div className="mb-2 flex items-center gap-2 text-muted-foreground text-xs">
+            <TargetIcon aria-hidden="true" className="size-3.5" />
+            {t("desk.todayTargets", { end: desk.goals.workday.end, start: desk.goals.workday.start })}
+          </div>
+          <GoalBars progress={desk.goals.progress} />
+        </CardPanel>
+      )}
     </Card>
   );
 }
 
 function Desk() {
-  const { data: config, error: configError } = useApi<OpConfig>("/api/operations/config");
+  const { data: config, error: configError } = useOpConfig();
   const [desk, setDesk] = React.useState<OpDesk>();
   const [reason, setReason] = React.useState<string | null>(null);
   const [toggling, setToggling] = React.useState(false);
   const [testOpen, setTestOpen] = React.useState(false);
   const [newOpen, setNewOpen] = React.useState(false);
+  const [pauseAsk, setPauseAsk] = React.useState<PauseAsk | null>(null);
+  const [breakLater, setBreakLater] = React.useState(() => localStorage.getItem(BREAK_LATER_KEY));
   const [error, setError] = React.useState<string | null>(null);
   const [powerDial, setPowerDial] = React.useState(() => localStorage.getItem(POWER_DIAL_KEY) === "1");
   const changePowerDial = (on: boolean) => {
@@ -1644,13 +2045,23 @@ function Desk() {
 
   React.useEffect(() => {
     load();
-    const t = window.setInterval(load, POLL_MS);
-    return () => window.clearInterval(t);
+    const timer = window.setInterval(load, POLL_MS);
+    // A call came in or ended on the phone (lib/inbound.tsx): check in now.
+    window.addEventListener(DESK_REFRESH, load);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener(DESK_REFRESH, load);
+    };
   }, [load]);
+  const incoming = useIncoming();
+
+  // Free and ready with an earned break: offer it before serving the next contact.
+  const breakKey = desk?.earned_break ? earnedBreakKey(desk.earned_break) : null;
+  const offerBreak = !!desk?.earned_break?.earned && desk.ready && !desk.current && breakLater !== breakKey;
 
   // Free and ready: ask for the next contact (again after every check-in while the queue is empty).
   React.useEffect(() => {
-    if (!desk?.ready || desk.current) return;
+    if (!desk?.ready || desk.current || offerBreak) return;
     let cancelled = false;
     api<{ current: OpCall | null; reason: string | null }>("/api/operations/next", { method: "POST" })
       .then((r) => {
@@ -1662,9 +2073,14 @@ function Desk() {
     return () => {
       cancelled = true;
     };
-  }, [desk]);
+  }, [desk, offerBreak]);
 
   const setReady = async (ready: boolean) => {
+    // Pausing asks why first (when admins set up reasons).
+    if (!ready && desk?.pause_reasons.length) {
+      setPauseAsk("pause");
+      return;
+    }
     setToggling(true);
     try {
       await api("/api/operations/ready", { body: { ready }, method: "POST" });
@@ -1674,13 +2090,45 @@ function Desk() {
     }
   };
 
+  const pauseFor = async (reasonId: number) => {
+    try {
+      await api("/api/operations/ready", { body: { ready: false, reason_id: reasonId }, method: "POST" });
+      setPauseAsk(null);
+      await load();
+    } catch (err) {
+      toastManager.add({ description: (err as Error).message, title: t("desk.pauseFailed"), type: "error" });
+      await load();
+    }
+  };
+
+  const takeBreak = async () => {
+    try {
+      await api("/api/operations/earned-break", { method: "POST" });
+      setPauseAsk(null);
+    } catch (err) {
+      toastManager.add({ description: (err as Error).message, title: t("desk.breakFailed"), type: "error" });
+    }
+    await load();
+  };
+
+  const breakForLater = () => {
+    if (!breakKey) return;
+    localStorage.setItem(BREAK_LATER_KEY, breakKey);
+    setBreakLater(breakKey);
+  };
+
+  const idleSeen = (prompt: OpIdlePrompt) => {
+    setDesk((d) => (d?.idle_prompt?.id === prompt.id ? { ...d, idle_prompt: { ...d.idle_prompt, acknowledged: true } } : d));
+    api(`/api/operations/idle-prompt/${prompt.id}/seen`, { method: "POST" }).catch(() => {});
+  };
+
   const setCampaign = async (campaignId: number) => {
     try {
       await api("/api/operations/campaign", { body: { campaign_id: campaignId }, method: "POST" });
       setReason(null);
       await load();
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't change the campaign", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("desk.campaignFailed"), type: "error" });
     }
   };
 
@@ -1698,15 +2146,17 @@ function Desk() {
 
   const finished = async (pauseAfter: boolean) => {
     if (pauseAfter) await api("/api/operations/ready", { body: { ready: false }, method: "POST" });
-    setDesk((d) => (d ? { ...d, current: null } : d));
+    // Reload rather than clearing the contact first: the fresh desk says whether this call earned a break, before
+    // the next contact is asked for.
     await load();
+    if (pauseAfter && desk?.pause_reasons.length) setPauseAsk("reason");
   };
 
   if (configError || error) {
     return (
       <Alert variant="error">
         <CircleAlertIcon aria-hidden="true" />
-        <AlertTitle>Couldn't load the call desk</AlertTitle>
+        <AlertTitle>{t("desk.loadFailed")}</AlertTitle>
         <AlertDescription>{configError?.message ?? error}</AlertDescription>
       </Alert>
     );
@@ -1725,16 +2175,44 @@ function Desk() {
       <DeskBar
         config={config}
         desk={desk}
+        onAskReason={() => setPauseAsk("reason")}
         onCampaign={setCampaign}
         onNewCall={() => setNewOpen(true)}
         onPowerDial={changePowerDial}
         onReady={setReady}
+        onTakeBreak={takeBreak}
         onTest={() => setTestOpen(true)}
         powerDial={powerDial}
         toggling={toggling}
       />
+      <PauseDialog
+        ask={pauseAsk}
+        current={desk.pause?.reason_id ?? null}
+        onClose={() => setPauseAsk(null)}
+        onPick={pauseFor}
+        reasons={desk.pause_reasons}
+      />
+      <IdlePromptDialog
+        current={desk.current}
+        onNewCall={() => setNewOpen(true)}
+        onPause={() => setReady(false)}
+        onSeen={idleSeen}
+        prompt={desk.ready ? desk.idle_prompt : null}
+      />
+      <EarnedBreakDialog earned={offerBreak ? desk.earned_break : null} onLater={breakForLater} onTake={takeBreak} />
+      <PauseOverAlert desk={desk} />
       <TestCallDialog onOpenChange={setTestOpen} onStarted={testStarted} open={testOpen} />
       <NewCallDialog config={config} onOpenChange={setNewOpen} onStarted={directStarted} open={newOpen} />
+      {incoming?.op && desk.current && desk.current.id !== incoming.op.id && (
+        <Alert variant="info">
+          <PhoneIncomingIcon aria-hidden="true" />
+          <AlertTitle>
+            {t("inbound.waitingBehind", {
+              name: incoming.op.lead?.contact?.name || incoming.op.phone || t("inbound.theCaller"),
+            })}
+          </AlertTitle>
+        </Alert>
+      )}
       {desk.current ? (
         <ServingDesk config={config} key={desk.current.id} onFinished={finished} op={desk.current} powerDial={powerDial} />
       ) : (
@@ -1742,105 +2220,276 @@ function Desk() {
           <EmptyHeader>
             <EmptyMedia variant="icon">{desk.ready && !reason ? <Spinner /> : <HeadsetIcon />}</EmptyMedia>
             <EmptyTitle>
-              {!desk.ready ? "You're paused" : reason ? "Can't get a contact" : desk.queue.waiting === 0 ? "The queue is empty" : "Getting your next contact…"}
+              {!desk.ready
+                ? desk.pause
+                  ? t("desk.pausedFor", { reason: desk.pause.label.toLocaleLowerCase() })
+                  : t("desk.youArePaused")
+                : reason
+                  ? t("desk.cantGetContact")
+                  : desk.queue.waiting === 0
+                    ? t("desk.queueEmpty")
+                    : t("desk.gettingNext")}
             </EmptyTitle>
             <EmptyDescription>
               {!desk.ready
-                ? "Start taking calls and you'll be given the oldest contact nobody is calling yet."
+                ? t("desk.startHint")
                 : reason
                   ? reason
                   : desk.queue.waiting === 0
-                    ? "Every contact in this campaign's queue has been handled. You'll get the next one, or a callback, as soon as it comes in."
-                    : "One moment."}
+                    ? t("desk.queueEmptyHint")
+                    : t("desk.oneMoment")}
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent className="flex-row flex-wrap justify-center">
             {!desk.ready && (
               <Button loading={toggling} onClick={() => setReady(true)}>
                 <HeadsetIcon aria-hidden="true" />
-                Start taking calls
+                {t("desk.startTaking")}
               </Button>
             )}
             <Button onClick={() => setNewOpen(true)} variant="outline">
               <PlusIcon aria-hidden="true" />
-              New sales call
+              {t("desk.newSalesCall")}
             </Button>
           </EmptyContent>
         </Empty>
       )}
+      <MissedCalls current={desk.current} missed={desk.missed} onChange={load} onTaken={directStarted} />
       <MyCallbacks callbacks={desk.callbacks} onChange={load} />
     </>
   );
 }
 
+/** Prompts an agent who has been taking calls without calling anyone for too long (logged for their supervisor). */
+function IdlePromptDialog({
+  prompt,
+  current,
+  onSeen,
+  onNewCall,
+  onPause,
+}: {
+  prompt: OpIdlePrompt | null;
+  current: OpCall | null;
+  onSeen: (prompt: OpIdlePrompt) => void;
+  onNewCall: () => void;
+  onPause: () => void;
+}) {
+  const open = !!prompt && !prompt.acknowledged;
+  const key = prompt ? `${prompt.id}:${prompt.prompts}` : null;
+  // In another tab or window: a desktop notification too, once per prompt (when notifications are allowed).
+  React.useEffect(() => {
+    if (!open || !key || document.visibilityState !== "hidden") return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const note = new Notification(t("desk.idleNotifyTitle"), { body: t("desk.idleNotifyBody"), tag: `idle:${key}` });
+    note.onclick = () => window.focus();
+  }, [open, key]);
+  if (!prompt) return null;
+  const minutes = Math.max(1, Math.floor(prompt.idle_seconds / 60));
+  const served = current?.status === "assigned" ? current : null;
+  const name = served?.lead?.contact?.name || served?.lead?.name;
+  const then = (action: () => void) => () => {
+    onSeen(prompt);
+    action();
+  };
+  return (
+    <Dialog onOpenChange={(o) => !o && onSeen(prompt)} open={open}>
+      <DialogPopup className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t("desk.idleTitle", { count: minutes })}</DialogTitle>
+          <DialogDescription>
+            {served ? t("desk.idleWaiting", { name: name || t("desk.yourContact") }) : t("desk.idleStart")}{" "}
+            {t("desk.idleSupervisor")}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button onClick={then(onPause)} variant="ghost">
+            {t("agents.pause")}
+          </Button>
+          {served ? (
+            <Button onClick={then(() => {})}>
+              <PhoneIcon aria-hidden="true" />
+              {name ? t("desk.callName", { name }) : t("desk.callNow")}
+            </Button>
+          ) : (
+            <Button onClick={then(onNewCall)}>
+              <PlusIcon aria-hidden="true" />
+              {t("desk.newSalesCall")}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+function earnedBreakKey(b: OpEarnedBreak): string {
+  return `${new Date().toDateString()}:${b.taken_today}`;
+}
+
+/** On the desk bar: how many calls to the next earned break, or a button to take it once earned. */
+function EarnedBreakChip({ desk, onTake }: { desk: OpDesk; onTake: () => void }) {
+  const b = desk.earned_break;
+  if (!b || desk.pause?.label === "Earned break") return null;
+  if (b.earned) {
+    return (
+      <Button disabled={desk.current?.status === "in_call"} onClick={onTake} size="xs" variant="outline">
+        <CoffeeIcon aria-hidden="true" />
+        {t("desk.takeBreak", { count: b.minutes })}
+      </Button>
+    );
+  }
+  const left = b.calls - b.done;
+  return (
+    <Badge className="tabular-nums" variant="outline">
+      <CoffeeIcon aria-hidden="true" />
+      {t("desk.callsToBreak", { count: left, minutes: b.minutes })}
+    </Badge>
+  );
+}
+
+/** Offers the agent the break they earned by closing enough calls (the next contact waits for their answer). */
+function EarnedBreakDialog({
+  earned,
+  onTake,
+  onLater,
+}: {
+  earned: OpEarnedBreak | null;
+  onTake: () => Promise<void>;
+  onLater: () => void;
+}) {
+  const [taking, setTaking] = React.useState(false);
+  if (!earned) return null;
+  const take = async () => {
+    setTaking(true);
+    try {
+      await onTake();
+    } finally {
+      setTaking(false);
+    }
+  };
+  return (
+    <Dialog onOpenChange={(o) => !o && onLater()} open>
+      <DialogPopup className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            <CoffeeIcon aria-hidden="true" className="me-2 inline size-5 align-text-bottom" />
+            {t("desk.earnedTitle", { count: earned.minutes })}
+          </DialogTitle>
+          <DialogDescription>
+            {t(earned.taken_today ? "desk.earnedSinceLast" : "desk.earnedToday", { count: earned.done })}{" "}
+            {t("desk.earnedHint")}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button onClick={onLater} variant="ghost">
+            {t("desk.later")}
+          </Button>
+          <Button loading={taking} onClick={take}>
+            <CoffeeIcon aria-hidden="true" />
+            {t("desk.takeMyBreak")}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+/** Tells the agent their pause ran over its reason's time limit. */
+function PauseOverAlert({ desk }: { desk: OpDesk }) {
+  const now = useNow(!desk.ready && !!desk.pause);
+  if (desk.ready || !desk.pause || !pauseOver(desk.pause, now)) return null;
+  return (
+    <Alert variant="error">
+      <CircleAlertIcon aria-hidden="true" />
+      <AlertTitle>{t("desk.pauseOver", { count: desk.pause.limit_minutes, reason: desk.pause.label.toLocaleLowerCase() })}</AlertTitle>
+      <AlertDescription>{t("desk.pauseOverHint")}</AlertDescription>
+    </Alert>
+  );
+}
+
 /** Operations: agents work the CRM's New contacts one by one; admins also get the team board. */
-const TABS = {
+const TABS: Record<string, { admin: boolean; description: TKey; icon: typeof HeadsetIcon; label: TKey; title: TKey }> = {
   campaigns: {
     admin: true,
-    description: "What each campaign's queue is made of, what agents ask, how calls can end, and the calling rules.",
+    description: "desk.tab.campaignsDescription",
     icon: ListChecksIcon,
-    label: "Campaigns",
-    title: "Campaigns",
+    label: "desk.tab.campaigns",
+    title: "desk.tab.campaigns",
   },
   desk: {
     admin: false,
-    description: "Call your campaign's contacts one at a time, oldest first, and record what you learn.",
+    description: "desk.tab.deskDescription",
     icon: HeadsetIcon,
-    label: "My desk",
-    title: "Call desk",
+    label: "desk.tab.desk",
+    title: "nav.callDesk",
   },
   insights: {
     admin: true,
-    description: "How the outcomes agents pick line up with the AI's scores of the same recorded calls.",
+    description: "desk.tab.insightsDescription",
     icon: LightbulbIcon,
-    label: "Insights",
-    title: "Outcomes and AI scores",
+    label: "desk.tab.insights",
+    title: "desk.tab.insightsTitle",
   },
   kpis: {
     admin: false,
-    description: "Calls, contacts reached, wins, and how the time on the desk is spent.",
+    description: "desk.tab.kpisDescription",
     icon: BarChart3Icon,
-    label: "KPIs",
-    title: "Desk KPIs",
+    label: "desk.tab.kpis",
+    title: "desk.tab.kpisTitle",
+  },
+  targets: {
+    admin: true,
+    description: "desk.tab.targetsDescription",
+    icon: TargetIcon,
+    label: "desk.tab.targets",
+    title: "desk.tab.targetsTitle",
   },
   team: {
     admin: true,
-    description: "Who is on the desk, the queues, the callbacks and the latest results.",
+    description: "desk.tab.teamDescription",
     icon: HistoryIcon,
-    label: "Team board",
-    title: "Team board",
+    label: "alerts.teamBoard",
+    title: "alerts.teamBoard",
   },
-} as const;
-type Tab = keyof typeof TABS;
-const TAB_ORDER: Tab[] = ["desk", "team", "kpis", "insights", "campaigns"];
+};
+type Tab = "campaigns" | "desk" | "insights" | "kpis" | "targets" | "team";
+const TAB_ORDER: Tab[] = ["desk", "team", "kpis", "insights", "campaigns", "targets"];
 
 /** Operations: agents work their campaign's contacts one by one and see their KPIs; admins also get the team board,
  * everyone's KPIs, the outcome / AI score insights and the campaigns. */
 export function OperationsPage({ route }: { route: Route }): React.ReactElement {
   const { isAdmin } = useMe();
-  const tabs = TAB_ORDER.filter((t) => isAdmin || !TABS[t].admin);
+  const tabs = TAB_ORDER.filter((name) => isAdmin || !TABS[name].admin);
   const asked = route.query.get("tab") as Tab | null;
   const tab: Tab = asked && tabs.includes(asked) ? asked : "desk";
   return (
     <>
       <PageHeader
         actions={
+          <div className="flex flex-wrap items-center gap-2">
+          {isAdmin && (
+            <Button render={<a href={href("wallboard")} rel="noreferrer" target="_blank" />} size="sm" variant="outline">
+              <MonitorPlayIcon aria-hidden="true" />
+              {t("wall.title")}
+            </Button>
+          )}
           <Tabs onValueChange={(v) => navigate(href("operations", null, { tab: v === "desk" ? "" : String(v) }), { replace: true })} value={tab}>
             <TabsList>
-              {tabs.map((t) => {
-                const Icon = TABS[t].icon;
+              {tabs.map((name) => {
+                const Icon = TABS[name].icon;
                 return (
-                  <TabsTab key={t} value={t}>
+                  <TabsTab key={name} value={name}>
                     <Icon aria-hidden="true" />
-                    {t === "kpis" && !isAdmin ? "My KPIs" : TABS[t].label}
+                    {name === "kpis" && !isAdmin ? t("desk.tab.myKpis") : t(TABS[name].label)}
                   </TabsTab>
                 );
               })}
             </TabsList>
           </Tabs>
+          </div>
         }
-        description={TABS[tab].description}
-        title={TABS[tab].title}
+        description={t(TABS[tab].description)}
+        title={t(TABS[tab].title)}
       />
       {tab === "desk" ? (
         <Desk />
@@ -1850,6 +2499,8 @@ export function OperationsPage({ route }: { route: Route }): React.ReactElement 
         <OperationsKpis route={route} />
       ) : tab === "insights" ? (
         <OperationsInsights route={route} />
+      ) : tab === "targets" ? (
+        <OperationsTargets />
       ) : (
         <OperationsCampaigns />
       )}

@@ -1,0 +1,32 @@
+import type { leads as en } from "../en/leads";
+import type { Translation } from "../types";
+
+export const leads: Translation<typeof en> = {
+  "leads.copyNumber": "انسخ {number}",
+  "leads.notCalledYet": "لم يُتصل به بعد",
+  "leads.lastCall": "آخرها {date}",
+  "leads.allOwners": "كل المسؤولين",
+  "leads.description": "الفرص في مرحلة «جديد» في نظام إدارة العملاء، الأحدث أولًا، مع رقم جهة الاتصال الخاصة بها.",
+  "leads.loadFailed": "تعذّر تحميل العملاء المحتملين",
+  "leads.crmNotConnected": "نظام إدارة العملاء غير متصل",
+  "leads.crmNotConnectedHint": "أضف مفتاح Twenty API ‏(CRM_API_KEY) في الإعدادات لعرض العملاء المحتملين.",
+  "leads.search": "ابحث في العملاء المحتملين",
+  "leads.searchPlaceholder": "ابحث بالاسم أو الرقم أو المدينة",
+  "leads.owner": "المسؤول",
+  "leads.countOf_one": "{shown} من عميل محتمل جديد واحد",
+  "leads.countOf_other": "{shown} من {count} عميل محتمل جديد",
+  "leads.notCalledCount_one": "واحد لم يُتصل به بعد",
+  "leads.notCalledCount_other": "{count} لم يُتصل بهم بعد",
+  "leads.loading": "جارٍ تحميل العملاء المحتملين من نظام إدارة العملاء…",
+  "leads.lead": "العميل المحتمل",
+  "leads.created": "تاريخ الإنشاء",
+  "leads.ourCalls": "مكالماتنا",
+  "leads.openInCrm": "افتح في نظام إدارة العملاء",
+  "leads.noContact": "لا توجد جهة اتصال",
+  "leads.noNumber": "لا يوجد رقم",
+  "leads.noMatch": "لا يوجد عميل محتمل مطابق",
+  "leads.noNew": "لا يوجد عملاء محتملون جدد",
+  "leads.allMovedOn": "تجاوزت كل الفرص في نظام إدارة العملاء مرحلة «جديد».",
+  "leads.truncated_one": "عرض أحدث عميل محتمل جديد؛ لدى نظام إدارة العملاء المزيد.",
+  "leads.truncated_other": "عرض أحدث {count} عميل محتمل جديد؛ لدى نظام إدارة العملاء المزيد.",
+};

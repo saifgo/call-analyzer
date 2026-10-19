@@ -6,6 +6,7 @@ import { Bidi } from "@/lib/bidi";
 import { humanize } from "@/lib/format";
 import type { VoiceData, VoiceTone } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { t } from "@/lib/i18n";
 
 const SCORE_COLOR = { error: "bg-destructive", success: "bg-success", warning: "bg-warning" };
 
@@ -44,14 +45,16 @@ function Timeline({ data, label }: { data: VoiceData; label: string }) {
               render={
                 <span
                   className={cn("absolute inset-y-0 opacity-80", color, top && top.p < 0.5 && "opacity-40")}
-                  style={{ left: `${(w.start / data.duration) * 100}%`, width: `${((w.end - w.start) / data.duration) * 100}%` }}
+                  style={{ insetInlineStart: `${(w.start / data.duration) * 100}%`, width: `${((w.end - w.start) / data.duration) * 100}%` }}
                 />
               }
             />
             <TooltipPopup>
-              {mmss(w.start)}–{mmss(w.end)}
-              {top && ` · ${top.label} ${Math.round(top.p * 100)}%`} · {Math.round(w.db)} dB
-              {w.pitch_st !== undefined && ` · pitch ±${w.pitch_st} st`}
+              <span dir="ltr">
+                {mmss(w.start)}–{mmss(w.end)}
+              </span>
+              {top && ` · ${humanize(top.label)} ${Math.round(top.p * 100)}%`} · {Math.round(w.db)} dB
+              {w.pitch_st !== undefined && ` · ${t("voice.pitchSt", { st: w.pitch_st })}`}
             </TooltipPopup>
           </Tooltip>
         );
@@ -74,12 +77,12 @@ export function VoicePanel({ tone, data }: { tone: VoiceTone | null | undefined;
   if (!tone && !data) return null;
   return (
     <section className="flex flex-col gap-4">
-      <h3 className="font-heading font-semibold text-sm">Voice tone</h3>
+      <h3 className="font-heading font-semibold text-sm">{t("voice.title")}</h3>
       {tone && (
         <div className="flex flex-col gap-3 rounded-xl border p-4">
           <Meter max={10} value={tone.score}>
             <div className="flex items-center justify-between gap-2">
-              <MeterLabel className="font-normal">How the agent sounds</MeterLabel>
+              <MeterLabel className="font-normal">{t("voice.howAgentSounds")}</MeterLabel>
               <span className="font-medium text-sm tabular-nums">
                 {tone.score}
                 <span className="font-normal text-muted-foreground">/10</span>
@@ -90,9 +93,9 @@ export function VoicePanel({ tone, data }: { tone: VoiceTone | null | undefined;
             </MeterTrack>
           </Meter>
           <div className="flex flex-wrap gap-1.5">
-            <Badge variant={BAD_TONES.has(tone.agent_tone) ? "warning" : "secondary"}>Agent: {humanize(tone.agent_tone)}</Badge>
-            <Badge variant="outline">Customer: {humanize(tone.customer_tone)}</Badge>
-            {tone.confidence !== "high" && <Badge variant="outline">{humanize(tone.confidence)} confidence</Badge>}
+            <Badge variant={BAD_TONES.has(tone.agent_tone) ? "warning" : "secondary"}>{t("voice.agentTone", { tone: humanize(tone.agent_tone) })}</Badge>
+            <Badge variant="outline">{t("voice.customerTone", { tone: humanize(tone.customer_tone) })}</Badge>
+            {tone.confidence !== "high" && <Badge variant="outline">{t(tone.confidence === "low" ? "voice.confidenceLow" : "voice.confidenceMedium")}</Badge>}
           </div>
           <Bidi className="text-sm leading-relaxed" text={tone.evidence} />
           {tone.coaching_tip && <Bidi className="text-muted-foreground text-sm" text={tone.coaching_tip} />}
@@ -102,7 +105,7 @@ export function VoicePanel({ tone, data }: { tone: VoiceTone | null | undefined;
         <div className="flex flex-col gap-3">
           {!tone && (
             <p className="text-muted-foreground text-sm">
-              The recording was measured after this analysis. Re-analyze the call to get the voice score.
+              {t("voice.measuredAfter")}
             </p>
           )}
           {data.tracks.map((track) => {
@@ -111,10 +114,10 @@ export function VoicePanel({ tone, data }: { tone: VoiceTone | null | undefined;
               <div className="flex flex-col gap-2" key={track.label}>
                 <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
                   <span className="font-medium">
-                    {track.label === "mixed" ? "Both speakers (mono recording)" : track.label.replace("_", " ")}
+                    {track.label === "mixed" ? t("voice.bothSpeakers") : humanize(track.label)}
                   </span>
                   <span className="text-muted-foreground">
-                    {data.model ? `Emotion model: ${data.model}` : "Only loudness and pitch measured"}
+                    {data.model ? t("voice.emotionModel", { model: data.model }) : t("voice.onlyLoudness")}
                   </span>
                 </div>
                 <Timeline data={data} label={track.label} />
@@ -131,10 +134,15 @@ export function VoicePanel({ tone, data }: { tone: VoiceTone | null | undefined;
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <Stat label="Speaking" value={`${Math.round(s.speech_share * 100)}% of the call`} />
-                  <Stat label="Long pauses (4 s+)" value={`${s.long_pauses}${s.long_pauses ? ` · max ${s.longest_pause_s} s` : ""}`} />
-                  {s.pitch_variation_st !== undefined && <Stat label="Pitch variation" value={`${s.pitch_variation_st} st`} />}
-                  {s.loudness_std_db !== undefined && <Stat label="Loudness variation" value={`${s.loudness_std_db} dB`} />}
+                  <Stat label={t("voice.speaking")} value={t("voice.ofTheCall", { pct: Math.round(s.speech_share * 100) })} />
+                  <Stat
+                    label={t("voice.longPauses")}
+                    value={`${s.long_pauses}${s.long_pauses ? ` · ${t("voice.maxSeconds", { s: s.longest_pause_s })}` : ""}`}
+                  />
+                  {s.pitch_variation_st !== undefined && (
+                    <Stat label={t("voice.pitchVariation")} value={t("voice.semitones", { st: s.pitch_variation_st })} />
+                  )}
+                  {s.loudness_std_db !== undefined && <Stat label={t("voice.loudnessVariation")} value={`${s.loudness_std_db} dB`} />}
                 </div>
               </div>
             );

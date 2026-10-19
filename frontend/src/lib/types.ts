@@ -378,7 +378,11 @@ export type OpQuestion = {
   /** Only asked when another answer is one of these values. */
   show_if?: Record<string, string[]>;
   crm?: string;
+  /** Translations typed by an admin; missing texts show the built-in translation or the English. */
+  tr?: Partial<Record<"fr" | "ar", OpQuestionTr>>;
 };
+
+export type OpQuestionTr = { label?: string; section?: string; help?: string; unit?: string; options?: Record<string, string> };
 
 export type OpAnswers = Record<string, string | number | boolean | string[]>;
 
@@ -393,6 +397,7 @@ export type OpOutcome = {
   success?: boolean;
   /** Booking a callback is suggested. */
   callback?: boolean;
+  tr?: Partial<Record<"fr" | "ar", { label?: string }>>;
 };
 
 /** A call desk campaign (call_analyzer/campaigns.py): its queue, questions, outcomes and calling rules. */
@@ -415,6 +420,8 @@ export type OpCampaign = {
   call_days: number[] | null;
   active: boolean;
   position: number;
+  /** inbound: the one campaign of the calls customers make to us (no queue, never picked by agents). */
+  kind: "outbound" | "inbound";
   /** e.g. "Mon, Tue 09:00–18:00". */
   hours?: string;
 };
@@ -439,10 +446,13 @@ export type OpCall = {
   person_id: string | null;
   /** The opportunity and its contact as the CRM had them when served. */
   lead: CrmLead | null;
-  /** direct: a sales call the agent started themselves, outside the queue. */
-  source: "queue" | "callback" | "direct" | "test";
+  /** direct: a sales call the agent started themselves, outside the queue; inbound: a call they picked up; missed:
+   * calling back a call nobody picked up. */
+  source: "queue" | "callback" | "direct" | "test" | "inbound" | "missed";
   /** A test call (or a callback booked from one): a made-up contact, never written to the CRM. */
   test: boolean;
+  /** About an opportunity of the CRM: false for tests and for callers not in the CRM yet. */
+  in_crm: boolean;
   status: OpStatus;
   agent: string | null;
   agent_name?: string | null;
@@ -486,15 +496,170 @@ export type OpQueue = {
   truncated: boolean;
 };
 
+/** A daily target and how far along it is (see call_analyzer/floor.py). */
+export type OpGoalMetric = "calls" | "reached" | "wins" | "desk_minutes";
+export type OpProgress = { metric: OpGoalMetric; value: number; target: number; expected: number };
+
+export type OpPauseReason = { id: number; label: string; limit_minutes: number };
+
+/** The pause an agent is on. */
+export type OpPause = {
+  id: number;
+  reason_id: number | null;
+  label: string;
+  limit_minutes: number;
+  started_at: string;
+  seconds: number;
+  over: boolean;
+};
+
+export type OpWorkday = { start: string; end: string };
+
+export type OpTargetValues = Record<OpGoalMetric, number | null>;
+
+export type OpTargets = {
+  team: Record<OpGoalMetric, number>;
+  /** Per agent; null: the team's target. */
+  agents: Record<string, OpTargetValues>;
+  workday: OpWorkday;
+  pause_reasons: OpPauseReason[];
+  users: { username: string; name: string; role: string }[];
+};
+
+/** A stretch an agent taking calls stayed idle long enough to be prompted to call (see call_analyzer/idle.py). */
+export type OpIdlePrompt = {
+  id: number;
+  username: string;
+  /** Set in the KPIs' list. */
+  name?: string;
+  idle_since: string;
+  /** The first prompt. */
+  prompted_at: string;
+  last_prompt_at: string;
+  /** How many times they were prompted (again every DESK_IDLE_PROMPT_MINUTES). */
+  prompts: number;
+  /** The agent dismissed the latest prompt. */
+  acknowledged: boolean;
+  doing: string | null;
+  /** The end of the stretch, or the latest check-in while it lasts. */
+  ended_at: string;
+  idle_seconds: number;
+  outcome: "called" | "paused" | "left" | null;
+  closed: boolean;
+};
+
+/** Closing `calls` calls earns a break of `minutes`; `done` counts since the last one taken (or today). */
+export type OpEarnedBreak = { calls: number; minutes: number; done: number; earned: boolean; taken_today: number };
+
 export type OpDesk = {
   ready: boolean;
+  /** Set while the agent has been taking calls without calling anyone for too long. */
+  idle_prompt: OpIdlePrompt | null;
   current: OpCall | null;
   /** The campaign the agent works. */
   campaign_id: number;
-  today: { done: number; reached: number; success: number; talk_seconds: number };
+  today: {
+    done: number;
+    reached: number;
+    success: number;
+    talk_seconds: number;
+    desk_seconds: number;
+    pause_seconds: number;
+  };
+  /** Today's targets: `pace` is how much of the workday is behind us (0 to 1). */
+  goals: { pace: number; workday: OpWorkday; progress: OpProgress[] };
+  pause: OpPause | null;
+  pause_reasons: OpPauseReason[];
+  /** Where the agent stands toward their next earned break (null: earned breaks are off, see breaks.py). */
+  earned_break: OpEarnedBreak | null;
   /** Callbacks the agent booked or that are kept for them. */
   callbacks: OpCall[];
   queue: OpQueue;
+  /** The team's missed calls waiting to be called back. */
+  missed: OpMissed[];
+};
+
+/** A number whose calls nobody picked up, waiting to be called back (see call_analyzer/inbound.py). */
+export type OpMissed = {
+  key: string;
+  number: string;
+  contact_name: string | null;
+  first_rang_at: string;
+  last_rang_at: string;
+  tries: number;
+  waiting_minutes: number;
+  /** Whose phones rang. */
+  agents: string[];
+  /** One of the rings was turned away because the agent was on another call. */
+  busy: boolean;
+  /** Who it goes to first: the agent who knows the contact (`knows`), else whose phone rang last. */
+  prefer: string;
+  prefer_name: string;
+  knows: boolean;
+  /** Someone is calling back right now. */
+  serving: { op_id: number; agent: string; agent_name: string } | null;
+  /** Agents who gave it back lately: it isn't served to them again for a while. */
+  given_back_by: string[];
+};
+
+/** Who's calling, shown while the phone rings (see call_analyzer/inbound.caller). */
+export type InboundCaller = {
+  number: string;
+  people: {
+    id: string;
+    name: string;
+    city: string | null;
+    company: string | null;
+    url: string | null;
+    phones: string[];
+    opportunities: { id: string; name: string; stage: string | null; owner: string | null }[];
+  }[];
+  crm_error: string | null;
+  last_call: {
+    id: number;
+    outcome: string;
+    outcome_label: string;
+    reached: boolean;
+    agent_name: string;
+    finished_at: string;
+    note: string | null;
+    source: OpCall["source"];
+  } | null;
+  callback: { due_at: string; assign_to_name: string | null } | null;
+  /** The agent who last spoke with them on the desk. */
+  knows: { username: string; name: string } | null;
+  /** Their earlier calls nobody picked up, not dealt with yet. */
+  missed: number;
+};
+
+/** Incoming calls over a period (see call_analyzer/inbound.stats). */
+export type OpInboundStats = {
+  team: {
+    /** A ring group's rings count once. */
+    calls: number;
+    answered: number;
+    missed: number;
+    called_back: number;
+    /** Missed, then they called again and got through. */
+    got_through: number;
+    dismissed: number;
+    waiting: number;
+    answer_rate: number | null;
+    /** Missed calls called back or that got through, out of the missed ones. */
+    callback_rate: number | null;
+    avg_callback_minutes: number | null;
+    median_callback_minutes: number | null;
+    called_back_15min: number;
+  };
+  agents: {
+    username: string;
+    name: string;
+    rang: number;
+    answered: number;
+    missed: number;
+    called_back: number;
+    answer_rate: number | null;
+  }[];
 };
 
 export type OpContext = {
@@ -519,6 +684,11 @@ export type OpContext = {
   last_try: boolean;
   /** When to try again if unanswered (within calling hours); null: no retry. */
   retry_at: string | null;
+  /** A call that came in, or calls back a missed one: when it rang, and how many times. */
+  inbound: { rang_at: string; answered_at: string | null; tries: number } | null;
+  /** For those: the CRM's contacts with the number, to link the call to (null: not looked up). */
+  crm_people: CrmPerson[] | null;
+  crm_people_error: string | null;
 };
 
 export type OpAgentState = "on_call" | "wrap_up" | "serving" | "ready" | "paused" | "offline";
@@ -531,9 +701,14 @@ export type OpBoard = {
     ready: boolean;
     online: boolean;
     since: string | null;
+    /** When the agent entered their current state. */
+    state_since: string | null;
     last_seen: string | null;
     current: OpCall | null;
     done_today: number;
+    today: { done: number; reached: number; success: number; desk_seconds: number; pause_seconds: number };
+    pause: OpPause | null;
+    progress: OpProgress[];
     campaign: string | null;
   }[];
   /** All campaigns together. */
@@ -542,6 +717,12 @@ export type OpBoard = {
   callbacks: OpCall[];
   recent: OpCall[];
   outcomes_today: Record<string, number>;
+  pace: number;
+  workday: OpWorkday;
+  /** The targets of the agents who came to the desk today, added up. */
+  team_progress: OpProgress[];
+  missed: OpMissed[];
+  inbound_today: OpInboundStats["team"];
 };
 
 /** A WhatsApp template approved on the account (see call_analyzer/whatsapp.py). */
@@ -611,6 +792,14 @@ export type OpKpiRow = {
   talk_share: number | null;
   callbacks_booked: number;
   given_back: number;
+  pause_seconds: number;
+  /** Pauses that ran over their reason's time limit. */
+  pauses_over: number;
+  /** Seconds paused per reason. */
+  pause_reasons: Record<string, number>;
+  /** Times prompted to call after staying idle, and the idle time in them. */
+  idle_prompts: number;
+  idle_seconds: number;
   linked: number;
   scored: number;
   avg_score: number | null;
@@ -622,6 +811,9 @@ export type OpKpis = {
   team: OpKpiRow;
   agents: OpKpiRow[];
   days: { day: string; calls: number; reached: number; success: number }[];
+  /** Latest first. */
+  idle_prompts: OpIdlePrompt[];
+  inbound: OpInboundStats;
 };
 
 export type OpInsights = {

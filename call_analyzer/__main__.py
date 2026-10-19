@@ -22,24 +22,25 @@ def _filters(args) -> dict:
 
 
 def cmd_sync(args):
-    from .govoice import GoVoiceClient
+    from . import telephony
     conn = db.connect()
+    source = telephony.label()
     if args.new_only:
         # Newest first: stop at the first page that holds no new recordings instead of fetching them all.
         fetched = new = page_new = 0
-        for i, record in enumerate(GoVoiceClient().iter_recordings(perpage=100, stop_before=args.since), 1):
+        for i, record in enumerate(telephony.iter_recordings(stop_before=args.since), 1):
             added = db.upsert_recordings(conn, [record])
             fetched, new, page_new = fetched + 1, new + added, page_new + added
             if i % 100 == 0:
                 if not page_new:
                     break
                 page_new = 0
-        print(f"Fetched {fetched} recordings from GoVoice, {new} new.")
+        print(f"Fetched {fetched} recordings from {source}, {new} new.")
         _link_desk_calls(conn)
         return
-    records = list(GoVoiceClient().iter_recordings(perpage=100, stop_before=args.since))
+    records = list(telephony.iter_recordings(stop_before=args.since))
     new = db.upsert_recordings(conn, records)
-    print(f"Fetched {len(records)} recordings from GoVoice, {new} new.")
+    print(f"Fetched {len(records)} recordings from {source}, {new} new.")
     _link_desk_calls(conn)
 
 
@@ -51,16 +52,16 @@ def _link_desk_calls(conn):
 
 
 def cmd_download(args):
-    from .govoice import GoVoiceClient, SessionExpired
+    from .telephony import SessionExpired, adapter
     conn = db.connect()
-    gv = GoVoiceClient()
+    phone_system = adapter()
     calls = db.select_calls(conn, where="audio_path IS NULL", **_filters(args))
     print(f"Downloading {len(calls)} recordings...")
     for i, call in enumerate(calls, 1):
         dest = settings.audio_dir / call["filename"]
         try:
             if not dest.exists():
-                gv.download(call["filename"], dest)
+                phone_system.download(call["filename"], dest)
             conn.execute("UPDATE calls SET audio_path=?, error=NULL WHERE id=?", (str(dest), call["id"]))
             print(f"  [{i}/{len(calls)}] {call['filename']}")
         except SessionExpired:
@@ -234,17 +235,18 @@ def cmd_stats(args):
 
 
 def cmd_check(args):
-    """Verify GoVoice cookie, Claude CLI and Whisper setup."""
+    """Verify the phone system's login, Claude CLI and Whisper setup."""
     import shutil
     import subprocess
 
     ok = True
-    print("GoVoice:")
+    from .telephony import adapter
     try:
-        from .govoice import GoVoiceClient
-        gv = GoVoiceClient()
-        print(f"  OK - logged in, {gv.check()} recordings available")
-        print(f"  recordings folder: {gv.recordings_dir}")
+        phone_system = adapter()
+        print(f"{phone_system.label}:")
+        print(f"  OK - logged in, {phone_system.check()} recordings available")
+        for line in phone_system.diagnostics():
+            print(f"  {line}")
     except Exception as exc:
         ok = False
         print(f"  FAILED - {exc}")
@@ -453,7 +455,7 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # Arabic/French text on Windows consoles
     parser = argparse.ArgumentParser(prog="call_analyzer",
-                                     description="Analyze GoVoice sales call recordings with Claude")
+                                     description="Analyze sales call recordings with Claude")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add(name, fn, help_text):
@@ -472,7 +474,7 @@ def main():
         p.add_argument("--new-only", action="store_true",
                        help="sync: stop at the first page of recordings that are all known already")
 
-    add("sync", cmd_sync, "Fetch the recordings list from GoVoice into the local DB")
+    add("sync", cmd_sync, "Fetch the recordings list from the phone system (GoVoice...) into the local DB")
     add("download", cmd_download, "Download mp3 files")
     add("voice", cmd_voice, "Listen to the recordings: voice tone (audio emotion model)")
     add("transcribe", cmd_transcribe, "Transcribe downloaded recordings")
@@ -480,7 +482,7 @@ def main():
     add("report", cmd_report, "Write coaching reports (team + per agent) to reports/")
     add("run", cmd_run, "sync + download + voice + transcribe + analyze + report")
     add("stats", cmd_stats, "Show pipeline progress")
-    sub.add_parser("check", help="Check GoVoice cookie, Claude and Whisper setup").set_defaults(fn=cmd_check)
+    sub.add_parser("check", help="Check the phone system login, Claude and Whisper setup").set_defaults(fn=cmd_check)
     im = sub.add_parser("install-model", help="Download + convert a Tunisian Derja Whisper model (lists them without a name)")
     im.add_argument("name", nargs="?", help="Default: WHISPER_MODEL")
     im.set_defaults(fn=cmd_install_model)
@@ -512,11 +514,11 @@ def main():
     show.set_defaults(fn=cmd_show)
 
     args = parser.parse_args()
-    from .govoice import EXIT_AUTH, SessionExpired
+    from .telephony import EXIT_AUTH, SessionExpired
     try:
         args.fn(args)
-    except SessionExpired as exc:  # the UI recognises this exit code and asks to log in to GoVoice
-        print(f"GoVoice login needed: {exc}", file=sys.stderr)
+    except SessionExpired as exc:  # the UI recognises this exit code and asks to log in to the phone system
+        print(f"Phone system login needed: {exc}", file=sys.stderr)
         sys.exit(EXIT_AUTH)
     except RuntimeError as exc:  # config problems
         sys.exit(f"Error: {exc}")

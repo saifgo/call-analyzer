@@ -1,4 +1,4 @@
-import { ArchiveIcon, ArrowDownIcon, ArrowLeftIcon, ArrowUpIcon, CheckIcon, CircleAlertIcon, CopyIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ArchiveIcon, ArrowDownIcon, ArrowLeftIcon, ArrowUpIcon, CheckIcon, CircleAlertIcon, CopyIcon, LanguagesIcon, PencilIcon, PhoneIncomingIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import * as React from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -15,23 +15,28 @@ import { Textarea } from "@/components/ui/textarea";
 import { toastManager } from "@/components/ui/toast";
 import { Toggle } from "@/components/ui/toggle";
 import { api, useApi } from "@/lib/api";
-import { humanize } from "@/lib/format";
+import { dateTimeFormat, humanize } from "@/lib/format";
+import { builtInText, CAMPAIGN_LANGS, type CampaignLang, campaignText } from "@/lib/campaign-text";
+import { LOCALES, t, type TKey, tx } from "@/lib/i18n";
 import { STAGE_VARIANT } from "@/lib/operations";
-import type { OpCampaign, OpConfig, OpOutcome, OpQuestion, OpQuestionType, OpStage } from "@/lib/types";
+import type { OpCampaign, OpConfig, OpOutcome, OpQuestion, OpQuestionTr, OpQuestionType, OpStage } from "@/lib/types";
 
 type Draft = Omit<OpCampaign, "id" | "position" | "hours" | "questions"> & { id: number | null; questions: DraftQuestion[] };
-/** A question being edited: `saved` keys are kept (answers are stored under them), new ones follow the label. */
-type DraftQuestion = OpQuestion & { saved: boolean };
+/** A question being edited: `saved` keys are kept (answers are stored under them), new ones follow the label.
+ * Choices work the same way: the values in `savedOptions` are kept, new ones follow their label. */
+type DraftQuestion = OpQuestion & { saved: boolean; savedOptions?: string[] };
 
-const TYPES: { value: OpQuestionType; label: string }[] = [
-  { label: "One choice", value: "select" },
-  { label: "Several choices", value: "multi" },
-  { label: "Yes / no", value: "boolean" },
-  { label: "Number", value: "number" },
-  { label: "Short text", value: "text" },
-  { label: "Long text", value: "textarea" },
+const TYPE_LABELS: { value: OpQuestionType; label: TKey }[] = [
+  { label: "campaigns.type.select", value: "select" },
+  { label: "campaigns.type.multi", value: "multi" },
+  { label: "campaigns.type.boolean", value: "boolean" },
+  { label: "campaigns.type.number", value: "number" },
+  { label: "campaigns.type.text", value: "text" },
+  { label: "campaigns.type.textarea", value: "textarea" },
 ];
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const weekdayFmt = dateTimeFormat({ weekday: "short" });
+/** Monday to Sunday in the interface language (1 January 2024 was a Monday). */
+const days = () => Array.from({ length: 7 }, (_, i) => weekdayFmt().format(new Date(2024, 0, 1 + i)));
 const NONE = "__none";
 
 /** The key the server makes from a label (campaigns.slug). */
@@ -49,6 +54,91 @@ function move<T>(list: T[], i: number, by: number): T[] {
   return next;
 }
 
+/** A new choice's value, made from its label like the server does, and not already used by another choice. */
+function choiceValue(label: string, i: number, options: [string, string][]): string {
+  const taken = new Set(options.filter((_, j) => j !== i).map(([v]) => v));
+  const base = slug(label, `o${i + 1}`);
+  let value = base;
+  for (let n = 2; taken.has(value); n++) value = `${base.slice(0, 36)}_${n}`;
+  return value;
+}
+
+/** `tr` with `patch` applied to one language, empty texts removed (an empty field shows the default text). */
+function patchTr<T extends object>(
+  tr: Partial<Record<CampaignLang, T>> | undefined,
+  lang: CampaignLang,
+  patch: Partial<T>,
+): Partial<Record<CampaignLang, T>> | undefined {
+  const next: Record<string, unknown> = { ...tr?.[lang], ...patch };
+  for (const [k, v] of Object.entries(next)) {
+    if (v && typeof v === "object") {
+      const kept = Object.fromEntries(Object.entries(v).filter(([, text]) => String(text).trim()));
+      if (Object.keys(kept).length) next[k] = kept;
+      else delete next[k];
+    } else if (!String(v ?? "").trim()) delete next[k];
+  }
+  const all: Partial<Record<CampaignLang, T>> = { ...tr };
+  if (Object.keys(next).length) all[lang] = next as T;
+  else delete all[lang];
+  return Object.keys(all).length ? all : undefined;
+}
+
+const langInfo = (lang: CampaignLang) => LOCALES.find((l) => l.value === lang) ?? { dir: "ltr" as const, label: lang };
+
+/** The button opening a row's translations, with how many languages have one. */
+function TranslationsToggle({ open, onToggle, count, label }: { open: boolean; onToggle: () => void; count: number; label: string }) {
+  return (
+    <Button
+      aria-expanded={open}
+      aria-label={t("campaigns.translateLabel", { label })}
+      onClick={onToggle}
+      size="xs"
+      variant={open ? "secondary" : "ghost"}
+    >
+      <LanguagesIcon aria-hidden="true" />
+      {t("campaigns.translations")}
+      {count > 0 && <Badge variant="outline">{count}</Badge>}
+    </Button>
+  );
+}
+
+/** One input per text to translate, a column per language. The grey placeholder is what shows when it's left empty. */
+function TranslationFields({
+  rows,
+  value,
+  onChange,
+}: {
+  rows: { id: string; name: string; source: string }[];
+  value: (lang: CampaignLang, id: string) => string;
+  onChange: (lang: CampaignLang, id: string, text: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-muted/40 p-3">
+      <p className="text-muted-foreground text-xs">{t("campaigns.translationsHint")}</p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {CAMPAIGN_LANGS.map((lang) => {
+          const info = langInfo(lang);
+          return (
+            <div className="flex flex-col gap-1.5" dir={info.dir} key={lang} lang={lang}>
+              <span className="font-medium text-xs">{info.label}</span>
+              {rows.map((row) => (
+                <Input
+                  aria-label={`${row.name} · ${info.label}`}
+                  key={row.id}
+                  onChange={(e) => onChange(lang, row.id, e.target.value)}
+                  placeholder={builtInText(row.source, lang) ?? row.source}
+                  size="sm"
+                  value={value(lang, row.id)}
+                />
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function toDraft(c: OpCampaign, copy = false): Draft {
   return {
     active: copy ? true : c.active,
@@ -58,10 +148,11 @@ function toDraft(c: OpCampaign, copy = false): Draft {
     description: c.description,
     exhausted_stage: c.exhausted_stage,
     id: copy ? null : c.id,
+    kind: copy ? "outbound" : c.kind,
     max_attempts: c.max_attempts,
-    name: copy ? `${c.name} (copy)` : c.name,
+    name: copy ? t("campaigns.copyName", { name: c.name }) : c.name,
     outcomes: c.outcomes.map((o) => ({ ...o })),
-    questions: c.questions.map((q) => ({ ...q, saved: true })),
+    questions: c.questions.map((q) => ({ ...q, saved: true, savedOptions: q.options?.map(([v]) => v) })),
     retry_minutes: c.retry_minutes,
     stages: [...c.stages],
   };
@@ -103,13 +194,13 @@ function Chip({ pressed, onPressedChange, children }: { pressed: boolean; onPres
 function RowButtons({ onUp, onDown, onRemove, label }: { onUp: () => void; onDown: () => void; onRemove: () => void; label: string }) {
   return (
     <div className="flex shrink-0 items-center">
-      <Button aria-label={`Move ${label} up`} onClick={onUp} size="icon-sm" variant="ghost">
+      <Button aria-label={t("campaigns.moveUp", { label })} onClick={onUp} size="icon-sm" variant="ghost">
         <ArrowUpIcon aria-hidden="true" />
       </Button>
-      <Button aria-label={`Move ${label} down`} onClick={onDown} size="icon-sm" variant="ghost">
+      <Button aria-label={t("campaigns.moveDown", { label })} onClick={onDown} size="icon-sm" variant="ghost">
         <ArrowDownIcon aria-hidden="true" />
       </Button>
-      <Button aria-label={`Remove ${label}`} onClick={onRemove} size="icon-sm" variant="ghost">
+      <Button aria-label={t("whatsapp.removeLabel", { label })} onClick={onRemove} size="icon-sm" variant="ghost">
         <Trash2Icon aria-hidden="true" />
       </Button>
     </div>
@@ -120,46 +211,69 @@ function RowButtons({ onUp, onDown, onRemove, label }: { onUp: () => void; onDow
 
 function OutcomesEditor({ outcomes, stages, onChange }: { outcomes: OpOutcome[]; stages: OpStage[]; onChange: (o: OpOutcome[]) => void }) {
   const set = (i: number, patch: Partial<OpOutcome>) => onChange(outcomes.map((o, j) => (j === i ? { ...o, ...patch } : o)));
+  const [translating, setTranslating] = React.useState<number | null>(null);
+  const reorder = (next: OpOutcome[]) => {
+    setTranslating(null);
+    onChange(next);
+  };
   return (
     <Card>
       <CardHeader>
-        <CardTitle>How a call can end</CardTitle>
+        <CardTitle>{t("campaigns.outcomesTitle")}</CardTitle>
         <CardDescription>
-          The buttons agents close a call with. <b>Reached</b>: they spoke with the contact. <b>Win</b>: what the KPIs count as a
-          conversion. <b>Callback</b>: booking one is suggested (for unanswered calls, at the campaign's retry time).
+          {tx("campaigns.outcomesHint", {
+            callback: <b>{t("campaigns.callback")}</b>,
+            reached: <b>{t("ops.metric.reached")}</b>,
+            win: <b>{t("campaigns.win")}</b>,
+          })}
         </CardDescription>
       </CardHeader>
       <CardPanel className="flex flex-col gap-2">
         {outcomes.map((o, i) => (
           <div className="flex flex-wrap items-center gap-2 rounded-lg border p-2" key={o.value || `new-${i}`}>
             <Input
-              aria-label="Outcome name"
+              aria-label={t("campaigns.outcomeName")}
               className="min-w-48 flex-1"
               onChange={(e) => set(i, { label: e.target.value })}
-              placeholder="e.g. Account created"
+              placeholder={t("campaigns.outcomePlaceholder")}
               value={o.label}
             />
             <div className="w-44">
-              <StageSelect onChange={(stage) => set(i, { stage })} placeholder="Keep the stage" stages={stages} value={o.stage} />
+              <StageSelect onChange={(stage) => set(i, { stage })} placeholder={t("campaigns.keepStage")} stages={stages} value={o.stage} />
             </div>
             <Label className="flex items-center gap-1.5 font-normal text-sm">
               <Checkbox checked={!!o.reached} onCheckedChange={(on) => set(i, { reached: !!on, success: on ? o.success : false })} />
-              Reached
+              {t("ops.metric.reached")}
             </Label>
             <Label className="flex items-center gap-1.5 font-normal text-sm">
               <Checkbox checked={!!o.success} disabled={!o.reached} onCheckedChange={(on) => set(i, { success: !!on })} />
-              Win
+              {t("campaigns.win")}
             </Label>
             <Label className="flex items-center gap-1.5 font-normal text-sm">
               <Checkbox checked={!!o.callback} onCheckedChange={(on) => set(i, { callback: !!on })} />
-              Callback
+              {t("campaigns.callback")}
             </Label>
-            <RowButtons
-              label={o.label || "outcome"}
-              onDown={() => onChange(move(outcomes, i, 1))}
-              onRemove={() => onChange(outcomes.filter((_, j) => j !== i))}
-              onUp={() => onChange(move(outcomes, i, -1))}
+            <TranslationsToggle
+              count={Object.keys(o.tr ?? {}).length}
+              label={o.label || t("campaigns.outcomeFallback")}
+              onToggle={() => setTranslating(translating === i ? null : i)}
+              open={translating === i}
             />
+            <RowButtons
+              label={o.label || t("campaigns.outcomeFallback")}
+              onDown={() => reorder(move(outcomes, i, 1))}
+              onRemove={() => reorder(outcomes.filter((_, j) => j !== i))}
+              onUp={() => reorder(move(outcomes, i, -1))}
+            />
+            {translating === i && (
+              <div className="basis-full">
+                <TranslationFields
+                  onChange={(lang, _id, text) => set(i, { tr: patchTr(o.tr, lang, { label: text }) })}
+                  rows={[{ id: "label", name: t("campaigns.outcomeName"), source: o.label }]}
+                  value={(lang) => o.tr?.[lang]?.label ?? ""}
+                />
+              </div>
+            )}
           </div>
         ))}
         <Button
@@ -169,7 +283,7 @@ function OutcomesEditor({ outcomes, stages, onChange }: { outcomes: OpOutcome[];
           variant="outline"
         >
           <PlusIcon aria-hidden="true" />
-          Add an outcome
+          {t("campaigns.addOutcome")}
         </Button>
       </CardPanel>
     </Card>
@@ -195,30 +309,74 @@ function QuestionEditor({
 }) {
   const set = (patch: Partial<DraftQuestion>) => onChange({ ...q, ...patch });
   const choices = q.type === "select" || q.type === "multi";
+  const [translating, setTranslating] = React.useState(false);
+  const options = q.options ?? [];
+  // A new choice's value follows its label: its translations move with it.
+  const setChoice = (i: number, label: string) => {
+    const old = options[i][0];
+    const value = q.savedOptions?.includes(old) ? old : choiceValue(label, i, options);
+    let tr = q.tr;
+    if (old && value !== old && tr) {
+      tr = { ...tr };
+      for (const lang of CAMPAIGN_LANGS) {
+        const opts = tr[lang]?.options;
+        if (opts?.[old] !== undefined) {
+          const { [old]: moved, ...rest } = opts;
+          tr[lang] = { ...tr[lang], options: { ...rest, [value]: moved } };
+        }
+      }
+    }
+    set({ options: options.map((o, j) => (j === i ? [value, label] : o)), tr });
+  };
+  const trRows = [
+    { id: "label", name: t("campaigns.question"), source: q.label },
+    { id: "section", name: t("campaigns.section"), source: q.section },
+    ...(q.help ? [{ id: "help", name: t("campaigns.helpText"), source: q.help }] : []),
+    ...(q.type === "number" && q.unit ? [{ id: "unit", name: t("campaigns.unit"), source: q.unit }] : []),
+    ...(choices
+      ? options.filter(([v, label]) => v && label).map(([v, label]) => ({ id: `option:${v}`, name: t("campaigns.choice"), source: label }))
+      : []),
+  ];
+  const trValue = (lang: CampaignLang, id: string) => {
+    const tr = q.tr?.[lang];
+    return (id.startsWith("option:") ? tr?.options?.[id.slice(7)] : tr?.[id as Exclude<keyof OpQuestionTr, "options">]) ?? "";
+  };
+  const setTr = (lang: CampaignLang, id: string, text: string) =>
+    set({
+      tr: patchTr<OpQuestionTr>(
+        q.tr,
+        lang,
+        id.startsWith("option:") ? { options: { ...q.tr?.[lang]?.options, [id.slice(7)]: text } } : { [id]: text },
+      ),
+    });
   // Conditions can only use questions above that are saved (their keys and choices are final).
   const parents = earlier.filter((p) => p.saved && (p.type === "select" || p.type === "multi" || p.type === "boolean"));
   const [parentKey, parentValues] = Object.entries(q.show_if ?? {})[0] ?? [null, []];
   const parent = parents.find((p) => p.key === parentKey);
   const parentOptions: [string, string][] = parent
     ? parent.type === "boolean"
-      ? [["true", "Yes"], ["false", "No"]]
+      ? [["true", t("common.yes")], ["false", t("common.no")]]
       : (parent.options ?? []).filter(([v]) => v)
     : [];
-  const parentItems = [{ label: "Always asked", value: NONE }, ...parents.map((p) => ({ label: `Only when "${p.label}" is…`, value: p.key }))];
+  const parentItems = [
+    { label: t("campaigns.alwaysAsked"), value: NONE },
+    ...parents.map((p) => ({ label: t("campaigns.onlyWhen", { label: p.label }), value: p.key })),
+  ];
+  const types = TYPE_LABELS.map((type) => ({ label: t(type.label), value: type.value }));
   return (
     <div className="flex flex-col gap-3 rounded-lg border p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="w-6 text-muted-foreground text-xs tabular-nums">{index + 1}.</span>
         <Input
-          aria-label="Question"
+          aria-label={t("campaigns.question")}
           className="min-w-56 flex-1"
           onChange={(e) => set({ key: q.saved ? q.key : slug(e.target.value, `q${index + 1}`), label: e.target.value })}
-          placeholder="The question, e.g. What kind of business?"
+          placeholder={t("campaigns.questionPlaceholder")}
           value={q.label}
         />
         <div className="w-44">
           <Select
-            items={TYPES}
+            items={types}
             onValueChange={(v) => set({ options: v === "select" || v === "multi" ? (q.options ?? []) : undefined, type: v as OpQuestionType })}
             value={q.type}
           >
@@ -226,15 +384,21 @@ function QuestionEditor({
               <SelectValue />
             </SelectTrigger>
             <SelectPopup>
-              {TYPES.map((t) => (
-                <SelectItem key={t.value} value={t.value}>
-                  {t.label}
+              {types.map((type) => (
+                <SelectItem key={type.value} value={type.value}>
+                  {type.label}
                 </SelectItem>
               ))}
             </SelectPopup>
           </Select>
         </div>
-        <RowButtons label={q.label || "question"} onDown={() => onMove(1)} onRemove={onRemove} onUp={() => onMove(-1)} />
+        <TranslationsToggle
+          count={Object.keys(q.tr ?? {}).length}
+          label={q.label || t("campaigns.questionFallback")}
+          onToggle={() => setTranslating((on) => !on)}
+          open={translating}
+        />
+        <RowButtons label={q.label || t("campaigns.questionFallback")} onDown={() => onMove(1)} onRemove={onRemove} onUp={() => onMove(-1)} />
       </div>
 
       {choices && (
@@ -242,36 +406,54 @@ function QuestionEditor({
           {(q.options ?? []).map(([value, label], i) => (
             <div className="flex items-center gap-1.5" key={value || `new-${i}`}>
               <Input
-                aria-label="Choice"
+                aria-label={t("campaigns.choice")}
                 className="max-w-sm"
-                onChange={(e) => set({ options: (q.options ?? []).map((o, j) => (j === i ? [o[0], e.target.value] : o)) })}
-                placeholder="A choice"
+                onChange={(e) => setChoice(i, e.target.value)}
+                placeholder={t("campaigns.choicePlaceholder")}
                 size="sm"
                 value={label}
               />
-              <Button aria-label="Remove choice" onClick={() => set({ options: (q.options ?? []).filter((_, j) => j !== i) })} size="icon-sm" variant="ghost">
+              <Button aria-label={t("campaigns.removeChoice")} onClick={() => set({ options: (q.options ?? []).filter((_, j) => j !== i) })} size="icon-sm" variant="ghost">
                 <XIcon aria-hidden="true" />
               </Button>
             </div>
           ))}
           <Button className="self-start" onClick={() => set({ options: [...(q.options ?? []), ["", ""]] })} size="xs" variant="ghost">
             <PlusIcon aria-hidden="true" />
-            Add a choice
+            {t("campaigns.addChoice")}
           </Button>
         </div>
       )}
 
       <div className="grid gap-2 ps-8 sm:grid-cols-2 lg:grid-cols-4">
-        <Input aria-label="Section" onChange={(e) => set({ section: e.target.value })} placeholder="Section" size="sm" value={q.section} />
-        <Input aria-label="Help text" onChange={(e) => set({ help: e.target.value || undefined })} placeholder="Help for the agent (optional)" size="sm" value={q.help ?? ""} />
+        <Input
+          aria-label={t("campaigns.section")}
+          onChange={(e) => set({ section: e.target.value })}
+          placeholder={t("campaigns.section")}
+          size="sm"
+          value={q.section}
+        />
+        <Input
+          aria-label={t("campaigns.helpText")}
+          onChange={(e) => set({ help: e.target.value || undefined })}
+          placeholder={t("campaigns.helpPlaceholder")}
+          size="sm"
+          value={q.help ?? ""}
+        />
         {q.type === "number" && (
-          <Input aria-label="Unit" onChange={(e) => set({ unit: e.target.value || undefined })} placeholder="Unit, e.g. DT / day" size="sm" value={q.unit ?? ""} />
+          <Input
+            aria-label={t("campaigns.unit")}
+            onChange={(e) => set({ unit: e.target.value || undefined })}
+            placeholder={t("campaigns.unitPlaceholder")}
+            size="sm"
+            value={q.unit ?? ""}
+          />
         )}
         <Input
-          aria-label="CRM field"
+          aria-label={t("campaigns.crmField")}
           dir="ltr"
           onChange={(e) => set({ crm: e.target.value.trim() || undefined })}
-          placeholder="Copy to CRM: person.city"
+          placeholder={t("campaigns.crmFieldPlaceholder")}
           size="sm"
           value={q.crm ?? ""}
         />
@@ -311,6 +493,12 @@ function QuestionEditor({
             ))}
         </div>
       )}
+
+      {translating && (
+        <div className="ps-8">
+          <TranslationFields onChange={setTr} rows={trRows} value={trValue} />
+        </div>
+      )}
     </div>
   );
 }
@@ -319,14 +507,11 @@ function QuestionsEditor({ questions, onChange }: { questions: DraftQuestion[]; 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Questions</CardTitle>
-        <CardDescription>
-          What agents ask during the call, grouped by section. Answers are saved with the call and in the CRM note; a CRM field
-          (person.&lt;field&gt;) also copies the answer to the contact.
-        </CardDescription>
+        <CardTitle>{t("campaigns.questions")}</CardTitle>
+        <CardDescription>{t("campaigns.questionsHint")}</CardDescription>
       </CardHeader>
       <CardPanel className="flex flex-col gap-2">
-        {questions.length === 0 && <p className="text-muted-foreground text-sm">No questions: agents only write a note.</p>}
+        {questions.length === 0 && <p className="text-muted-foreground text-sm">{t("campaigns.noQuestions")}</p>}
         {questions.map((q, i) => (
           <QuestionEditor
             earlier={questions.slice(0, i)}
@@ -343,14 +528,14 @@ function QuestionsEditor({ questions, onChange }: { questions: DraftQuestion[]; 
           onClick={() =>
             onChange([
               ...questions,
-              { key: "", label: "", saved: false, section: questions.at(-1)?.section ?? "Questions", type: "text" },
+              { key: "", label: "", saved: false, section: questions.at(-1)?.section ?? t("campaigns.questions"), type: "text" },
             ])
           }
           size="sm"
           variant="outline"
         >
           <PlusIcon aria-hidden="true" />
-          Add a question
+          {t("campaigns.addQuestion")}
         </Button>
       </CardPanel>
     </Card>
@@ -364,7 +549,8 @@ function CampaignEditor({ initial, config, onDone }: { initial: Draft; config: O
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const set = (patch: Partial<typeof draft>) => setDraft((d) => ({ ...d, ...patch }));
-  const days = draft.call_days ?? [1, 2, 3, 4, 5, 6, 7];
+  const callDays = draft.call_days ?? [1, 2, 3, 4, 5, 6, 7];
+  const inbound = draft.kind === "inbound";
 
   const save = async () => {
     setSaving(true);
@@ -372,14 +558,14 @@ function CampaignEditor({ initial, config, onDone }: { initial: Draft; config: O
     const body = {
       ...draft,
       // New questions without a key yet get one made from their label by the server.
-      questions: draft.questions.map(({ saved, ...q }) => ({ ...q, key: saved ? q.key : "" })),
+      questions: draft.questions.map(({ saved, ...q }) => ({ ...q, key: saved ? q.key : "", savedOptions: undefined })),
     };
     try {
       await api(draft.id === null ? "/api/operations/campaigns" : `/api/operations/campaigns/${draft.id}`, {
         body,
         method: draft.id === null ? "POST" : "PUT",
       });
-      toastManager.add({ title: "Campaign saved", type: "success" });
+      toastManager.add({ title: t("campaigns.saved"), type: "success" });
       onDone();
     } catch (err) {
       setError((err as Error).message);
@@ -391,40 +577,45 @@ function CampaignEditor({ initial, config, onDone }: { initial: Draft; config: O
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Button onClick={onDone} size="sm" variant="ghost">
-          <ArrowLeftIcon aria-hidden="true" />
-          All campaigns
+          <ArrowLeftIcon aria-hidden="true" className="rtl:rotate-180" />
+          {t("desk.allCampaigns")}
         </Button>
         <Button loading={saving} onClick={save}>
-          Save campaign
+          {t("campaigns.save")}
         </Button>
       </div>
       {error && (
         <Alert variant="error">
           <CircleAlertIcon aria-hidden="true" />
-          <AlertTitle>Not saved</AlertTitle>
+          <AlertTitle>{t("common.notSaved")}</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
       <Card>
         <CardHeader>
-          <CardTitle>Campaign</CardTitle>
+          <CardTitle>{t("board.campaign")}</CardTitle>
         </CardHeader>
         <CardPanel className="grid gap-4 md:grid-cols-2">
           <Field>
-            <FieldLabel>Name</FieldLabel>
+            <FieldLabel>{t("campaigns.name")}</FieldLabel>
             <Input maxLength={80} onChange={(e) => set({ name: e.target.value })} value={draft.name} />
           </Field>
-          <Label className="flex items-center gap-3 self-end font-medium">
-            <Switch checked={draft.active} onCheckedChange={(on) => set({ active: on })} />
-            {draft.active ? "Running: agents can pick it" : "Paused: hidden from agents"}
-          </Label>
+          {inbound ? (
+            <p className="self-end text-muted-foreground text-sm">{t("inbound.campaignHint")}</p>
+          ) : (
+            <Label className="flex items-center gap-3 self-end font-medium">
+              <Switch checked={draft.active} onCheckedChange={(on) => set({ active: on })} />
+              {draft.active ? t("campaigns.running") : t("campaigns.paused")}
+            </Label>
+          )}
           <Field className="md:col-span-2">
-            <FieldLabel>Description</FieldLabel>
+            <FieldLabel>{t("campaigns.description")}</FieldLabel>
             <Textarea className="min-h-16" maxLength={500} onChange={(e) => set({ description: e.target.value })} value={draft.description ?? ""} />
           </Field>
+          {!inbound && (
           <Field className="md:col-span-2">
-            <FieldLabel>Queue</FieldLabel>
+            <FieldLabel>{t("campaigns.queue")}</FieldLabel>
             <div className="flex flex-wrap gap-1.5">
               {config.stages.map((s) => (
                 <Chip
@@ -436,19 +627,21 @@ function CampaignEditor({ initial, config, onDone }: { initial: Draft; config: O
                 </Chip>
               ))}
             </div>
-            <FieldDescription>The CRM opportunities at these stages, with a phone number, are called oldest first.</FieldDescription>
+            <FieldDescription>{t("campaigns.queueHint")}</FieldDescription>
           </Field>
+          )}
         </CardPanel>
       </Card>
 
+      {!inbound && (
       <Card>
         <CardHeader>
-          <CardTitle>Calling rules</CardTitle>
-          <CardDescription>When the queue is served, and how long to keep trying a contact who doesn't answer.</CardDescription>
+          <CardTitle>{t("campaigns.rules")}</CardTitle>
+          <CardDescription>{t("campaigns.rulesHint")}</CardDescription>
         </CardHeader>
         <CardPanel className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <Field>
-            <FieldLabel>Tries before giving up</FieldLabel>
+            <FieldLabel>{t("campaigns.maxAttempts")}</FieldLabel>
             <Input
               min={0}
               max={50}
@@ -456,53 +649,54 @@ function CampaignEditor({ initial, config, onDone }: { initial: Draft; config: O
               type="number"
               value={draft.max_attempts}
             />
-            <FieldDescription>Unanswered calls in a row; 0: no limit.</FieldDescription>
+            <FieldDescription>{t("campaigns.maxAttemptsHint")}</FieldDescription>
           </Field>
           <Field>
-            <FieldLabel>Try again after (minutes)</FieldLabel>
+            <FieldLabel>{t("campaigns.retryMinutes")}</FieldLabel>
             <Input min={0} onChange={(e) => set({ retry_minutes: Number(e.target.value) || 0 })} type="number" value={draft.retry_minutes} />
-            <FieldDescription>Suggested callback after an unanswered call.</FieldDescription>
+            <FieldDescription>{t("campaigns.retryHint")}</FieldDescription>
           </Field>
           <Field className="lg:col-span-2">
-            <FieldLabel>Contacts who never answer move to</FieldLabel>
-            <StageSelect onChange={(exhausted_stage) => set({ exhausted_stage })} placeholder="Keep the stage" stages={config.stages} value={draft.exhausted_stage} />
+            <FieldLabel>{t("campaigns.exhaustedStage")}</FieldLabel>
+            <StageSelect onChange={(exhausted_stage) => set({ exhausted_stage })} placeholder={t("campaigns.keepStage")} stages={config.stages} value={draft.exhausted_stage} />
           </Field>
           <Field>
-            <FieldLabel>Calling from</FieldLabel>
+            <FieldLabel>{t("campaigns.callingFrom")}</FieldLabel>
             <Input onChange={(e) => set({ call_start: e.target.value || null })} type="time" value={draft.call_start ?? ""} />
           </Field>
           <Field>
-            <FieldLabel>Until</FieldLabel>
+            <FieldLabel>{t("campaigns.until")}</FieldLabel>
             <Input onChange={(e) => set({ call_end: e.target.value || null })} type="time" value={draft.call_end ?? ""} />
-            <FieldDescription>Empty: any time.</FieldDescription>
+            <FieldDescription>{t("campaigns.anyTime")}</FieldDescription>
           </Field>
           <Field className="lg:col-span-2">
-            <FieldLabel>On</FieldLabel>
+            <FieldLabel>{t("campaigns.on")}</FieldLabel>
             <div className="flex flex-wrap gap-1.5">
-              {DAYS.map((label, i) => (
+              {days().map((label, i) => (
                 <Chip
                   key={label}
                   onPressedChange={(on) => {
-                    const next = on ? [...days, i + 1].sort() : days.filter((d) => d !== i + 1);
+                    const next = on ? [...callDays, i + 1].sort() : callDays.filter((d) => d !== i + 1);
                     set({ call_days: next.length === 7 ? null : next });
                   }}
-                  pressed={days.includes(i + 1)}
+                  pressed={callDays.includes(i + 1)}
                 >
                   {label}
                 </Chip>
               ))}
             </div>
-            <FieldDescription>Callbacks that come due are served at any time.</FieldDescription>
+            <FieldDescription>{t("campaigns.callbacksAnyTime")}</FieldDescription>
           </Field>
         </CardPanel>
       </Card>
+      )}
 
       <OutcomesEditor onChange={(outcomes) => set({ outcomes })} outcomes={draft.outcomes} stages={config.stages} />
       <QuestionsEditor onChange={(questions) => set({ questions })} questions={draft.questions} />
 
       <div className="flex justify-end">
         <Button loading={saving} onClick={save}>
-          Save campaign
+          {t("campaigns.save")}
         </Button>
       </div>
     </div>
@@ -518,7 +712,7 @@ export function OperationsCampaigns(): React.ReactElement {
     return (
       <Alert variant="error">
         <CircleAlertIcon aria-hidden="true" />
-        <AlertTitle>Couldn't load the campaigns</AlertTitle>
+        <AlertTitle>{t("campaigns.loadFailed")}</AlertTitle>
         <AlertDescription>{error.message}</AlertDescription>
       </Alert>
     );
@@ -539,22 +733,22 @@ export function OperationsCampaigns(): React.ReactElement {
 
   const stageLabel = (v: string) => config.stages.find((s) => s.value === v)?.label ?? humanize(v);
   const remove = async (c: OpCampaign) => {
-    if (!window.confirm(`Remove "${c.name}"? A campaign with calls is archived instead, and its history kept.`)) return;
+    if (!window.confirm(t("campaigns.confirmRemove", { name: c.name }))) return;
     try {
       const res = await api<{ result: string }>(`/api/operations/campaigns/${c.id}`, { method: "DELETE" });
-      toastManager.add({ title: res.result === "archived" ? "Campaign archived" : "Campaign deleted", type: "success" });
+      toastManager.add({ title: res.result === "archived" ? t("campaigns.archived") : t("campaigns.deleted"), type: "success" });
       reload();
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't remove the campaign", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("campaigns.removeFailed"), type: "error" });
     }
   };
 
   return (
     <>
       <div className="flex justify-end">
-        <Button onClick={() => setEditing(toDraft(config.campaigns[0], true))}>
+        <Button onClick={() => setEditing(toDraft(config.campaigns.find((c) => c.kind !== "inbound") ?? config.campaigns[0], true))}>
           <PlusIcon aria-hidden="true" />
-          New campaign
+          {t("campaigns.new")}
         </Button>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
@@ -563,42 +757,60 @@ export function OperationsCampaigns(): React.ReactElement {
             <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-2">
               <div className="flex flex-col gap-1">
                 <CardTitle className="flex items-center gap-2">
-                  {c.name}
+                  {campaignText(c.name)}
+                  {c.kind === "inbound" && (
+                    <Badge variant="success">
+                      <PhoneIncomingIcon aria-hidden="true" />
+                      {t("inbound.badge")}
+                    </Badge>
+                  )}
                   {!c.active && (
                     <Badge variant="secondary">
                       <ArchiveIcon aria-hidden="true" />
-                      Paused
+                      {t("ops.state.paused")}
                     </Badge>
                   )}
                 </CardTitle>
-                {c.description && <CardDescription>{c.description}</CardDescription>}
+                {c.description && <CardDescription>{campaignText(c.description)}</CardDescription>}
               </div>
               <div className="flex items-center gap-1">
                 <Button onClick={() => setEditing(toDraft(c))} size="sm" variant="outline">
                   <PencilIcon aria-hidden="true" />
-                  Edit
+                  {t("common.edit")}
                 </Button>
-                <Button aria-label={`Copy ${c.name}`} onClick={() => setEditing(toDraft(c, true))} size="icon-sm" variant="ghost">
-                  <CopyIcon aria-hidden="true" />
-                </Button>
-                <Button aria-label={`Remove ${c.name}`} onClick={() => remove(c)} size="icon-sm" variant="ghost">
-                  <Trash2Icon aria-hidden="true" />
-                </Button>
+                {c.kind !== "inbound" && (
+                  <>
+                    <Button aria-label={t("campaigns.copy", { name: campaignText(c.name) })} onClick={() => setEditing(toDraft(c, true))} size="icon-sm" variant="ghost">
+                      <CopyIcon aria-hidden="true" />
+                    </Button>
+                    <Button aria-label={t("whatsapp.removeLabel", { label: campaignText(c.name) })} onClick={() => remove(c)} size="icon-sm" variant="ghost">
+                      <Trash2Icon aria-hidden="true" />
+                    </Button>
+                  </>
+                )}
               </div>
             </CardHeader>
             <CardPanel className="flex flex-col gap-2 text-sm">
+              {c.kind === "inbound" ? (
+                <span className="text-muted-foreground">{t("inbound.campaignHint")}</span>
+              ) : (
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-muted-foreground">Queue:</span>
+                <span className="text-muted-foreground">{t("campaigns.queueColon")}</span>
                 {c.stages.map((s) => (
                   <Badge key={s} variant={STAGE_VARIANT[s] ?? "secondary"}>
                     {stageLabel(s)}
                   </Badge>
                 ))}
               </div>
+              )}
               <span className="text-muted-foreground">
-                {c.questions.length} questions · {c.outcomes.length} outcomes ({c.outcomes.filter((o) => o.success).length} wins) · called{" "}
-                {c.hours}
-                {c.max_attempts ? ` · up to ${c.max_attempts} tries, ${c.retry_minutes} min apart` : ""}
+                {t("campaigns.summary", {
+                  hours: c.hours,
+                  outcomes: c.outcomes.length,
+                  questions: c.questions.length,
+                  wins: c.outcomes.filter((o) => o.success).length,
+                })}
+                {c.max_attempts ? ` · ${t("campaigns.tries", { minutes: c.retry_minutes, tries: c.max_attempts })}` : ""}
               </span>
             </CardPanel>
           </Card>

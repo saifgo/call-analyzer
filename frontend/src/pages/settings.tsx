@@ -35,8 +35,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { toastManager } from "@/components/ui/toast";
 import { api, useApi } from "@/lib/api";
+import { fmtTime } from "@/lib/format";
 import { useGoVoice } from "@/lib/govoice";
+import { getLocale, labels, t, type TKey } from "@/lib/i18n";
 import { useJob, useOnJobFinished } from "@/lib/jobs";
+import { settingsHelp as arHelp } from "@/locales/ar/settings-help";
+import { settingsHelp as frHelp } from "@/locales/fr/settings-help";
 import { href } from "@/lib/router";
 import { RUNS_ON_LABELS, STEP_NAMES, useWorkers, WORKER_STEPS } from "@/lib/workers";
 import type { SettingField, WhisperModel } from "@/lib/types";
@@ -60,27 +64,54 @@ const SELECT_LABELS: Record<string, Record<string, string>> = {
   ANALYZE_RUNS_ON: RUNS_ON_LABELS,
   TRANSCRIBE_RUNS_ON: RUNS_ON_LABELS,
   VOICE_RUNS_ON: RUNS_ON_LABELS,
-  ANALYSIS_BACKEND: {
-    auto: "Claude, then Cursor if unavailable",
-    claude: "Claude",
-    cursor: "Cursor",
-  },
-  CLAUDE_BACKEND: {
-    api: "Claude API key",
-    subscription: "Claude subscription",
-  },
-  VOICE_MODEL: {
-    "Aniemore/wav2vec2-emotion-v1-crosslingual": "Aniemore crosslingual · 7 emotions, more detail but 3x slower",
-    "Lajavaness/wav2vec2-lg-xlsr-fr-speech-emotion-recognition": "Lajavaness French · tension / pleased / relaxed, 3x slower",
-    "superb/wav2vec2-base-superb-er": "superb · neutral / happy / angry / sad, small and fast",
-  },
-  WHISPER_MODEL: {
-    "arabic-dialectal-turbo": "arabic-dialectal-turbo · Arabic dialects incl. Tunisian, faster",
-    "large-v3": "large-v3 · most accurate standard model",
-    "large-v3-turbo": "large-v3-turbo · fast, fits a 4 GB GPU",
-    "tunisian-large-v3": "tunisian-large-v3 · Tunisian Derja + French, most accurate",
-  },
+  ANALYSIS_BACKEND: labels({
+    auto: "settings.opt.analysisAuto",
+    claude: "settings.opt.claude",
+    cursor: "settings.opt.cursor",
+  }),
+  CLAUDE_BACKEND: labels({
+    api: "settings.opt.claudeApi",
+    subscription: "settings.opt.claudeSubscription",
+  }),
+  VOICE_MODEL: labels({
+    "Aniemore/wav2vec2-emotion-v1-crosslingual": "settings.opt.voiceAniemore",
+    "Lajavaness/wav2vec2-lg-xlsr-fr-speech-emotion-recognition": "settings.opt.voiceLajavaness",
+    "superb/wav2vec2-base-superb-er": "settings.opt.voiceSuperb",
+  }),
+  WHISPER_MODEL: labels({
+    "arabic-dialectal-turbo": "settings.opt.whisperArabic",
+    "large-v3": "settings.opt.whisperLarge",
+    "large-v3-turbo": "settings.opt.whisperTurbo",
+    "tunisian-large-v3": "settings.opt.whisperTunisian",
+  }),
 };
+
+// Section names as the server sends them (the "# --- Name ---" headings in .env.example).
+const SECTION_LABELS: Record<string, TKey> = {
+  Analysis: "settings.section.analysis",
+  "Call desk": "settings.section.callDesk",
+  CRM: "settings.section.crm",
+  "CRM (Twenty)": "settings.section.crmTwenty",
+  General: "settings.section.general",
+  "GoVoice (VoIP manager)": "settings.section.govoice",
+  "Ongoing mode": "settings.section.ongoing",
+  "Phone system": "settings.section.phoneSystem",
+  "Remote agents": "nav.agents",
+  Security: "settings.section.security",
+  "Sharing & hosting": "settings.section.sharing",
+  Softphone: "settings.section.softphone",
+  "Speech-to-text": "settings.section.speechToText",
+  "Voice analysis": "workers.step.voice",
+  WhatsApp: "settings.section.whatsapp",
+};
+const sectionLabel = (section: string) => (SECTION_LABELS[section] ? t(SECTION_LABELS[section]) : section);
+
+/** A setting's help: translated from src/locales/<lang>/settings-help.ts, else the English comment in .env.example. */
+function helpText(field: SettingField): string {
+  const locale = getLocale();
+  const help = locale === "fr" ? frHelp : locale === "ar" ? arHelp : null;
+  return help?.[field.key] ?? field.help;
+}
 
 /** Models that must be downloaded and converted once before use (Tunisian Whisper models, the voice emotion model):
  * says whether the selected one is installed on this server, and offers to install it. */
@@ -108,24 +139,22 @@ function ModelNote({
       <span className="text-muted-foreground">
         {model.installed ? (
           <>
-            <Badge variant="success">Installed</Badge> {model.repo}
+            <Badge variant="success">{t("settings.installed")}</Badge> {model.repo}
           </>
         ) : (
-          <>
-            Not installed yet: downloaded from {model.repo} and converted (~{model.size_gb} GB) {when}, or now.
-          </>
+          t("settings.notInstalled", { repo: model.repo, size: model.size_gb, when })
         )}
       </span>
       {!model.installed && (
         <Button disabled={!!job.state?.running} onClick={onInstall} size="sm" variant="outline">
           <DownloadIcon aria-hidden="true" />
-          {saved ? "Install now" : "Save & install"}
+          {saved ? t("settings.installNow") : t("settings.saveInstall")}
         </Button>
       )}
     </div>
   );
 }
-const BOOLEAN_KEYS = new Set(["GOVOICE_VERIFY_SSL", "AUTO_PROCESS", "SHARE_ON_LAN", "COOKIE_SECURE", "VOICE_ANALYSIS"]);
+const BOOLEAN_KEYS = new Set(["GOVOICE_VERIFY_SSL", "AUTO_PROCESS", "SHARE_ON_LAN", "COOKIE_SECURE", "VOICE_ANALYSIS", "DESK_EARNED_BREAK"]);
 
 function SecretInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
   const [shown, setShown] = React.useState(false);
@@ -140,7 +169,7 @@ function SecretInput({ value, onChange, placeholder }: { value: string; onChange
         value={value}
       />
       <InputGroupAddon align="inline-end">
-        <Button aria-label={shown ? "Hide value" : "Show value"} onClick={() => setShown((s) => !s)} size="icon-xs" variant="ghost">
+        <Button aria-label={shown ? t("settings.hideValue") : t("settings.showValue")} onClick={() => setShown((s) => !s)} size="icon-xs" variant="ghost">
           {shown ? <EyeOffIcon aria-hidden="true" /> : <EyeIcon aria-hidden="true" />}
         </Button>
       </InputGroupAddon>
@@ -196,12 +225,10 @@ function AgentsSummary() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 font-medium text-sm">
           <MonitorSmartphoneIcon aria-hidden="true" className="size-4 text-muted-foreground" />
-          {workers.length === 0
-            ? "No agents yet"
-            : `${online} of ${workers.length} ${workers.length === 1 ? "agent" : "agents"} online`}
+          {workers.length === 0 ? t("settings.noAgents") : t("settings.agentsOnlineOf", { count: workers.length, online })}
         </div>
         <Button render={<a href={href("agents")} />} size="sm" variant="outline">
-          {workers.length === 0 ? "Add an agent" : "Manage agents"}
+          {workers.length === 0 ? t("settings.addAgent") : t("settings.manageAgents")}
         </Button>
       </div>
       {workers.length > 0 && (
@@ -218,7 +245,13 @@ function AgentsSummary() {
                 </span>
               </span>
               <span className="text-muted-foreground text-xs">
-                {!w.online ? "offline" : w.enabled ? (w.running.length ? `working on ${w.running.length}` : "idle") : "paused"}
+                {!w.online
+                  ? t("settings.worker.offline")
+                  : w.enabled
+                    ? w.running.length
+                      ? t("settings.worker.working", { count: w.running.length })
+                      : t("settings.worker.idle")
+                    : t("settings.worker.paused")}
               </span>
               {w.info.gpu !== undefined && (
                 <Badge variant="outline">
@@ -231,7 +264,7 @@ function AgentsSummary() {
                   w.info.capabilities?.[step] && (
                     <Badge key={step} variant={w.ready[step] ? "success" : "warning"}>
                       {STEP_NAMES[step]}
-                      {w.ready[step] ? "" : " · not ready"}
+                      {w.ready[step] ? "" : ` · ${t("settings.notReady")}`}
                     </Badge>
                   ),
               )}
@@ -253,33 +286,35 @@ function GoVoiceCard() {
   };
   const badge =
     status?.connected === true ? (
-      <Badge variant="success">Connected</Badge>
+      <Badge variant="success">{t("settings.connected")}</Badge>
     ) : status?.connected === false ? (
-      <Badge variant="error">Not connected</Badge>
+      <Badge variant="error">{t("phone.status.failed")}</Badge>
     ) : status ? (
-      <Badge variant="warning">Unreachable</Badge>
+      <Badge variant="warning">{t("settings.unreachable")}</Badge>
     ) : (
-      <Badge variant="outline">Checking…</Badge>
+      <Badge variant="outline">{t("settings.checking")}</Badge>
     );
   return (
     <Card>
       <CardPanel className="flex flex-col gap-4 sm:flex-row sm:items-center">
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <div className="flex items-center gap-2 font-medium">GoVoice account {badge}</div>
+          <div className="flex items-center gap-2 font-medium">
+            {t("settings.govoiceAccount")} {badge}
+          </div>
           <p className="text-muted-foreground text-sm">
-            {status?.message ?? "Checking the saved session…"}
-            {status?.checked_at && ` · checked ${new Date(status.checked_at).toLocaleTimeString()}`}. Log in to GoVoice
-            and the session is saved here automatically; no need to copy cookies.
+            {status?.message ?? t("settings.checkingSession")}
+            {status?.checked_at && ` · ${t("settings.checkedAt", { time: fmtTime(status.checked_at) })}`}.{" "}
+            {t("settings.govoiceHint")}
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
           <Button loading={checking} onClick={check} variant="ghost">
             <RefreshCwIcon aria-hidden="true" />
-            Test
+            {t("settings.test")}
           </Button>
           <Button onClick={() => promptLogin()} variant={status?.connected === false ? "default" : "outline"}>
-            <LogInIcon aria-hidden="true" />
-            {status?.connected ? "Log in again" : "Log in to GoVoice"}
+            <LogInIcon aria-hidden="true" className="rtl:-scale-x-100" />
+            {status?.connected ? t("settings.logInAgain") : t("govoice.logIn")}
           </Button>
         </div>
       </CardPanel>
@@ -328,10 +363,10 @@ export function SettingsPage(): React.ReactElement {
       // Only send what changed, so values the server updated meanwhile (the GoVoice cookie) aren't overwritten.
       await api("/api/settings", { body: Object.fromEntries(dirtyKeys.map((k) => [k, values[k]])), method: "PUT" });
       setSaved(values);
-      toastManager.add({ description: "Used by the next job.", title: "Settings saved", type: "success" });
+      toastManager.add({ description: t("settings.usedByNextJob"), title: t("settings.saved"), type: "success" });
       return true;
     } catch (err) {
-      toastManager.add({ description: (err as Error).message, title: "Couldn't save settings", type: "error" });
+      toastManager.add({ description: (err as Error).message, title: t("settings.couldntSave"), type: "error" });
       return false;
     } finally {
       setSaving(false);
@@ -354,11 +389,11 @@ export function SettingsPage(): React.ReactElement {
         actions={
           <Button disabled={!!job.state?.running} onClick={saveAndCheck} variant="outline">
             <StethoscopeIcon aria-hidden="true" />
-            {dirty ? "Save & check setup" : "Check setup"}
+            {dirty ? t("settings.saveCheck") : t("pipeline.checkSetup")}
           </Button>
         }
-        description="Saved to the .env file. Changes are used by the next job; sharing and port changes need a restart."
-        title="Settings"
+        description={t("settings.description")}
+        title={t("nav.settings")}
       />
 
       {!fields || !saved ? (
@@ -372,7 +407,7 @@ export function SettingsPage(): React.ReactElement {
           {sections.map((section) => (
             <Card key={section}>
               <CardHeader>
-                <CardTitle className="text-base">{section}</CardTitle>
+                <CardTitle className="text-base">{sectionLabel(section)}</CardTitle>
               </CardHeader>
               <CardPanel className="flex flex-col">
                 {section === "Remote agents" && (
@@ -388,13 +423,13 @@ export function SettingsPage(): React.ReactElement {
                       {i > 0 && <Separator className="my-4" />}
                       <Field className="grid gap-x-8 gap-y-2 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:items-start">
                         <div className="flex flex-col gap-1.5">
-                          <FieldLabel className="font-mono text-xs">
+                          <FieldLabel className="font-mono text-xs" dir="ltr">
                             {f.key}
                             {values[f.key] !== saved[f.key] && (
-                              <span aria-label="Changed" className="size-1.5 rounded-full bg-warning" />
+                              <span aria-label={t("settings.changed")} className="size-1.5 rounded-full bg-warning" />
                             )}
                           </FieldLabel>
-                          {f.help && <FieldDescription className="text-xs">{f.help}</FieldDescription>}
+                          {f.help && <FieldDescription className="text-xs">{helpText(f)}</FieldDescription>}
                         </div>
                         <div className="flex min-w-0 flex-col gap-2">
                           <SettingControl
@@ -408,7 +443,7 @@ export function SettingsPage(): React.ReactElement {
                               name={values[f.key] ?? ""}
                               onInstall={() => saveAndInstall("install-model")}
                               saved={!dirty}
-                              when="at the first transcription"
+                              when={t("settings.whenTranscription")}
                             />
                           )}
                           {f.key === "VOICE_MODEL" && (
@@ -417,7 +452,7 @@ export function SettingsPage(): React.ReactElement {
                               name={values[f.key] || f.default}
                               onInstall={() => saveAndInstall("install-voice-model")}
                               saved={!dirty}
-                              when="at the first voice step"
+                              when={t("settings.whenVoice")}
                             />
                           )}
                         </div>
@@ -440,13 +475,13 @@ export function SettingsPage(): React.ReactElement {
         <div className="pointer-events-none sticky bottom-4 z-10 -mt-20 flex justify-center">
           <Card className="pointer-events-auto flex-row items-center gap-3 rounded-xl px-4 py-2.5 shadow-lg/5">
             <Badge variant="warning">
-              {dirtyKeys.length} unsaved {dirtyKeys.length === 1 ? "change" : "changes"}
+              {t("settings.unsavedCount", { count: dirtyKeys.length })}
             </Badge>
             <Button onClick={() => setValues(saved ?? {})} size="sm" variant="ghost">
-              Discard
+              {t("common.discard")}
             </Button>
             <Button loading={saving} onClick={save} size="sm">
-              Save changes
+              {t("settings.saveChanges")}
             </Button>
           </Card>
         </div>
@@ -457,15 +492,15 @@ export function SettingsPage(): React.ReactElement {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               {job.state?.running && <Spinner className="size-4" />}
-              Setup check
+              {t("jobs.step.check")}
             </DialogTitle>
-            <DialogDescription>Verifies the GoVoice cookie, speech-to-text and the analysis backend with the saved settings.</DialogDescription>
+            <DialogDescription>{t("settings.checkHint")}</DialogDescription>
           </DialogHeader>
           <DialogPanel>
-            <JobLog empty="Starting…" lines={job.lines} />
+            <JobLog empty={t("shell.job.starting")} lines={job.lines} />
           </DialogPanel>
           <DialogFooter>
-            <DialogClose render={<Button variant="ghost" />}>Close</DialogClose>
+            <DialogClose render={<Button variant="ghost" />}>{t("common.close")}</DialogClose>
           </DialogFooter>
         </DialogPopup>
       </Dialog>

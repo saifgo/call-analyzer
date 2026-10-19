@@ -7,11 +7,13 @@ import { Card, CardDescription, CardFrame, CardFrameDescription, CardFrameHeader
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useApi } from "@/lib/api";
+import { campaignText, useOpConfig } from "@/lib/campaign-text";
 import { Bidi } from "@/lib/bidi";
 import { fmtDateTime, fmtDuration, humanize, numberFmt } from "@/lib/format";
+import { t } from "@/lib/i18n";
 import { outcomeVariant } from "@/lib/operations";
 import { href, type Route } from "@/lib/router";
-import type { OpConfig, OpInsights } from "@/lib/types";
+import type { OpInsights } from "@/lib/types";
 
 function Empty({ colSpan, children }: { colSpan: number; children: React.ReactNode }) {
   return (
@@ -26,7 +28,7 @@ function Empty({ colSpan, children }: { colSpan: number; children: React.ReactNo
 /** Outcomes agents pick on the desk against the AI's scores of the same recorded calls. */
 export function OperationsInsights({ route }: { route: Route }): React.ReactElement {
   const filters = useFilters(route);
-  const { data: config } = useApi<OpConfig>("/api/operations/config");
+  const { data: config } = useOpConfig();
   const { data, error } = useApi<OpInsights>(`/api/operations/insights?${filters.query}`);
   const outcomes = Object.fromEntries((config?.outcomes ?? []).map((o) => [o.value, o]));
 
@@ -34,7 +36,7 @@ export function OperationsInsights({ route }: { route: Route }): React.ReactElem
     return (
       <Alert variant="error">
         <CircleAlertIcon aria-hidden="true" />
-        <AlertTitle>Couldn't load the insights</AlertTitle>
+        <AlertTitle>{t("insights.loadFailed")}</AlertTitle>
         <AlertDescription>{error.message}</AlertDescription>
       </Alert>
     );
@@ -60,27 +62,21 @@ export function OperationsInsights({ route }: { route: Route }): React.ReactElem
       {data.total > 0 && data.linked < data.total / 2 && (
         <Alert variant="info">
           <InfoIcon aria-hidden="true" />
-          <AlertTitle>
-            Only {numberFmt.format(data.linked)} of {numberFmt.format(data.total)} desk calls are matched to a recording
-          </AlertTitle>
-          <AlertDescription>
-            Calls are matched after each GoVoice sync, on the number, the agent's extension (their phone or the extensions on
-            their account in Users) and the time. Unanswered calls usually have no recording. If GoVoice's clock differs from
-            this server's, set RECORDING_CLOCK_OFFSET_MINUTES in Settings.
-          </AlertDescription>
+          <AlertTitle>{t("insights.fewLinked", { linked: data.linked, total: data.total })}</AlertTitle>
+          <AlertDescription>{t("insights.fewLinkedHint")}</AlertDescription>
         </Alert>
       )}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Stat
-          hint={`${numberFmt.format(data.linked)} with a recording, ${numberFmt.format(data.rated)} rated by the AI`}
-          label="Desk calls"
+          hint={t("insights.deskCallsHint", { linked: data.linked, rated: data.rated })}
+          label={t("insights.deskCalls")}
           value={numberFmt.format(data.total)}
         />
-        <Stat hint={`Over ${numberFmt.format(data.won_rated)} rated wins`} label="AI score of wins" value={score(o.won)} />
+        <Stat hint={t("insights.overRatedWins", { count: data.won_rated })} label={t("insights.scoreOfWins")} value={score(o.won)} />
         <Stat
-          hint={o.gap === null ? "Needs rated wins and other reached calls" : `${o.gap > 0 ? "+" : ""}${o.gap.toFixed(1)} points for the wins`}
-          label="AI score of the other reached calls"
+          hint={o.gap === null ? t("insights.needsRated") : t("insights.pointsForWins", { gap: `${o.gap > 0 ? "+" : ""}${o.gap.toFixed(1)}` })}
+          label={t("insights.scoreOfOthers")}
           value={score(o.other)}
         />
       </div>
@@ -88,13 +84,13 @@ export function OperationsInsights({ route }: { route: Route }): React.ReactElem
       <div className="grid items-start gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Win rate by AI score</CardTitle>
-            <CardDescription>Of the reached contacts whose call the AI rated, how many ended in a win.</CardDescription>
+            <CardTitle>{t("insights.winRateByScore")}</CardTitle>
+            <CardDescription>{t("insights.winRateByScoreHint")}</CardDescription>
           </CardHeader>
           <CardPanel>
             <RateBars
               bars={data.bands.map((b) => ({
-                detail: `${numberFmt.format(b.success)} wins out of ${numberFmt.format(b.calls)} calls scored ${b.band}`,
+                detail: t("insights.bandDetail", { band: b.band, calls: b.calls, wins: b.success }),
                 label: b.band,
                 n: b.calls,
                 rate: b.success_rate,
@@ -104,20 +100,20 @@ export function OperationsInsights({ route }: { route: Route }): React.ReactElem
         </Card>
         <CardFrame>
           <CardFrameHeader>
-            <CardFrameTitle>What the wins do better</CardFrameTitle>
-            <CardFrameDescription>Average score card on wins against the other reached calls, biggest gap first.</CardFrameDescription>
+            <CardFrameTitle>{t("insights.winsDoBetter")}</CardFrameTitle>
+            <CardFrameDescription>{t("insights.winsDoBetterHint")}</CardFrameDescription>
           </CardFrameHeader>
           <Table variant="card">
             <TableHeader>
               <TableRow>
-                <TableHead>Criterion</TableHead>
-                <TableHead className="text-end">Wins</TableHead>
-                <TableHead className="text-end">Others</TableHead>
-                <TableHead>Gap</TableHead>
+                <TableHead>{t("insights.criterion")}</TableHead>
+                <TableHead className="text-end">{t("ops.metric.wins")}</TableHead>
+                <TableHead className="text-end">{t("insights.others")}</TableHead>
+                <TableHead>{t("insights.gap")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.drivers.length === 0 && <Empty colSpan={4}>No rated call in this period yet.</Empty>}
+              {data.drivers.length === 0 && <Empty colSpan={4}>{t("insights.noRated")}</Empty>}
               {data.drivers.map((d) => (
                 <TableRow key={d.criterion}>
                   <TableCell>{humanize(d.criterion)}</TableCell>
@@ -135,27 +131,27 @@ export function OperationsInsights({ route }: { route: Route }): React.ReactElem
 
       <CardFrame>
         <CardFrameHeader>
-          <CardFrameTitle>By outcome</CardFrameTitle>
-          <CardFrameDescription>What the agent recorded, and what the AI made of the same calls.</CardFrameDescription>
+          <CardFrameTitle>{t("insights.byOutcome")}</CardFrameTitle>
+          <CardFrameDescription>{t("insights.byOutcomeHint")}</CardFrameDescription>
         </CardFrameHeader>
         <Table variant="card">
           <TableHeader>
             <TableRow>
-              <TableHead>Outcome</TableHead>
-              <TableHead className="text-end">Calls</TableHead>
-              <TableHead className="text-end">Rated</TableHead>
-              <TableHead className="text-end">AI score</TableHead>
-              <TableHead className="text-end">Voice</TableHead>
-              <TableHead className="text-end">Avg call</TableHead>
-              <TableHead>The AI said</TableHead>
+              <TableHead>{t("insights.outcome")}</TableHead>
+              <TableHead className="text-end">{t("ops.metric.calls")}</TableHead>
+              <TableHead className="text-end">{t("insights.rated")}</TableHead>
+              <TableHead className="text-end">{t("kpis.aiScore")}</TableHead>
+              <TableHead className="text-end">{t("jobs.step.voice")}</TableHead>
+              <TableHead className="text-end">{t("kpis.avgCall")}</TableHead>
+              <TableHead>{t("insights.aiSaid")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.outcomes.length === 0 && <Empty colSpan={7}>No call closed from the desk in this period.</Empty>}
+            {data.outcomes.length === 0 && <Empty colSpan={7}>{t("kpis.noCalls")}</Empty>}
             {data.outcomes.map((row) => (
               <TableRow key={row.outcome}>
                 <TableCell>
-                  <Badge variant={outcomeVariant(outcomes[row.outcome])}>{row.label}</Badge>
+                  <Badge variant={outcomeVariant(outcomes[row.outcome])}>{outcomes[row.outcome]?.label ?? campaignText(row.label)}</Badge>
                 </TableCell>
                 <TableCell className="text-end tabular-nums">{numberFmt.format(row.calls)}</TableCell>
                 <TableCell className="text-end tabular-nums">{numberFmt.format(row.rated)}</TableCell>
@@ -178,21 +174,21 @@ export function OperationsInsights({ route }: { route: Route }): React.ReactElem
 
       <CardFrame>
         <CardFrameHeader>
-          <CardFrameTitle>By agent</CardFrameTitle>
+          <CardFrameTitle>{t("kpis.byAgent")}</CardFrameTitle>
         </CardFrameHeader>
         <Table variant="card">
           <TableHeader>
             <TableRow>
-              <TableHead>Agent</TableHead>
-              <TableHead className="text-end">Calls</TableHead>
-              <TableHead className="text-end">Wins / reached</TableHead>
-              <TableHead className="text-end">AI score</TableHead>
-              <TableHead className="text-end">On wins</TableHead>
-              <TableHead className="text-end">On the others</TableHead>
+              <TableHead>{t("shell.agent")}</TableHead>
+              <TableHead className="text-end">{t("ops.metric.calls")}</TableHead>
+              <TableHead className="text-end">{t("insights.winsReached")}</TableHead>
+              <TableHead className="text-end">{t("kpis.aiScore")}</TableHead>
+              <TableHead className="text-end">{t("insights.onWins")}</TableHead>
+              <TableHead className="text-end">{t("insights.onOthers")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.agents.length === 0 && <Empty colSpan={6}>No call closed from the desk in this period.</Empty>}
+            {data.agents.length === 0 && <Empty colSpan={6}>{t("kpis.noCalls")}</Empty>}
             {data.agents.map((a) => (
               <TableRow key={a.username}>
                 <TableCell className="font-medium">{a.name}</TableCell>
@@ -215,22 +211,22 @@ export function OperationsInsights({ route }: { route: Route }): React.ReactElem
 
       <CardFrame>
         <CardFrameHeader>
-          <CardFrameTitle>Rated calls</CardFrameTitle>
-          <CardFrameDescription>Open one to listen and read the AI's feedback.</CardFrameDescription>
+          <CardFrameTitle>{t("insights.ratedCalls")}</CardFrameTitle>
+          <CardFrameDescription>{t("insights.ratedCallsHint")}</CardFrameDescription>
         </CardFrameHeader>
         <Table variant="card">
           <TableHeader>
             <TableRow>
-              <TableHead>Closed</TableHead>
-              <TableHead>Agent</TableHead>
-              <TableHead>Contact</TableHead>
-              <TableHead>Outcome</TableHead>
-              <TableHead className="text-end">AI score</TableHead>
-              <TableHead className="min-w-64">Summary</TableHead>
+              <TableHead>{t("insights.closed")}</TableHead>
+              <TableHead>{t("shell.agent")}</TableHead>
+              <TableHead>{t("ops.contact")}</TableHead>
+              <TableHead>{t("insights.outcome")}</TableHead>
+              <TableHead className="text-end">{t("kpis.aiScore")}</TableHead>
+              <TableHead className="min-w-64">{t("insights.summary")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.calls.length === 0 && <Empty colSpan={6}>No rated call in this period yet.</Empty>}
+            {data.calls.length === 0 && <Empty colSpan={6}>{t("insights.noRated")}</Empty>}
             {data.calls.map((c) => (
               <TableRow className="align-top" key={c.op_id}>
                 <TableCell className="whitespace-nowrap">
@@ -241,7 +237,7 @@ export function OperationsInsights({ route }: { route: Route }): React.ReactElem
                 <TableCell>{c.agent_name}</TableCell>
                 <TableCell className="whitespace-normal">{c.contact && <Bidi as="span" text={c.contact} />}</TableCell>
                 <TableCell>
-                  <Badge variant={outcomeVariant(outcomes[c.outcome])}>{c.outcome_label}</Badge>
+                  <Badge variant={outcomeVariant(outcomes[c.outcome])}>{outcomes[c.outcome]?.label ?? campaignText(c.outcome_label)}</Badge>
                 </TableCell>
                 <TableCell className="text-end font-medium tabular-nums">{c.score}</TableCell>
                 <TableCell className="whitespace-normal text-sm">

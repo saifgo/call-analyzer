@@ -3,7 +3,7 @@ import re
 import sqlite3
 
 from .config import live, settings
-from .crm import match_key
+from .phones import match_key
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS calls (
@@ -170,6 +170,52 @@ CREATE TABLE IF NOT EXISTS op_presence (
     ready_seconds  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (username, day)
 );
+-- The floor (see floor.py): daily targets ('*' is the team, NULL columns of an agent take the team's value, 0: none),
+-- the reasons agents pause for, each pause taken, and settings such as the workday.
+CREATE TABLE IF NOT EXISTS op_targets (
+    username      TEXT PRIMARY KEY,
+    calls         INTEGER,
+    reached       INTEGER,
+    wins          INTEGER,
+    desk_minutes  INTEGER
+);
+CREATE TABLE IF NOT EXISTS op_pause_reasons (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    label          TEXT NOT NULL,
+    limit_minutes  INTEGER NOT NULL DEFAULT 0,   -- 0: no limit
+    position       INTEGER NOT NULL DEFAULT 0,
+    active         INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS op_pauses (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    username       TEXT NOT NULL,
+    reason_id      INTEGER,
+    label          TEXT NOT NULL,     -- the reason and its limit as they were when the pause started
+    limit_minutes  INTEGER NOT NULL DEFAULT 0,
+    started_at     TEXT NOT NULL,
+    ended_at       TEXT,              -- moved forward at each check-in while the pause lasts
+    closed         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_op_pauses ON op_pauses(username, started_at);
+-- Agents taking calls who stayed idle long enough to be prompted to call (see idle.py): one row per idle stretch.
+CREATE TABLE IF NOT EXISTS op_idle_prompts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    username        TEXT NOT NULL,
+    idle_since      TEXT NOT NULL,
+    prompted_at     TEXT NOT NULL,     -- the first prompt
+    last_prompt_at  TEXT NOT NULL,
+    prompts         INTEGER NOT NULL DEFAULT 1,
+    acknowledged    INTEGER NOT NULL DEFAULT 0,   -- how many of them the agent dismissed
+    doing           TEXT,              -- served a contact and didn't dial, or no contact served
+    ended_at        TEXT NOT NULL,     -- moved forward at each check-in while the stretch lasts
+    outcome         TEXT,              -- once closed: called, paused or left (the desk stopped checking in)
+    closed          INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_op_idle_prompts ON op_idle_prompts(username, prompted_at);
+CREATE TABLE IF NOT EXISTS op_settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT
+);
 -- Browser softphone (see softphone.py): the GoVoice SIP extension each account signs in with. password is the
 -- SIP password, fetched from GoVoice with the account's GoVoice login (govoice_user / account_password).
 -- password, account_password and access_token are encrypted (see vault.py).
@@ -206,6 +252,26 @@ CREATE TABLE IF NOT EXISTS wa_messages (
     sent_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_wa_messages_op ON wa_messages(op_id);
+-- Calls that rang an agent's browser softphone (see inbound.py): one row per ring. A missed one waits on the desk's
+-- missed calls list until someone calls the number back, the caller gets through, or it's dismissed.
+CREATE TABLE IF NOT EXISTS op_inbound (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent           TEXT NOT NULL,     -- the account whose phone rang
+    number          TEXT NOT NULL,     -- the caller, as the phone system gave it
+    number_key      TEXT NOT NULL,     -- what numbers are compared on (db.number_key)
+    caller_name     TEXT,              -- the name the phone system showed
+    rang_at         TEXT NOT NULL,
+    answered_at     TEXT,
+    ended_at        TEXT,
+    result          TEXT NOT NULL,     -- ringing | answered | missed | declined | busy | elsewhere
+    op_id           INTEGER,           -- answered: the desk call opened for it
+    followup_op_id  INTEGER,           -- missed: the desk call serving the callback
+    resolved_at     TEXT,              -- missed: when it was dealt with
+    resolved_by     TEXT,
+    resolution      TEXT               -- called_back | got_through | dismissed
+);
+CREATE INDEX IF NOT EXISTS idx_op_inbound_key ON op_inbound(number_key, rang_at);
+CREATE INDEX IF NOT EXISTS idx_op_inbound_open ON op_inbound(resolved_at, result);
 """
 
 # Columns added after the first release; connect() adds them to older databases.
@@ -218,7 +284,13 @@ _ADDED_SOFTPHONE_COLUMNS = {"govoice_user": "TEXT", "account_password": "TEXT", 
 # campaign_id: the campaign the call belongs to (NULL: the first campaign, from before campaigns existed);
 # phone: the number dialed; call_id: the GoVoice recording of the call (see operations.link_recordings).
 _ADDED_OP_COLUMNS = {"campaign_id": "INTEGER", "phone": "TEXT", "call_id": "TEXT"}
-_ADDED_OP_AGENT_COLUMNS = {"campaign_id": "INTEGER"}
+# pause_id: the op_pauses row of the pause the agent is on (see floor.py); online_since: when their desk last came
+# online after being offline (see idle.py).
+_ADDED_OP_AGENT_COLUMNS = {"campaign_id": "INTEGER", "pause_id": "INTEGER", "online_since": "TEXT"}
+# earned: an earned break (see breaks.py) rather than a pause for one of the reasons.
+_ADDED_OP_PAUSE_COLUMNS = {"earned": "INTEGER NOT NULL DEFAULT 0"}
+# kind: outbound (a queue of CRM contacts to call) or inbound (the one campaign for calls customers make to us).
+_ADDED_CAMPAIGN_COLUMNS = {"kind": "TEXT NOT NULL DEFAULT 'outbound'"}
 # The softphone columns holding credentials, encrypted at rest (see vault.py).
 SOFTPHONE_SECRETS = ("password", "account_password", "access_token")
 
@@ -252,7 +324,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     missing_phone = {k: v for k, v in _ADDED_SOFTPHONE_COLUMNS.items() if k not in existing_phone}
     for name, kind in missing_phone.items():
         conn.execute(f"ALTER TABLE softphones ADD COLUMN {name} {kind}")
-    added_op = _add_columns(conn, "op_calls", _ADDED_OP_COLUMNS) | _add_columns(conn, "op_agents", _ADDED_OP_AGENT_COLUMNS)
+    added_op = (_add_columns(conn, "op_calls", _ADDED_OP_COLUMNS) | _add_columns(conn, "op_agents", _ADDED_OP_AGENT_COLUMNS)
+                | _add_columns(conn, "op_pauses", _ADDED_OP_PAUSE_COLUMNS)
+                | _add_columns(conn, "op_campaigns", _ADDED_CAMPAIGN_COLUMNS))
     # One desk call per recording.
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_op_recording ON op_calls(call_id) WHERE call_id IS NOT NULL")
     if missing or missing_user or missing_phone or added_op:
@@ -293,21 +367,23 @@ def connect() -> sqlite3.Connection:
     keys = skip_keys()
 
     def skip_listed(*numbers) -> int:
-        return int(bool(keys) and any(_number_key(n) in keys for n in numbers))
+        return int(bool(keys) and any(number_key(n) in keys for n in numbers))
 
     conn.create_function("skip_listed", 2, skip_listed, deterministic=True)
+    conn.create_function("number_key", 1, number_key, deterministic=True)
     return conn
 
 
-def _number_key(number: str | None) -> str:
-    """Phone numbers compare on their last 8 digits (with or without +216, like the CRM); extensions as they are."""
+def number_key(number: str | None) -> str:
+    """Phone numbers compare on their last 8 digits (with or without +216, like the CRM); extensions as they are.
+    Also an SQL function: number_key(phone)."""
     digits = re.sub(r"\D", "", number or "")
     return match_key(digits) or digits
 
 
 def skip_keys() -> set[str]:
     """The numbers in SKIP_NUMBERS (e.g. our own phones, called to test the line): their calls aren't processed."""
-    return {key for n in re.split(r"[,;]", live("SKIP_NUMBERS")) if (key := _number_key(n))}
+    return {key for n in re.split(r"[,;]", live("SKIP_NUMBERS")) if (key := number_key(n))}
 
 
 def _is_extension(number: str) -> bool:
@@ -315,7 +391,7 @@ def _is_extension(number: str) -> bool:
 
 
 def split_parties(rec: dict) -> tuple[str, str]:
-    """Return (agent_extension, customer_number) for a GoVoice recording row."""
+    """Return (agent_extension, customer_number) for a recording (see adapters/telephony/base.Recording)."""
     caller, called = rec.get("caller", ""), rec.get("called", "")
     if rec.get("type") == "OUT" or (_is_extension(caller) and not _is_extension(called)):
         return caller, called
@@ -323,6 +399,7 @@ def split_parties(rec: dict) -> tuple[str, str]:
 
 
 def upsert_recordings(conn: sqlite3.Connection, records: list[dict]) -> int:
+    """Add the recordings the phone system listed (adapters/telephony/base.Recording) that aren't in yet."""
     new = 0
     for rec in records:
         agent, customer = split_parties(rec)
@@ -333,8 +410,8 @@ def upsert_recordings(conn: sqlite3.Connection, records: list[dict]) -> int:
                ON CONFLICT(id) DO NOTHING""",
             (
                 rec["id"], rec.get("type"), rec.get("caller"), rec.get("called"), agent, customer,
-                rec.get("date_call"), int(rec.get("duree") or 0), int(rec.get("size") or 0),
-                rec.get("filename"), json.dumps(rec, ensure_ascii=False),
+                rec.get("date_call"), int(rec.get("duration") or 0), int(rec.get("size_kb") or 0),
+                rec.get("filename"), json.dumps(rec.get("raw", rec), ensure_ascii=False),
             ),
         )
         new += cur.rowcount

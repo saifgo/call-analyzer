@@ -1,0 +1,65 @@
+import type { pages as en } from "../en/pages";
+import type { Translation } from "../types";
+
+export const pages: Translation<typeof en> = {
+  "login.unreachable": "تعذّر الوصول إلى الخادم",
+  "login.signIn": "تسجيل الدخول",
+  "login.description": "استخدم الحساب الذي أنشأه لك مديرك.",
+  "login.username": "اسم المستخدم",
+  "login.password": "كلمة المرور",
+  "login.hidePassword": "إخفاء كلمة المرور",
+  "login.showPassword": "إظهار كلمة المرور",
+
+  "business.saved": "تم حفظ سياق النشاط",
+  "business.description":
+    "ما تبيعه، ومكالمتك المثالية، والاعتراضات الشائعة، ومن على أي تحويلة. يقيّم التحليل كل مكالمة وفق هذا السياق.",
+  "business.reanalyzeHint":
+    "بعد تغييره، أعد تحليل المكالمات (خط المعالجة ← تحليل مع «إعادة») لتحديث الملاحظات الحالية.",
+  "business.textareaLabel": "سياق النشاط (Markdown)",
+
+  "feedback.allAuthors": "كل الكتّاب",
+  "feedback.descriptionAdmin": "كل ما كتبه الفريق عن المكالمات. افتح صفًا لرؤية المكالمة، وأضف الملاحظات أو عدّلها هناك.",
+  "feedback.descriptionAgent": "ما كتبه المراجعون عن مكالماتك.",
+  "feedback.search": "ابحث في الملاحظات",
+  "feedback.searchPlaceholder": "ابحث عن ملاحظة أو رقم أو معرّف مكالمة",
+  "feedback.author": "الكاتب",
+  "feedback.notes_one": "ملاحظة واحدة",
+  "feedback.notes_two": "ملاحظتان",
+  "feedback.notes_few": "{count} ملاحظات",
+  "feedback.notes_other": "{count} ملاحظة",
+  "feedback.loading": "جارٍ تحميل الملاحظات…",
+  "feedback.added": "أُضيفت",
+  "feedback.feedback": "الملاحظة",
+  "feedback.score": "التقييم",
+  "feedback.call": "المكالمة",
+  "feedback.edited": "عُدّلت {time}",
+  "feedback.humanScore": "بشري {score}/10",
+  "feedback.ai": "ذكاء اصطناعي",
+  "feedback.noneFound": "لم يتم العثور على ملاحظات",
+  "feedback.emptyAdmin": "افتح مكالمة واستخدم تبويب الملاحظات البشرية لكتابة أول ملاحظة.",
+  "feedback.emptyAgent": "لم يكتب أحد ملاحظات على مكالماتك بعد.",
+  "feedback.showingLatest": "عرض أحدث {shown} من {total}. ابحث لتضييق النتائج.",
+
+  "reports.wholeTeam": "الفريق كله",
+  "reports.shareDescription": "رابط خاص لتقرير التدريب هذا. يمكن لأي شخص لديه الرابط قراءته دون تسجيل الدخول.",
+  "reports.noLink": "لا يوجد رابط لهذا التقرير بعد.",
+  "reports.generate": "إنشاء التقارير",
+  "reports.descriptionAdmin": "تقارير تدريب للفريق كله ولكل وكيل.",
+  "reports.descriptionAgent": "تقارير التدريب الخاصة بك.",
+  "reports.none": "لا توجد تقارير بعد",
+  "reports.emptyAdmin": "حلّل بعض المكالمات، ثم أنشئ منها تقارير تدريب.",
+  "reports.emptyAgent": "تظهر تقارير التدريب هنا بعد أن ينشئها مديرك.",
+
+  "share.title": "رابط المشاركة",
+  "share.revoked": "تم إلغاء رابط المشاركة",
+  "share.copy": "انسخ الرابط",
+  "share.localOnly": "يعمل على هذا الحاسوب فقط",
+  "share.localOnlyHint":
+    "للمشاركة مع الآخرين، اضبط PUBLIC_URL (استضافة) أو SHARE_ON_LAN=true (شبكة محلية) في الإعدادات وأعد تشغيل التطبيق. لإرساله إلى أي شخص، نزّل ملف PDF بدلًا من ذلك.",
+  "share.revoke": "إلغاء الرابط",
+  "share.open": "فتح",
+  "share.create": "إنشاء رابط",
+  "share.pdfStarting": "يبدأ التنزيل خلال ثوانٍ.",
+  "share.creatingPdf": "جارٍ إنشاء PDF…",
+  "share.downloadPdf": "تنزيل PDF",
+};
