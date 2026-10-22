@@ -330,6 +330,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 | _add_columns(conn, "op_campaigns", _ADDED_CAMPAIGN_COLUMNS))
     # One desk call per recording.
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_op_recording ON op_calls(call_id) WHERE call_id IS NOT NULL")
+    # Desk calls by phone number (missed calls, the caller's history): without it each lookup ran number_key() on
+    # every desk call, and the desk and alerts polls do one per missed number. Every connection has number_key.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_op_phone_key ON op_calls(number_key(phone))")
     if missing or missing_user or missing_phone or added_op:
         conn.commit()
     _encrypt_softphones(conn)
@@ -368,13 +371,6 @@ def connect() -> sqlite3.Connection:
     fresh = path not in _ready or not settings.db_path.exists()  # before connecting, which creates the file
     conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    if fresh:
-        with _ready_lock:
-            conn.execute("PRAGMA journal_mode=WAL")  # the UI reads while pipeline jobs write; stays set in the file
-            conn.executescript(SCHEMA)
-            _migrate(conn)
-            conn.executescript(TRIGGERS)
-            _ready.add(path)
     # SQL skip_listed(caller, called): whether a call involves a number in SKIP_NUMBERS, as saved when connecting.
     keys = skip_keys()
 
@@ -382,7 +378,15 @@ def connect() -> sqlite3.Connection:
         return int(bool(keys) and any(number_key(n) in keys for n in numbers))
 
     conn.create_function("skip_listed", 2, skip_listed, deterministic=True)
+    # Before the schema: an index uses it (idx_op_phone_key), so writing to op_calls needs it.
     conn.create_function("number_key", 1, number_key, deterministic=True)
+    if fresh:
+        with _ready_lock:
+            conn.execute("PRAGMA journal_mode=WAL")  # the UI reads while pipeline jobs write; stays set in the file
+            conn.executescript(SCHEMA)
+            _migrate(conn)
+            conn.executescript(TRIGGERS)
+            _ready.add(path)
     return conn
 
 

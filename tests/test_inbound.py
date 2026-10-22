@@ -286,5 +286,15 @@ class InboundCampaignTests(InboundTestCase):
         self.assertEqual((callback["source"], callback["opportunity_id"]), ("callback", "o8"))
 
 
+
+class SpeedTests(unittest.TestCase):
+    def test_desk_calls_are_found_by_number_through_an_index(self):
+        # The desk and alerts polls look up every missed number this way: a full scan made them take a minute.
+        from call_analyzer import db
+        plan = db.connect().execute("EXPLAIN QUERY PLAN SELECT id FROM op_calls WHERE number_key(phone) = ?",
+                                    ("12345678",)).fetchall()
+        self.assertIn("idx_op_phone_key", " ".join(row[3] for row in plan))
+
+
 if __name__ == "__main__":
     unittest.main()

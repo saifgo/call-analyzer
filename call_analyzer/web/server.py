@@ -1,4 +1,5 @@
 """Local web UI: settings, call browser with editable transcripts, pipeline runner, reports."""
+import asyncio
 import hmac
 import json
 import mimetypes
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +53,37 @@ def _secret_keys() -> set[str]:
     return keys
 
 
+BLOCKED_AFTER = 2.0  # seconds the event loop may go without answering before the watchdog logs what holds it
+SLOW_REQUEST = 3.0  # requests slower than this are logged with their path
+
+
+def _thread_stacks(only: int | None = None) -> str:
+    names = {t.ident: t.name for t in threading.enumerate()}
+    out = []
+    for ident, frame in sys._current_frames().items():
+        if only is None or ident == only:
+            out.append(f"--- thread {names.get(ident, ident)} ---\n" + "".join(traceback.format_stack(frame)))
+    return "\n".join(out)
+
+
+def loop_watchdog(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: threading.Event):
+    """Log where the event loop is stuck when it stops answering: it serves every request, the health check too."""
+    while not stop.wait(1):
+        answered = threading.Event()
+        started = time.monotonic()
+        loop.call_soon_threadsafe(answered.set)
+        if answered.wait(BLOCKED_AFTER) or stop.is_set():
+            continue
+        # The loop thread's own stack shows a blocking call; if it is only waiting (selectors/epoll), another
+        # thread is hogging the CPU (the GIL), so then show them all.
+        frame = sys._current_frames().get(loop_thread)
+        idle = frame is None or frame.f_code.co_filename.endswith("selectors.py")
+        stack = _thread_stacks(None if idle else loop_thread)
+        print(f"[watchdog] event loop blocked for over {BLOCKED_AFTER:.0f}s; stacks:\n{stack}", flush=True)
+        answered.wait()
+        print(f"[watchdog] event loop free again after {time.monotonic() - started:.1f}s", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app):
     auth.ensure_admin()
@@ -60,6 +93,8 @@ async def lifespan(app):
     threading.Thread(target=telephony.keepalive_loop, args=(stop,), daemon=True).start()
     threading.Thread(target=auto_process_loop, args=(stop,), daemon=True).start()
     threading.Thread(target=workers_api.janitor_loop, args=(stop,), daemon=True).start()
+    threading.Thread(target=loop_watchdog, args=(asyncio.get_running_loop(), threading.get_ident(), stop),
+                     name="loop-watchdog", daemon=True).start()
     yield
     stop.set()
 
@@ -371,8 +406,12 @@ async def healthz():  # async: answers on the event loop, without waiting for a 
 @app.middleware("http")
 async def no_cache(request, call_next):
     """Always revalidate the HTML so UI updates show up without a hard refresh; built assets have hashed names."""
+    started = time.monotonic()
     response = await call_next(request)
     path = request.url.path
+    elapsed = time.monotonic() - started
+    if elapsed > SLOW_REQUEST and not path.startswith("/api/worker/"):  # agents' task requests wait on purpose
+        print(f"[slow] {request.method} {path} took {elapsed:.1f}s", flush=True)
     if path.startswith("/static/assets/"):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     elif path in ("/", "/login") or path.startswith("/static/"):
