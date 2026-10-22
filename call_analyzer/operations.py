@@ -301,13 +301,13 @@ def _taken(conn, campaign: dict) -> tuple[set[str], dict[str, str]]:
     return busy | (handled - set(retries)), retries
 
 
-def _campaign_leads(campaign: dict) -> dict:
+def _campaign_leads(campaign: dict, wait: bool = True) -> dict:
     """The CRM opportunities at the campaign's stages: stage by stage in pipeline order (New before Attempted), oldest
-    first within each. Raises crm.CrmError."""
+    first within each. `wait=False`: a list out of date is used as is (see crm.leads). Raises crm.CrmError."""
     order = {s["value"]: i for i, s in enumerate(crm.opportunity_stages())}
     leads, truncated = [], False
     for stage in sorted(campaign["stages"], key=lambda s: order.get(s, len(order))):
-        data = crm.leads(stage=stage, oldest_first=True)
+        data = crm.leads(stage=stage, oldest_first=True, wait=wait)
         leads += data["leads"]
         truncated = truncated or data["truncated"]
     return {"leads": leads, "truncated": truncated}
@@ -326,7 +326,7 @@ def _queue(leads: list[dict], taken: set[str], retries: dict[str, str]) -> list[
 
 def queue_counts(conn, campaign: dict) -> dict:
     """How many contacts are waiting in the campaign's queue. `waiting` is None when the CRM can't be read (`error`
-    says why)."""
+    says why). Polled with the desk, so it doesn't wait for the CRM: the count may be up to a fetch behind."""
     now = _now()
     mine = "COALESCE(campaign_id, ?) = ?"
     args = (campaigns.default_id(conn), campaign["id"])
@@ -340,7 +340,7 @@ def queue_counts(conn, campaign: dict) -> dict:
         result["error"] = crm.not_configured_message()
         return result
     try:
-        data = _campaign_leads(campaign)
+        data = _campaign_leads(campaign, wait=False)
     except crm.CrmError as exc:
         result["error"] = str(exc)
         return result

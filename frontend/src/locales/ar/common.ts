@@ -20,4 +20,5 @@ export const common: Translation<typeof en> = {
   "common.minutesShort_one": "{count} د",
   "common.minutesShort_other": "{count} د",
   "common.notLoggedIn": "غير مسجّل الدخول",
+  "common.timedOut": "استغرق الخادم وقتًا طويلًا للرد. إعادة المحاولة…",
 };

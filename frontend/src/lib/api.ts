@@ -15,13 +15,20 @@ export function loginUrl(): string {
 
 export async function api<T = unknown>(
   path: string,
-  options: { method?: string; body?: unknown } = {},
+  options: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
-  const res = await fetch(path, {
-    method: options.method,
-    headers: { "Accept-Language": getLocale(), "Content-Type": "application/json" },
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: options.method,
+      headers: { "Accept-Language": getLocale(), "Content-Type": "application/json" },
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
+    });
+  } catch (err) {
+    if ((err as Error).name === "TimeoutError") throw new ApiError(t("common.timedOut"), 0);
+    throw err;
+  }
   if (res.status === 401 && path !== "/api/login") {
     // Session expired or signed out in another tab.
     location.href = loginUrl();

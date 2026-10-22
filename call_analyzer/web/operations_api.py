@@ -39,19 +39,23 @@ def get_desk(request: Request):
     waiting to be called back (see inbound.py)."""
     user = request.state.user
     conn = db.connect()
-    operations.release_stale(conn)
-    ready = operations.heartbeat(conn, user)
-    missed = inbound.missed(conn)
-    row = operations.current(conn, user)
-    names = operations.account_names(conn)
-    campaign = operations.agent_campaign(conn, user)
-    today = operations.today(conn, user)
-    idle_prompt = idle.check(conn, user)
-    return {"ready": ready, "idle_prompt": idle_prompt, "current": operations.to_dict(row, names) if row else None,
-            "campaign_id": campaign["id"], "today": today, "goals": operations.goals(conn, user, today),
-            "pause": None if ready else floor.pause_state(conn, user), "pause_reasons": floor.reasons(conn),
-            "earned_break": breaks.state(conn, user), "missed": missed,
-            "callbacks": operations.my_callbacks(conn, user), "queue": operations.queue_counts(conn, campaign)}
+    try:
+        operations.release_stale(conn)
+        ready = operations.heartbeat(conn, user)
+        missed = inbound.missed(conn)
+        row = operations.current(conn, user)
+        names = operations.account_names(conn)
+        campaign = operations.agent_campaign(conn, user)
+        today = operations.today(conn, user)
+        idle_prompt = idle.check(conn, user)
+        return {"ready": ready, "idle_prompt": idle_prompt,
+                "current": operations.to_dict(row, names) if row else None,
+                "campaign_id": campaign["id"], "today": today, "goals": operations.goals(conn, user, today),
+                "pause": None if ready else floor.pause_state(conn, user), "pause_reasons": floor.reasons(conn),
+                "earned_break": breaks.state(conn, user), "missed": missed,
+                "callbacks": operations.my_callbacks(conn, user), "queue": operations.queue_counts(conn, campaign)}
+    finally:
+        conn.close()
 
 
 # --- Incoming calls (see inbound.py): the agent's softphone says when one rings, is answered and ends ---------------

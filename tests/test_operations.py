@@ -6,6 +6,8 @@ encryption of the softphone credentials (vault.py). The CRM is a fake: nothing h
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -143,6 +145,34 @@ class QueueTests(DeskTestCase):
         self.assertEqual(operations.claim_next("a2"), (None, None))
         counts = operations.queue_counts(self.conn, campaigns.get(self.conn, None))
         self.assertEqual((counts["waiting"], counts["no_phone"]), (0, 1))
+
+    def test_the_queue_count_does_not_wait_for_a_slow_crm(self):
+        campaign = campaigns.get(self.conn, None)
+        self.assertEqual(operations.queue_counts(self.conn, campaign)["waiting"], 6)
+        # The CRM gains a contact but hangs: the desk's count keeps the last list, fetched again in the background.
+        release, fetched = threading.Event(), threading.Event()
+        slow = self.crm.list_opportunities
+
+        def hang(stage, oldest_first):
+            release.wait(10)
+            try:
+                return slow(stage, oldest_first)
+            finally:
+                fetched.set()
+
+        self.crm.list_opportunities = hang
+        self.crm.by_stage["NEW"].append(lead(8))
+        crm.forget_leads()
+        started = time.monotonic()
+        self.assertEqual(operations.queue_counts(self.conn, campaign)["waiting"], 6)
+        self.assertLess(time.monotonic() - started, 2)
+        release.set()
+        self.assertTrue(fetched.wait(5))
+        for _ in range(50):  # the background fetch stores its list right after returning it
+            if operations.queue_counts(self.conn, campaign)["waiting"] == 7:
+                break
+            time.sleep(0.05)
+        self.assertEqual(operations.queue_counts(self.conn, campaign)["waiting"], 7)
 
     def test_given_back_contact_goes_to_someone_else_not_back_to_the_same_agent(self):
         op = self.serve("a1")

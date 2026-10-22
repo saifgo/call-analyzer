@@ -17,4 +17,5 @@ export const common = {
   "common.minutesShort_one": "{count} min",
   "common.minutesShort_other": "{count} min",
   "common.notLoggedIn": "Not logged in",
+  "common.timedOut": "The server took too long to answer. Retrying…",
 };

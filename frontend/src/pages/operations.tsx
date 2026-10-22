@@ -90,6 +90,7 @@ import { t, type TKey, tx } from "@/lib/i18n";
 
 /** How often the desk checks in (also what keeps the agent's contact reserved for them). */
 const POLL_MS = 15_000;
+const DESK_TIMEOUT_MS = 20_000;
 /** The number last used for a test call, offered again next time. */
 const TEST_PHONE_KEY = "operations.testPhone";
 /** Whether the power dialer is on (kept per browser). */
@@ -2077,12 +2078,18 @@ function Desk() {
     setPowerDial(on);
   };
 
+  // One check-in at a time: a slow one isn't piled on, and gives up after DESK_TIMEOUT_MS (the next poll retries).
+  const loading = React.useRef(false);
   const load = React.useCallback(async () => {
+    if (loading.current) return;
+    loading.current = true;
     try {
-      setDesk(await api<OpDesk>("/api/operations/desk"));
+      setDesk(await api<OpDesk>("/api/operations/desk", { timeoutMs: DESK_TIMEOUT_MS }));
       setError(null);
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      loading.current = false;
     }
   }, []);
 

@@ -22,6 +22,8 @@ _cache: dict[tuple[str, str], tuple[float, dict]] = {}  # (adapter, match key) -
 _leads_cache: dict[tuple[str, str, bool], tuple[float, list[dict], bool]] = {}  # -> (when, leads, more in the CRM)
 _stages_cache: dict[str, tuple[float, list[dict]]] = {}
 _members_cache: dict[str, tuple[float, list[dict]]] = {}
+_refreshing: set[tuple] = set()  # lead lists being fetched again in the background (see leads(wait=False))
+_leads_generation = 0  # bumped by forget_leads(), so a background fetch started before it isn't kept
 
 
 def adapter() -> CrmAdapter:
@@ -36,7 +38,9 @@ def use(crm: CrmAdapter | None) -> None:
 
 def forget() -> None:
     """Drop everything cached from the CRM."""
+    global _leads_generation
     with _lock:
+        _leads_generation += 1
         for cache in (_cache, _leads_cache, _stages_cache, _members_cache):
             cache.clear()
 
@@ -82,12 +86,14 @@ def lookup(number: str) -> dict:
     return result
 
 
-def leads(stage: str | None = None, refresh: bool = False, oldest_first: bool = False) -> dict:
+def leads(stage: str | None = None, refresh: bool = False, oldest_first: bool = False, wait: bool = True) -> dict:
     """Opportunities at `stage` (the lead stage by default; newest first, or oldest first for the call queue), each
     with its point of contact and their phone numbers.
 
     Returns {"configured": bool, "stage": str, "leads": [...], "truncated": bool}. Cached for CACHE_SECONDS unless
-    `refresh`. Raises CrmError when the CRM can't be queried."""
+    `refresh`. With `wait=False` an out-of-date list is returned as is and fetched again in the background (for
+    figures polled often, like the desk's queue count); only a list never fetched is waited for. Raises CrmError
+    when the CRM can't be queried."""
     crm = adapter()
     stage = stage or crm.lead_stage
     result = {"configured": crm.is_configured(), "stage": stage, "leads": [], "truncated": False}
@@ -98,20 +104,55 @@ def leads(stage: str | None = None, refresh: bool = False, oldest_first: bool = 
         cached = _leads_cache.get(cache_key)
     if cached and not refresh and time.time() - cached[0] < CACHE_SECONDS:
         found, more = cached[1], cached[2]
+    elif cached and not refresh and not wait:
+        found, more = cached[1], cached[2]
+        _refresh_leads_later(crm, cache_key, stage, oldest_first)
     else:
-        found, more = crm.list_opportunities(stage, oldest_first)
         with _lock:
-            _leads_cache[cache_key] = (time.time(), found, more)
+            generation = _leads_generation
+        found, more = crm.list_opportunities(stage, oldest_first)
+        _keep_leads(cache_key, generation, found, more)
     # Callers add to the leads (e.g. their calls), so each gets its own copies.
     result["leads"] = [{**lead, "contact": dict(lead["contact"]) if lead.get("contact") else None} for lead in found]
     result["truncated"] = more
     return result
 
 
-def forget_leads():
-    """Drop the cached lead lists, e.g. after moving an opportunity to another stage."""
+def _keep_leads(cache_key: tuple, generation: int, found: list[dict], more: bool) -> None:
+    """Cache a fetched lead list, unless forget_leads() ran while it was being fetched (it may miss that change)."""
     with _lock:
-        _leads_cache.clear()
+        if generation == _leads_generation:
+            _leads_cache[cache_key] = (time.time(), found, more)
+
+
+def _refresh_leads_later(crm: CrmAdapter, cache_key: tuple, stage: str, oldest_first: bool) -> None:
+    """Fetch a lead list again in a background thread, once at a time per list."""
+    with _lock:
+        if cache_key in _refreshing:
+            return
+        _refreshing.add(cache_key)
+        generation = _leads_generation
+
+    def run():
+        try:
+            _keep_leads(cache_key, generation, *crm.list_opportunities(stage, oldest_first))
+        except Exception as exc:  # the stale list stays; the next poll tries again
+            print(f"[crm] refreshing the {stage} leads failed: {exc}", flush=True)
+        finally:
+            with _lock:
+                _refreshing.discard(cache_key)
+
+    threading.Thread(target=run, name="crm-leads", daemon=True).start()
+
+
+def forget_leads():
+    """Mark the cached lead lists out of date, e.g. after moving an opportunity to another stage: the next leads()
+    fetches them again (leads(wait=False) keeps showing them meanwhile)."""
+    global _leads_generation
+    with _lock:
+        _leads_generation += 1
+        for key, (_, found, more) in list(_leads_cache.items()):
+            _leads_cache[key] = (0.0, found, more)
 
 
 def opportunity_stages() -> list[dict]:
@@ -121,10 +162,29 @@ def opportunity_stages() -> list[dict]:
         cached = _stages_cache.get(crm.name)
     if cached and time.time() - cached[0] < STAGES_CACHE_SECONDS:
         return cached[1]
+    if cached:  # they rarely change: keep using them while they're read again in the background
+        with _lock:
+            busy = ("stages", crm.name) in _refreshing
+            _refreshing.add(("stages", crm.name))
+        if not busy:
+            threading.Thread(target=_refresh_stages, args=(crm,), name="crm-stages", daemon=True).start()
+        return cached[1]
     stages = crm.stages()
     with _lock:
         _stages_cache[crm.name] = (time.time(), stages)
     return stages
+
+
+def _refresh_stages(crm: CrmAdapter) -> None:
+    try:
+        stages = crm.stages()
+        with _lock:
+            _stages_cache[crm.name] = (time.time(), stages)
+    except Exception as exc:
+        print(f"[crm] reading the opportunity stages failed: {exc}", flush=True)
+    finally:
+        with _lock:
+            _refreshing.discard(("stages", crm.name))
 
 
 def opportunity(opportunity_id: str) -> dict:
