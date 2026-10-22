@@ -1,5 +1,9 @@
 import { intlLocale, maybeT, t } from "@/lib/i18n";
 
+/** A CRM/caller name cut to `max` characters with "..." so long names don't break layouts. */
+export const shortName = <T extends string | null | undefined>(name: T, max = 50): T =>
+  (name && name.length > max ? `${name.slice(0, max).trimEnd()}...` : name) as T;
+
 export const fmtDuration = (s: number): string => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 /** An API value for display: its translation from the locales' "value.*" keys, else "not_interested" -> "Not interested". */

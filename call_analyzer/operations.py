@@ -26,6 +26,7 @@ import re
 import threading
 import uuid
 from datetime import datetime, timedelta
+from itertools import groupby
 
 from . import campaigns, crm, db, floor
 
@@ -74,6 +75,7 @@ def config() -> dict:
         for o in c["outcomes"]:
             merged.setdefault(o["value"], o)
     return {"campaigns": found, "outcomes": list(merged.values()), "stages": stages,
+            "lead_stage": crm.lead_stage(), "attempted_stage": crm.attempted_stage(),
             "crm_configured": crm.is_configured()}
 
 
@@ -262,24 +264,64 @@ def _callable(lead: dict) -> bool:
     return bool((lead.get("contact") or {}).get("phones"))
 
 
-def _taken(conn, campaign_id: int) -> set[str]:
-    """Opportunities the campaign's queue must skip: being called, waiting for a callback, or already handled in this
-    campaign."""
-    return {r[0] for r in conn.execute(
-        "SELECT DISTINCT opportunity_id FROM op_calls WHERE status IN ('assigned', 'in_call', 'scheduled') "
-        "OR (status = 'done' AND COALESCE(campaign_id, ?) = ?)", (campaigns.default_id(conn), campaign_id))}
+def _retries(conn, campaign: dict) -> dict[str, str]:
+    """Contacts handled in this campaign that the queue may serve again, with when they were last tried: the latest
+    call didn't reach them (and didn't reject them), it's been the campaign's retry time since, and they have tries
+    left."""
+    lookup = outcome_lookup(conn)
+    attempted = crm.attempted_stage()
+    cutoff = (datetime.now() - timedelta(minutes=campaign["retry_minutes"])).isoformat(timespec="seconds")
+    rows = conn.execute("""SELECT opportunity_id, outcome, campaign_id, finished_at FROM op_calls
+                           WHERE status = 'done' AND opportunity_id IN (
+                               SELECT opportunity_id FROM op_calls WHERE status = 'done' AND COALESCE(campaign_id, ?) = ?)
+                           ORDER BY opportunity_id, finished_at DESC, id DESC""",
+                        (campaigns.default_id(conn), campaign["id"])).fetchall()
+    ready = {}
+    for opp, calls in groupby(rows, key=lambda r: r["opportunity_id"]):
+        calls = [(lookup(r["campaign_id"], r["outcome"]), r["finished_at"] or "") for r in calls]
+        latest, when = calls[0]
+        if latest.get("reached") or latest.get("stage") not in (None, attempted) or when > cutoff:
+            continue
+        unanswered = next((i for i, (o, _) in enumerate(calls) if o.get("reached")), len(calls))
+        if not campaign["max_attempts"] or unanswered < campaign["max_attempts"]:
+            ready[opp] = when
+    return ready
+
+
+def _taken(conn, campaign: dict) -> tuple[set[str], dict[str, str]]:
+    """Opportunities the campaign's queue must skip (being called, waiting for a callback, or already handled in this
+    campaign, unless it's time to try an unreached one again), and those tried again with when they were last
+    tried."""
+    busy = {r[0] for r in conn.execute(
+        "SELECT DISTINCT opportunity_id FROM op_calls WHERE status IN ('assigned', 'in_call', 'scheduled')")}
+    handled = {r[0] for r in conn.execute(
+        "SELECT DISTINCT opportunity_id FROM op_calls WHERE status = 'done' AND COALESCE(campaign_id, ?) = ?",
+        (campaigns.default_id(conn), campaign["id"]))}
+    retries = {k: v for k, v in _retries(conn, campaign).items() if k not in busy}
+    return busy | (handled - set(retries)), retries
 
 
 def _campaign_leads(campaign: dict) -> dict:
-    """The CRM opportunities at the campaign's stages, oldest first. Raises crm.CrmError."""
+    """The CRM opportunities at the campaign's stages: stage by stage in pipeline order (New before Attempted), oldest
+    first within each. Raises crm.CrmError."""
+    order = {s["value"]: i for i, s in enumerate(crm.opportunity_stages())}
     leads, truncated = [], False
-    for stage in campaign["stages"]:
+    for stage in sorted(campaign["stages"], key=lambda s: order.get(s, len(order))):
         data = crm.leads(stage=stage, oldest_first=True)
         leads += data["leads"]
         truncated = truncated or data["truncated"]
-    if len(campaign["stages"]) > 1:
-        leads.sort(key=lambda lead: lead.get("created_at") or "")
     return {"leads": leads, "truncated": truncated}
+
+
+def _queue(leads: list[dict], taken: set[str], retries: dict[str, str]) -> list[dict]:
+    """The contacts waiting, in serving order: the campaign's order, except that contacts we already tried go after
+    those of their stage we haven't, the least recently tried first."""
+    rank = {}
+    for lead in leads:
+        rank.setdefault(lead.get("stage"), len(rank))
+    fresh = [lead for lead in leads if lead["id"] not in taken]
+    # sorted() is stable: untried contacts keep their oldest-first order.
+    return sorted(fresh, key=lambda lead: (rank[lead.get("stage")], lead["id"] in retries, retries.get(lead["id"], "")))
 
 
 def queue_counts(conn, campaign: dict) -> dict:
@@ -302,8 +344,7 @@ def queue_counts(conn, campaign: dict) -> dict:
     except crm.CrmError as exc:
         result["error"] = str(exc)
         return result
-    taken = _taken(conn, campaign["id"])
-    fresh = [lead for lead in data["leads"] if lead["id"] not in taken]
+    fresh = _queue(data["leads"], *_taken(conn, campaign))
     result.update(waiting=sum(map(_callable, fresh)), no_phone=sum(not _callable(lead) for lead in fresh),
                   truncated=data["truncated"])
     return result
@@ -347,8 +388,8 @@ def claim_next(username: str) -> tuple[dict | None, str | None]:
             leads = _campaign_leads(campaign)["leads"]
         except crm.CrmError as exc:
             return None, str(exc)
-        taken = _taken(conn, campaign["id"]) | skipped
-        lead = next((lead for lead in leads if lead["id"] not in taken and _callable(lead)), None)
+        taken, retries = _taken(conn, campaign)
+        lead = next((lead for lead in _queue(leads, taken | skipped, retries) if _callable(lead)), None)
         if not lead:
             return None, None
         cur = conn.execute("""INSERT INTO op_calls (opportunity_id, person_id, lead, source, status, agent, assigned_at,
@@ -599,6 +640,12 @@ def finish(op_id: int, username: str, *, answers: dict, outcome: str, note: str,
     chosen = campaigns.outcome(campaign, outcome)
     if not chosen:
         raise OperationError("Choose how the call went")
+    # A call from a queue that didn't get hold of a New contact (and didn't reject them): they're Attempted now, at
+    # the end of the New leads queue.
+    attempted = crm.attempted_stage()
+    if (campaign["kind"] == campaigns.OUTBOUND and (in_crm(row) or is_test(row)) and not chosen["reached"]
+            and not stage and chosen.get("stage") in (None, attempted) and attempted in known_stages and (row["stage_before"] or crm.lead_stage()) == crm.lead_stage()):
+        stage = attempted
     exhausted = False
     if not chosen["reached"] and campaign["max_attempts"] and attempts(conn, row) + 1 >= campaign["max_attempts"]:
         exhausted, due = True, None
@@ -611,6 +658,10 @@ def finish(op_id: int, username: str, *, answers: dict, outcome: str, note: str,
                         note = ?, stage_after = ? WHERE id = ?""",
                  (now, now, now, json.dumps(clean_answers(answers, campaign), ensure_ascii=False), outcome,
                   note.strip()[:4000] or None, stage or None, op_id))
+    if chosen["reached"] or due:
+        # The contact was dealt with (or booked again): the callbacks still waiting for them are done with.
+        conn.execute("UPDATE op_calls SET status = 'cancelled', finished_at = ? WHERE opportunity_id = ? "
+                     "AND status = 'scheduled'", (now, row["opportunity_id"]))
     if due:
         lead = json.loads(row["lead"]) if row["lead"] else {}
         if stage:
@@ -635,6 +686,35 @@ def cancel_callback(conn, op_id: int, username: str, is_admin: bool) -> None:
         raise OperationError("Only the agent who booked this callback, or an admin, can cancel it", 403)
     conn.execute("UPDATE op_calls SET status = 'cancelled', finished_at = ? WHERE id = ?", (_now(), op_id))
     conn.commit()
+
+
+def take_callback(username: str, op_id: int) -> dict:
+    """The agent calls one of their callbacks now, before it's due (from "My callbacks"). A contact they hold but
+    haven't called yet goes back to the queue; one they're on the phone with must be closed first."""
+    with _claim_lock:
+        conn = db.connect()
+        row = get_row(conn, op_id)
+        names = account_names(conn)
+        if row["source"] != "callback":
+            raise OperationError("Not found", 404)
+        if (mine := current(conn, username)) and mine["id"] == op_id:
+            return to_dict(mine, names)
+        if row["status"] != "scheduled":
+            raise OperationError("This callback isn't waiting anymore", 409)
+        if username not in (row["scheduled_by"], row["assign_to"]):
+            raise OperationError("This callback is kept for someone else", 403)
+        if mine:
+            if mine["status"] != "assigned":
+                raise OperationError("Close the call you're on before starting another one", 409)
+            release(conn, mine["id"])
+        held = conn.execute("SELECT agent FROM op_calls WHERE opportunity_id = ? AND status IN ('assigned', 'in_call')",
+                            (row["opportunity_id"],)).fetchone()
+        if held:
+            raise OperationError(f"{names.get(held[0], held[0])} is already calling this contact", 409)
+        conn.execute("UPDATE op_calls SET status = 'assigned', agent = ?, assigned_at = ? WHERE id = ?",
+                     (username, _now(), op_id))
+        conn.commit()
+        return to_dict(get_row(conn, op_id), names)
 
 
 # --- Writing back to the CRM ----------------------------------------------------------------------

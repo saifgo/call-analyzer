@@ -1,6 +1,7 @@
 import json
 import re
 import sqlite3
+import threading
 
 from .config import live, settings
 from .phones import match_key
@@ -355,14 +356,25 @@ def _encrypt_softphones(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+# Databases whose schema, migrations and triggers this process has already set up. Doing it on every connect
+# took a write lock each time, so a page load could stall behind a pipeline job's write (and the health check with it).
+_ready: set[str] = set()
+_ready_lock = threading.Lock()
+
+
 def connect() -> sqlite3.Connection:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(settings.db_path, timeout=30, check_same_thread=False)
+    path = str(settings.db_path)
+    fresh = path not in _ready or not settings.db_path.exists()  # before connecting, which creates the file
+    conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")  # the UI reads while pipeline jobs write
-    conn.executescript(SCHEMA)
-    _migrate(conn)
-    conn.executescript(TRIGGERS)
+    if fresh:
+        with _ready_lock:
+            conn.execute("PRAGMA journal_mode=WAL")  # the UI reads while pipeline jobs write; stays set in the file
+            conn.executescript(SCHEMA)
+            _migrate(conn)
+            conn.executescript(TRIGGERS)
+            _ready.add(path)
     # SQL skip_listed(caller, called): whether a call involves a number in SKIP_NUMBERS, as saved when connecting.
     keys = skip_keys()
 

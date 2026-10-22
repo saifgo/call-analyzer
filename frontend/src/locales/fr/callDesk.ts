@@ -100,7 +100,7 @@ export const callDesk: Translation<typeof en> = {
   "desk.addAndCall": "Ajouter et appeler",
 
   "desk.myCallbacks": "Mes rappels",
-  "desk.myCallbacksHint": "Servis à vous (ou au premier agent libre) à leur échéance.",
+  "desk.myCallbacksHint": "Servis à vous (ou au premier agent libre) à leur échéance. « Appeler maintenant » pour appeler en avance ; joindre le contact par un autre appel clôt son rappel.",
   "desk.test": "Test",
   "desk.keptForYou": "Gardé pour vous",
   "desk.testCall": "Appel de test",

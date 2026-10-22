@@ -53,7 +53,7 @@ export const campaigns: Translation<typeof en> = {
   "campaigns.description": "Description",
   "campaigns.queue": "File",
   "campaigns.queueHint":
-    "Les opportunités du CRM à ces étapes, avec un numéro de téléphone, sont appelées de la plus ancienne à la plus récente.",
+    "Les opportunités du CRM à ces étapes, avec un numéro de téléphone, sont appelées étape par étape dans l'ordre du pipeline (Nouveau avant Tenté), de la plus ancienne à la plus récente. Les contacts non joints sont rappelés après le délai de nouvelle tentative.",
   "campaigns.rules": "Règles d'appel",
   "campaigns.rulesHint": "Quand la file est servie, et combien de temps réessayer un contact qui ne répond pas.",
   "campaigns.maxAttempts": "Essais avant abandon",

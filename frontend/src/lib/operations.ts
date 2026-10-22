@@ -1,6 +1,6 @@
 // Shared by the call desk, the team board and the wallboard (pages/operations*.tsx, pages/wallboard.tsx).
 import * as React from "react";
-import { parseDate } from "@/lib/format";
+import { parseDate, shortName } from "@/lib/format";
 import type { OpAgentState, OpCall, OpGoalMetric, OpOutcome, OpPause, OpProgress } from "@/lib/types";
 import { labels, t } from "@/lib/i18n";
 
@@ -66,7 +66,7 @@ export function secondsFrom(value: string | null | undefined, now: number): numb
 }
 
 export function contactName(op: OpCall | null): string {
-  const name = op?.lead?.contact?.name ?? op?.lead?.name ?? t("ops.contact");
+  const name = shortName(op?.lead?.contact?.name ?? op?.lead?.name ?? t("ops.contact"));
   return op?.test ? t("ops.contactTest", { name }) : name;
 }
 

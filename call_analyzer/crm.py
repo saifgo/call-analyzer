@@ -55,6 +55,11 @@ def lead_stage() -> str:
     return adapter().lead_stage
 
 
+def attempted_stage() -> str:
+    """The stage of opportunities we called but couldn't reach."""
+    return adapter().attempted_stage
+
+
 def lookup(number: str) -> dict:
     """Contacts in the CRM whose phone number matches `number`, each with their opportunities.
 

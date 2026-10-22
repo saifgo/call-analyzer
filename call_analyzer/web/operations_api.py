@@ -193,8 +193,11 @@ def set_ready(body: ReadyBody, request: Request):
 async def next_contact(request: Request):
     """Serve the agent their next contact (or the one they already hold). Only while they're ready."""
     user = request.state.user
-    conn = db.connect()
-    if not operations.heartbeat(conn, user) and not operations.current(conn, user):
+    def ready() -> bool:  # in a worker thread: a database write on the event loop would hold up every request
+        conn = db.connect()
+        return bool(operations.heartbeat(conn, user) or operations.current(conn, user))
+
+    if not await run_in_threadpool(ready):
         raise HTTPException(409, "You're paused: start taking calls first")
     op, reason = await run_in_threadpool(operations.claim_next, user)
     return {"current": op, "reason": reason}
@@ -332,6 +335,15 @@ async def finish_call(op_id: int, body: FinishBody, request: Request):
             operations.finish, op_id, request.state.user, answers=body.answers, outcome=body.outcome,
             note=body.note, stage=body.stage, callback_at=body.callback_at, callback_note=body.callback_note,
             callback_mine=body.callback_mine)
+    except OperationError as exc:
+        _fail(exc)
+
+
+@router.post("/api/operations/callbacks/{op_id}/take")
+def take_callback(op_id: int, request: Request):
+    """The agent calls this callback now, before it's due."""
+    try:
+        return {"current": operations.take_callback(request.state.user, op_id)}
     except OperationError as exc:
         _fail(exc)
 

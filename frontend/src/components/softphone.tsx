@@ -26,7 +26,7 @@ import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
 import { Toggle } from "@/components/ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import { Bidi } from "@/lib/bidi";
-import { fmtDateTime, fmtRelative } from "@/lib/format";
+import { fmtDateTime, fmtRelative, shortName } from "@/lib/format";
 import { type IncomingCall, useIncoming } from "@/lib/inbound";
 import { href, useRoute } from "@/lib/router";
 import { campaignText } from "@/lib/campaign-text";
@@ -267,7 +267,7 @@ function CallCard() {
   if (!call) return null;
   const ringing = call.state === "ringing";
   const known = incoming?.callId === call.id ? incoming : null;
-  const name = known?.caller?.people[0]?.name || call.name;
+  const name = shortName(known?.caller?.people[0]?.name || call.name);
   const label = ringing
     ? t("phone.incoming")
     : call.state === "calling"

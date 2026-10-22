@@ -138,7 +138,8 @@ class QueueTests(DeskTestCase):
         while (op := operations.claim_next("a1")[0]) is not None:
             served.append(op["opportunity_id"])
             self.close(op, "not_interested")
-        self.assertEqual(served, ["o1", "o3", "o4", "o6", "o7"])
+        # The New contacts oldest first, then the Attempted one.
+        self.assertEqual(served, ["o1", "o3", "o4", "o6", "o7", "o5"])
         self.assertEqual(operations.claim_next("a2"), (None, None))
         counts = operations.queue_counts(self.conn, campaigns.get(self.conn, None))
         self.assertEqual((counts["waiting"], counts["no_phone"]), (0, 1))
@@ -199,6 +200,55 @@ class CallbackTests(DeskTestCase):
         with self.assertRaises(OperationError):
             operations.finish(op["id"], "a1", answers={}, outcome="busy", note="", stage=None,
                               callback_at=iso(datetime.now() - timedelta(hours=1)))
+
+
+    def book(self, user: str, **kwargs) -> dict:
+        """Serve the user a contact and book a callback with them in two hours. Returns the waiting callback."""
+        op = self.serve(user)
+        self.close(op, "callback_requested", callback_at=iso(datetime.now() + timedelta(hours=2)), **kwargs)
+        return operations.to_dict(self.conn.execute(
+            "SELECT * FROM op_calls WHERE status = 'scheduled' AND scheduled_from = ?", (op["id"],)).fetchone(), {})
+
+    def test_an_agent_can_call_their_callback_before_it_is_due(self):
+        cb = self.book("a1")
+        held = self.serve("a1")  # holding a queue contact they haven't called yet
+        taken = operations.take_callback("a1", cb["id"])
+        self.assertEqual((taken["id"], taken["status"], taken["agent"]), (cb["id"], "assigned", "a1"))
+        self.assertEqual(operations.get_row(self.conn, held["id"])["status"], "released")
+        self.close(taken, "interested")
+        self.assertEqual(operations.get_row(self.conn, cb["id"])["status"], "done")
+
+    def test_only_the_agent_who_booked_it_can_take_a_callback_early_and_not_during_a_call(self):
+        cb = self.book("a1")
+        with self.assertRaises(OperationError) as ctx:
+            operations.take_callback("a2", cb["id"])
+        self.assertEqual(ctx.exception.status, 403)
+        operations.start_call(self.serve("a1")["id"], "a1")
+        with self.assertRaises(OperationError) as ctx:
+            operations.take_callback("a1", cb["id"])
+        self.assertEqual(ctx.exception.status, 409)
+
+    def test_a_given_back_early_callback_waits_again(self):
+        cb = self.book("a1")
+        operations.give_back(operations.take_callback("a1", cb["id"])["id"], "a1")
+        self.assertEqual(operations.get_row(self.conn, cb["id"])["status"], "scheduled")
+
+    def test_reaching_the_contact_another_way_closes_their_waiting_callback(self):
+        cb = self.book("a1")
+        op = operations.start_direct("a2", cb["opportunity_id"])
+        self.close(op, "interested")
+        self.assertEqual(operations.get_row(self.conn, cb["id"])["status"], "cancelled")
+
+    def test_an_unanswered_call_another_way_keeps_the_callback_unless_it_books_a_new_one(self):
+        cb = self.book("a1")
+        self.close(operations.start_direct("a2", cb["opportunity_id"]), "no_answer")
+        self.assertEqual(operations.get_row(self.conn, cb["id"])["status"], "scheduled")
+        self.close(operations.start_direct("a2", cb["opportunity_id"]), "no_answer",
+                   callback_at=iso(datetime.now() + timedelta(hours=3)))
+        self.assertEqual(operations.get_row(self.conn, cb["id"])["status"], "cancelled")
+        waiting = self.conn.execute("SELECT COUNT(*) FROM op_calls WHERE status = 'scheduled' AND opportunity_id = ?",
+                                    (cb["opportunity_id"],)).fetchone()[0]
+        self.assertEqual(waiting, 1)
 
 
 class FinishTests(DeskTestCase):
@@ -289,10 +339,62 @@ class AttemptTests(DeskTestCase):
         self.assertEqual(operations.attempts(self.conn, row), 0)
 
 
+class AttemptedQueueTests(DeskTestCase):
+    """New contacts we couldn't reach move to Attempted, and the New leads queue serves those after the New ones."""
+
+    def serve_until(self, user: str, opportunity_id: str) -> dict:
+        """Close every contact served before `opportunity_id` as not interested, and return that one."""
+        while (op := self.serve(user))["opportunity_id"] != opportunity_id:
+            self.close(op, "not_interested")
+        return op
+
+    def test_an_unanswered_new_contact_moves_to_attempted_even_if_the_agent_kept_its_stage(self):
+        done = self.close(self.serve("a1"), "no_answer", stage=None)
+        self.assertEqual((done["stage_before"], done["stage_after"]), ("NEW", "ATTEMPTED"))
+        self.assertIn(("o1", {"stage": "ATTEMPTED"}), self.crm.updates)
+
+    def test_a_rejected_or_reached_contact_does_not_move_to_attempted(self):
+        self.assertEqual(self.close(self.serve("a1"), "wrong_number")["stage_after"], None)
+        self.assertEqual(self.close(self.serve("a1"), "no_answer", stage="REJECTED")["stage_after"], "REJECTED")
+        self.assertEqual(self.close(self.serve("a1"), "interested")["stage_after"], None)
+
+    def test_an_unanswered_contact_at_a_later_stage_keeps_it(self):
+        op = self.serve_until("a1", "o5")  # already Attempted
+        self.assertEqual(self.close(op, "no_answer")["stage_after"], None)
+
+    def test_an_attempted_contact_is_tried_again_after_the_retry_time_until_the_tries_run_out(self):
+        self.campaign(max_attempts=2, retry_minutes=60)
+        done = self.close(self.serve_until("a1", "o5"), "no_answer")
+        self.assertEqual(operations.claim_next("a1"), (None, None))  # too soon
+        self.backdate(done["id"], 61)
+        again = self.serve("a1")
+        self.assertEqual((again["opportunity_id"], again["source"]), ("o5", "queue"))
+        done = self.close(again, "busy")
+        self.assertTrue(done["attempts_exhausted"])
+        self.backdate(done["id"], 61)
+        self.assertEqual(operations.claim_next("a1"), (None, None))  # no tries left
+
+    def test_attempted_contacts_never_tried_go_before_those_tried_again(self):
+        self.crm.by_stage["ATTEMPTED"].append(lead(8, stage="ATTEMPTED"))
+        crm.forget_leads()
+        done = self.close(self.serve_until("a1", "o5"), "no_answer")
+        self.backdate(done["id"], 200)
+        self.assertEqual(self.serve("a1")["opportunity_id"], "o8")
+
+    def test_the_new_leads_campaign_made_before_gets_attempted_once(self):
+        first = campaigns.get(self.conn, None)
+        self.conn.execute("UPDATE op_campaigns SET stages = '[\"NEW\"]' WHERE id = ?", (first["id"],))
+        self.conn.execute("DELETE FROM op_settings")
+        self.conn.commit()
+        self.assertEqual(campaigns.get(self.conn, None)["stages"], ["NEW", "ATTEMPTED"])
+        self.campaign(stages=["NEW"])  # an admin takes it out again: it stays out
+        self.assertEqual(campaigns.get(self.conn, None)["stages"], ["NEW"])
+
+
 class CampaignTests(DeskTestCase):
     def test_the_first_campaign_is_the_desk_as_it_was(self):
         first = campaigns.get(self.conn, None)
-        self.assertEqual((first["name"], first["stages"]), ("New leads", ["NEW"]))
+        self.assertEqual((first["name"], first["stages"]), ("New leads", ["NEW", "ATTEMPTED"]))
         self.assertEqual([q["key"] for q in first["questions"]],
                          [q["key"] for q in campaigns.DEFAULT_QUESTIONS])
         self.assertTrue(campaigns.outcome(first, "account_created")["success"])
@@ -568,6 +670,7 @@ class VaultTests(unittest.TestCase):
         conn.execute("INSERT INTO softphones (username, extension, password, account_password, access_token, "
                      "updated_at) VALUES ('ons', '103', 'sip-pass', 'gv-pass', NULL, '')")
         conn.commit()
+        db._ready.clear()  # the migrations run once per process: as if the app restarted after an upgrade
         row = db.connect().execute("SELECT * FROM softphones WHERE username = 'ons'").fetchone()
         self.assertTrue(vault.is_encrypted(row["password"]) and vault.is_encrypted(row["account_password"]))
         self.assertIsNone(row["access_token"])

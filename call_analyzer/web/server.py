@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -141,12 +142,17 @@ def _agent_allowed(request: Request) -> bool:
     return any(m == method and p.fullmatch(request.url.path) for m, p in AGENT_ALLOWED)
 
 
+def _session_account(token: str | None) -> dict | None:
+    return auth.get_user(auth.session_user(token) or "")
+
+
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     if _cross_site(request):
         return JSONResponse({"detail": "Cross-site request blocked"}, status_code=403)
     if not _is_public(request):
-        account = auth.get_user(auth.session_user(request.cookies.get(SESSION_COOKIE)) or "")
+        # In a worker thread: a database lookup on the event loop would hold up every other request.
+        account = await run_in_threadpool(_session_account, request.cookies.get(SESSION_COOKIE))
         if not account:
             if request.url.path.startswith("/api/"):
                 return JSONResponse({"detail": "Not logged in"}, status_code=401)
@@ -358,7 +364,7 @@ def login_page():
 
 
 @app.get("/healthz")
-def healthz():
+async def healthz():  # async: answers on the event loop, without waiting for a free worker thread
     return {"ok": True}
 
 

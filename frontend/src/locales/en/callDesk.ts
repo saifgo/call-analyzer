@@ -98,7 +98,7 @@ export const callDesk = {
   "desk.addAndCall": "Add and call",
 
   "desk.myCallbacks": "My callbacks",
-  "desk.myCallbacksHint": "Served to you (or to the first free agent) when they're due.",
+  "desk.myCallbacksHint": "Served to you (or to the first free agent) when they're due. Call now to call one early; reaching the contact on any call closes their callback.",
   "desk.test": "Test",
   "desk.keptForYou": "Kept for you",
   "desk.testCall": "Test call",

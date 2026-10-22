@@ -15,7 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, useApi } from "@/lib/api";
 import { Bidi } from "@/lib/bidi";
-import { fmtDate, fmtDateTime, fmtRelative } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtRelative, shortName } from "@/lib/format";
 import { href, navigate, type Route } from "@/lib/router";
 import type { CrmLead, CrmLeads } from "@/lib/types";
 import { t } from "@/lib/i18n";
@@ -211,8 +211,8 @@ export function LeadsPage({ route }: { route: Route }): React.ReactElement {
                   : shown.map((lead) => (
                       <TableRow className="align-top" key={lead.id}>
                         <TableCell className="whitespace-normal">
-                          <Bidi className="font-medium" text={lead.contact?.name ?? t("leads.noContact")} />
-                          <Bidi className="text-muted-foreground text-xs" text={lead.name} />
+                          <Bidi className="font-medium" text={shortName(lead.contact?.name ?? t("leads.noContact"))} />
+                          <Bidi className="text-muted-foreground text-xs" text={shortName(lead.name)} />
                           {lead.contact?.city && <div className="text-muted-foreground text-xs">{lead.contact.city}</div>}
                         </TableCell>
                         <TableCell className="whitespace-nowrap">

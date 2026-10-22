@@ -101,7 +101,7 @@ export const callDesk: Translation<typeof en> = {
   "desk.addAndCall": "أضف واتصل",
 
   "desk.myCallbacks": "معاودات الاتصال الخاصة بي",
-  "desk.myCallbacksHint": "تُقدَّم لك (أو لأول وكيل متاح) عند حلول موعدها.",
+  "desk.myCallbacksHint": "تُقدَّم لك (أو لأول وكيل متاح) عند حلول موعدها. اضغط «اتصل الآن» للاتصال مبكرًا؛ والوصول إلى جهة الاتصال في أي مكالمة يُغلق موعد معاودة الاتصال.",
   "desk.test": "تجربة",
   "desk.keptForYou": "محجوزة لك",
   "desk.testCall": "مكالمة تجربة",

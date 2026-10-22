@@ -77,6 +77,8 @@ class CrmAdapter:
     secret_keys: tuple[str, ...] = ()
     # The stage of opportunities nobody has worked on yet: the default call campaign calls these.
     lead_stage = "NEW"
+    # The stage of opportunities we called but couldn't reach: they go at the end of the New leads queue.
+    attempted_stage = "ATTEMPTED"
 
     def is_configured(self) -> bool:
         """Whether the settings it needs are filled in (no request is made)."""

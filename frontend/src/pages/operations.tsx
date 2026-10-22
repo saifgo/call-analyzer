@@ -64,7 +64,7 @@ import { Toggle } from "@/components/ui/toggle";
 import { api, useApi } from "@/lib/api";
 import { useOpConfig } from "@/lib/campaign-text";
 import { Bidi, textDir } from "@/lib/bidi";
-import { fmtDate, fmtDateTime, fmtDuration, fmtRelative, humanize, parseDate } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtDuration, fmtRelative, humanize, parseDate, shortName } from "@/lib/format";
 import { DESK_REFRESH, useIncoming } from "@/lib/inbound";
 import { useMe } from "@/lib/me";
 import { outcomeVariant, pauseOver, STAGE_VARIANT, useNow } from "@/lib/operations";
@@ -719,6 +719,16 @@ function WrapUpForm({
   saving: boolean;
 }) {
   const [changingStage, setChangingStage] = React.useState(value.stageTouched);
+  // Kept at New after a queue call that didn't reach them (nor rejected them): the server moves them to Attempted.
+  const chosen = campaign.outcomes.find((o) => o.value === value.outcome);
+  const toAttempted =
+    campaign.kind === "outbound" &&
+    !!chosen &&
+    !chosen.reached &&
+    (!chosen.stage || chosen.stage === config.attempted_stage) &&
+    op.lead?.stage === config.lead_stage &&
+    config.stages.some((s) => s.value === config.attempted_stage);
+  const nextStage = value.stage === KEEP_STAGE ? (toAttempted ? config.attempted_stage : null) : value.stage;
   const stageLabel = (v: string | null | undefined) => config.stages.find((s) => s.value === v)?.label ?? humanize(v);
   const stageItems = [
     { label: t("desk.keepAt", { stage: stageLabel(op.lead?.stage) || t("desk.itsStage") }), value: KEEP_STAGE },
@@ -781,10 +791,10 @@ function WrapUpForm({
             </Field>
           ) : (
             <p className="text-muted-foreground text-sm">
-              {tx(value.stage === KEEP_STAGE ? "desk.staysAt" : "desk.movesTo", {
+              {tx(nextStage ? "desk.movesTo" : "desk.staysAt", {
                 stage: (
                   <span className="font-medium text-foreground">
-                    {stageLabel(value.stage === KEEP_STAGE ? op.lead?.stage : value.stage)}
+                    {stageLabel(nextStage ?? op.lead?.stage)}
                   </span>
                 ),
               })}{" "}
@@ -1026,7 +1036,7 @@ function ServingDesk({
       {dialIn !== null && (
         <Alert variant="info">
           <ZapIcon aria-hidden="true" />
-          <AlertTitle>{t("desk.callingIn", { name: lead?.contact?.name ?? phones[0], s: dialIn })}</AlertTitle>
+          <AlertTitle>{t("desk.callingIn", { name: shortName(lead?.contact?.name) ?? phones[0], s: dialIn })}</AlertTitle>
           <AlertDescription className="flex flex-wrap gap-2">
             <Button onClick={() => dial(phones[0])} size="sm">
               <PhoneCallIcon aria-hidden="true" />
@@ -1094,8 +1104,8 @@ function ServingDesk({
               )}
               {lead?.stage && <Badge variant={STAGE_VARIANT[lead.stage] ?? "secondary"}>{stage?.label ?? humanize(lead.stage)}</Badge>}
             </div>
-            <Bidi as="div" className="font-heading font-semibold text-xl" text={lead?.contact?.name ?? t("leads.noContact")} />
-            <Bidi className="text-muted-foreground text-sm" text={lead?.name} />
+            <Bidi as="div" className="font-heading font-semibold text-xl" text={shortName(lead?.contact?.name ?? t("leads.noContact"))} />
+            <Bidi className="text-muted-foreground text-sm" text={shortName(lead?.name)} />
           </div>
 
           <div className="flex flex-col gap-1">
@@ -1686,9 +1696,33 @@ function NewCallForm({ config, onStarted, onDone }: { config: OpConfig; onStarte
 
 // --- The desk ---------------------------------------------------------------------------------------
 
-function MyCallbacks({ callbacks, onChange }: { callbacks: OpCall[]; onChange: () => void }) {
+function MyCallbacks({
+  callbacks,
+  current,
+  onTaken,
+  onChange,
+}: {
+  callbacks: OpCall[];
+  current: OpCall | null;
+  onTaken: (op: OpCall) => void;
+  onChange: () => void;
+}) {
   const now = useNow(callbacks.length > 0, 30_000);
+  const [taking, setTaking] = React.useState<number | null>(null);
   if (!callbacks.length) return null;
+  const take = async (cb: OpCall) => {
+    setTaking(cb.id);
+    try {
+      const res = await api<{ current: OpCall }>(`/api/operations/callbacks/${cb.id}/take`, { method: "POST" });
+      onTaken(res.current);
+    } catch (err) {
+      toastManager.add({ description: (err as Error).message, title: t("desk.updateFailed"), type: "error" });
+      onChange();
+    } finally {
+      setTaking(null);
+    }
+  };
+  const onCall = current?.status === "in_call";
   const cancel = async (cb: OpCall) => {
     try {
       await api(`/api/operations/callbacks/${cb.id}`, { method: "DELETE" });
@@ -1714,7 +1748,7 @@ function MyCallbacks({ callbacks, onChange }: { callbacks: OpCall[]; onChange: (
             return (
               <li className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm" key={cb.id}>
                 <div className="flex min-w-0 flex-col">
-                  <Bidi as="span" className="font-medium" text={cb.lead?.contact?.name ?? cb.lead?.name ?? t("ops.contact")} />
+                  <Bidi as="span" className="font-medium" text={shortName(cb.lead?.contact?.name ?? cb.lead?.name ?? t("ops.contact"))} />
                   <span className="text-muted-foreground text-xs">
                     {cb.test && `${t("desk.test")} · `}
                     {cb.assign_to ? t("desk.keptForYou") : t("board.anyone")}
@@ -1725,6 +1759,15 @@ function MyCallbacks({ callbacks, onChange }: { callbacks: OpCall[]; onChange: (
                   <Badge variant={due ? "warning" : "secondary"}>
                     {due ? t("board.due") : fmtRelative(cb.due_at)} · {fmtDateTime(cb.due_at)}
                   </Badge>
+                  <Button
+                    disabled={taking !== null || onCall}
+                    loading={taking === cb.id}
+                    onClick={() => take(cb)}
+                    size="xs"
+                  >
+                    <PhoneCallIcon aria-hidden="true" />
+                    {t("desk.callNow")}
+                  </Button>
                   <Button aria-label={t("board.cancelCallback")} onClick={() => cancel(cb)} size="icon-xs" variant="ghost">
                     <XIcon aria-hidden="true" />
                   </Button>
@@ -2208,7 +2251,7 @@ function Desk() {
           <PhoneIncomingIcon aria-hidden="true" />
           <AlertTitle>
             {t("inbound.waitingBehind", {
-              name: incoming.op.lead?.contact?.name || incoming.op.phone || t("inbound.theCaller"),
+              name: shortName(incoming.op.lead?.contact?.name) || incoming.op.phone || t("inbound.theCaller"),
             })}
           </AlertTitle>
         </Alert>
@@ -2255,7 +2298,7 @@ function Desk() {
         </Empty>
       )}
       <MissedCalls current={desk.current} missed={desk.missed} onChange={load} onTaken={directStarted} />
-      <MyCallbacks callbacks={desk.callbacks} onChange={load} />
+      <MyCallbacks callbacks={desk.callbacks} current={desk.current} onChange={load} onTaken={directStarted} />
     </>
   );
 }
@@ -2286,7 +2329,7 @@ function IdlePromptDialog({
   if (!prompt) return null;
   const minutes = Math.max(1, Math.floor(prompt.idle_seconds / 60));
   const served = current?.status === "assigned" ? current : null;
-  const name = served?.lead?.contact?.name || served?.lead?.name;
+  const name = shortName(served?.lead?.contact?.name || served?.lead?.name);
   const then = (action: () => void) => () => {
     onSeen(prompt);
     action();

@@ -120,6 +120,10 @@ INBOUND_OUTCOMES = [
     {"value": "dropped", "label": "Cut off before we could talk", "callback": True},
     {"value": "wrong_number", "label": "Wrong number / spam"},
 ]
+NEW_LEADS_DESCRIPTION = "The CRM's New contacts, oldest first, then the Attempted ones we couldn't reach yet."
+_OLD_NEW_LEADS_DESCRIPTION = "The CRM's New contacts, oldest first."
+_ATTEMPTED_MIGRATION = "migrated.attempted_in_new_leads"
+
 INBOUND = "inbound"
 OUTBOUND = "outbound"
 
@@ -369,16 +373,33 @@ def ensure_default(conn) -> None:
     before then are put in it. And the incoming calls campaign."""
     ensure_inbound(conn)
     if conn.execute("SELECT 1 FROM op_campaigns WHERE kind = ? LIMIT 1", (OUTBOUND,)).fetchone():
+        _add_attempted(conn)
         return
     now = _now()
     cur = conn.execute("""INSERT INTO op_campaigns (name, description, stages, questions, outcomes, max_attempts,
                                               retry_minutes, position, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, 0, 120, 0, ?, ?)""",
-                 ("New leads", "The CRM's New contacts, oldest first.", json.dumps([crm.lead_stage()]),
+                 ("New leads", NEW_LEADS_DESCRIPTION, json.dumps([crm.lead_stage(), crm.attempted_stage()]),
                   json.dumps(validate_questions(DEFAULT_QUESTIONS), ensure_ascii=False),
                   json.dumps(validate_outcomes(DEFAULT_OUTCOMES), ensure_ascii=False),
                   now, now))
     conn.execute("UPDATE op_calls SET campaign_id = ? WHERE campaign_id IS NULL", (cur.lastrowid,))
+    conn.execute("INSERT OR REPLACE INTO op_settings (key, value) VALUES (?, '1')", (_ATTEMPTED_MIGRATION,))
+    conn.commit()
+
+
+def _add_attempted(conn) -> None:
+    """Once: the New leads campaigns made before Attempted contacts were queued also call those, after the New ones.
+    An admin who takes the stage out again keeps it out."""
+    if conn.execute("SELECT 1 FROM op_settings WHERE key = ?", (_ATTEMPTED_MIGRATION,)).fetchone():
+        return
+    lead, attempted = crm.lead_stage(), crm.attempted_stage()
+    for row in conn.execute("SELECT id, stages, description FROM op_campaigns WHERE kind = ?", (OUTBOUND,)).fetchall():
+        if json.loads(row["stages"]) == [lead]:
+            description = NEW_LEADS_DESCRIPTION if row["description"] == _OLD_NEW_LEADS_DESCRIPTION else row["description"]
+            conn.execute("UPDATE op_campaigns SET stages = ?, description = ? WHERE id = ?",
+                         (json.dumps([lead, attempted]), description, row["id"]))
+    conn.execute("INSERT OR REPLACE INTO op_settings (key, value) VALUES (?, '1')", (_ATTEMPTED_MIGRATION,))
     conn.commit()
 
 

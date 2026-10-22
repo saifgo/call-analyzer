@@ -50,7 +50,7 @@ export const campaigns = {
   "campaigns.paused": "Paused: hidden from agents",
   "campaigns.description": "Description",
   "campaigns.queue": "Queue",
-  "campaigns.queueHint": "The CRM opportunities at these stages, with a phone number, are called oldest first.",
+  "campaigns.queueHint": "The CRM opportunities at these stages, with a phone number, are called stage by stage in pipeline order (New before Attempted), oldest first. Unreached contacts are tried again after the retry time.",
   "campaigns.rules": "Calling rules",
   "campaigns.rulesHint": "When the queue is served, and how long to keep trying a contact who doesn't answer.",
   "campaigns.maxAttempts": "Tries before giving up",

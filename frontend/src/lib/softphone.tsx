@@ -8,6 +8,7 @@ import * as React from "react";
 import { toastManager } from "@/components/ui/toast";
 import { api } from "@/lib/api";
 import { type AudioSettings, CallAudio, loadAudioSettings, preloadCallAudio, saveAudioSettings } from "@/lib/call-audio";
+import { shortName } from "@/lib/format";
 import { t } from "@/lib/i18n";
 
 export type SoftphoneConfig =
@@ -275,7 +276,7 @@ export function SoftphoneProvider({ children }: { children: React.ReactNode }): 
         if (!answered && e.originator !== "local" && call.direction === "outgoing") {
           toastManager.add({ description: endCause(e), title: t("phone.notConnected"), type: "warning" });
         } else if (!answered && e.originator === "remote" && call.direction === "incoming") {
-          toastManager.add({ description: call.name || call.number, title: t("phone.missedCall"), type: "info" });
+          toastManager.add({ description: shortName(call.name) || call.number, title: t("phone.missedCall"), type: "info" });
         }
         handlers.current.onEnded?.({ answered, cause: e.cause, seconds });
         handlers.current = {};

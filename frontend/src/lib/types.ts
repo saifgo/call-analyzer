@@ -434,6 +434,10 @@ export type OpConfig = {
   /** All campaigns' outcomes by value, to label any call. */
   outcomes: OpOutcome[];
   stages: OpStage[];
+  /** The stage of contacts nobody has worked on yet (New). */
+  lead_stage: string;
+  /** Where a New contact we couldn't reach goes (Attempted): the server moves them there when the stage is kept. */
+  attempted_stage: string;
   crm_configured: boolean;
 };
 

@@ -68,6 +68,7 @@ class TwentyCrm(CrmAdapter):
     setting_keys = ("CRM_BASE_URL", "CRM_API_KEY", "CRM_VERIFY_SSL")
     secret_keys = ("CRM_API_KEY",)
     lead_stage = "NEW"
+    attempted_stage = "ATTEMPTED"
 
     # --- HTTP ----------------------------------------------------------------------------------
 
