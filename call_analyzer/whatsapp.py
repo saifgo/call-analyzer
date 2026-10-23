@@ -12,9 +12,8 @@ import threading
 import time
 
 import requests
-from dotenv import dotenv_values
 
-from .config import ENV_PATH
+from .config import saved_env
 
 GRAPH_URL = "https://graph.facebook.com"
 DEFAULT_API_VERSION = "v23.0"
@@ -43,7 +42,7 @@ class WhatsAppError(Exception):
 
 def _setting(key: str, default: str = "") -> str:
     """The value as saved in .env right now (so Settings edits apply without a restart), else the environment."""
-    return (dotenv_values(ENV_PATH).get(key) or os.environ.get(key) or default).strip()
+    return (saved_env().get(key) or os.environ.get(key) or default).strip()
 
 
 def _config() -> dict:

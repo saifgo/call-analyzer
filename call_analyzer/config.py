@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -129,12 +130,33 @@ _EMPTY_OK = {"whisper_language", "whisper_prompt"}
 _LOWERCASE = {"transcribe_provider", "whisper_device", "analysis_backend", "claude_backend"}
 
 
+_saved_lock = threading.Lock()
+_saved: tuple[tuple | None, dict] = (None, {})  # (the .env file's mtime and size when read, its values)
+
+
+def saved_env() -> dict[str, str | None]:
+    """The values saved in .env, read again only when the file changes: parsing it takes tens of milliseconds, and
+    the CRM and the desk need settings for every record they handle. Don't modify the returned dict."""
+    global _saved
+    try:
+        st = ENV_PATH.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}
+    with _saved_lock:
+        if _saved[0] == stamp:
+            return _saved[1]
+    values = dotenv_values(ENV_PATH)
+    with _saved_lock:
+        _saved = (stamp, values)
+    return values
+
+
 def live(name: str, default: str = "") -> str:
     """A setting as it is saved right now: the .env file (what the Settings page writes) first, then the
     environment. The server process only loads .env at startup, so it reads the file again for anything
     that has to follow Settings changes straight away."""
-    saved = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
-    value = saved.get(name)
+    value = saved_env().get(name)
     if value is None:
         value = os.environ.get(name, "")
     return value.strip() or default

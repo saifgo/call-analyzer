@@ -123,7 +123,7 @@ def leads(stage: str | None = None, refresh: bool = False, oldest_first: bool = 
         cached = _leads_cache.get(cache_key)
     if cached and not refresh and not cached[1] and time.time() - cached[0] < CACHE_SECONDS:
         found, cursor = cached[2], cached[3]
-    elif cached and not refresh and not wait:
+    elif cached and not refresh and not wait and time.time() - cached[0] < KEEP_STALE_SECONDS:
         found, cursor = cached[2], cached[3]
         _refresh_leads_later(crm, cache_key)
     else:

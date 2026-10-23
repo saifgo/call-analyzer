@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import auth, crm, db, desk_stats, telephony, workers
+from .. import auth, crm, db, desk_stats, operations, telephony, workers
 from ..analyze import KIND_SQL, SCORE_SQL, kind_of
 from ..config import ENV_PATH, ROOT, settings
 from . import operations_api, softphone_api, whatsapp_api, workers_api
@@ -89,6 +89,7 @@ async def lifespan(app):
     auth.ensure_admin()
     if not auth.list_users():
         print("No user accounts yet. Create one with:  python -m call_analyzer user add <name>")
+    operations.resume_sync()  # calls finished just before a restart, not written to the CRM yet
     stop = threading.Event()
     threading.Thread(target=telephony.keepalive_loop, args=(stop,), daemon=True).start()
     threading.Thread(target=auto_process_loop, args=(stop,), daemon=True).start()

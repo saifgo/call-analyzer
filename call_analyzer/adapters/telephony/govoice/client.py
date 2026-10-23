@@ -6,11 +6,10 @@ from urllib.parse import urlsplit
 
 import requests
 import urllib3
-from dotenv import dotenv_values
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from ....config import ENV_PATH, settings
+from ....config import ENV_PATH, saved_env, settings
 from ..base import SessionExpired
 
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -24,7 +23,7 @@ _env_lock = threading.Lock()
 
 def current_cookie() -> str:
     """GOVOICE_COOKIE as saved right now (settings is read once at start; the cookie can change while running)."""
-    saved = dotenv_values(ENV_PATH).get("GOVOICE_COOKIE") if ENV_PATH.is_file() else None
+    saved = saved_env().get("GOVOICE_COOKIE")
     return (saved or settings.govoice_cookie).strip()
 
 

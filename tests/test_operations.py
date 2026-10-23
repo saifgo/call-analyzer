@@ -98,6 +98,9 @@ def iso(dt: datetime) -> str:
 
 class DeskTestCase(unittest.TestCase):
     def setUp(self):
+        patcher = mock.patch.object(operations, "SYNC_IN_BACKGROUND", False)  # see BackgroundSyncTests
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.conn = db.connect()
         for table in ("op_calls", "op_agents", "op_campaigns", "op_presence", "calls", "softphones", "user_agents",
                       "wa_messages", "op_targets", "op_pause_reasons", "op_pauses", "op_settings", "op_inbound"):
@@ -712,6 +715,86 @@ class RecordingTests(DeskTestCase):
         self.assertEqual((bands["9-10"]["success_rate"], bands["5-6"]["success_rate"]), (1.0, 0.0))
         won = next(o for o in found["outcomes"] if o["outcome"] == "account_created")
         self.assertEqual((won["avg_score"], won["ai_outcomes"]), (9.0, {"sale": 1}))
+
+
+class SpeedTests(DeskTestCase):
+    """The agent keeps moving when the CRM is slow."""
+
+    def test_closing_a_call_does_not_wait_for_the_crm_and_writes_it_in_the_background(self):
+        operations.SYNC_IN_BACKGROUND = True  # restored by DeskTestCase's patch
+        op = self.serve("a1")
+        gate = threading.Event()
+        slow_note = self.crm.add_note
+        self.crm.add_note = lambda *args: (gate.wait(5), slow_note(*args))[1]
+        done = self.close(op, "interested")
+        self.assertTrue(done["crm_pending"])
+        self.assertIsNone(done["crm_error"])  # nothing to warn the agent about
+        self.assertEqual(operations.get_row(self.conn, done["id"])["crm_error"], operations.PENDING_SYNC)
+        gate.set()
+        operations._sync_pool.submit(lambda: None).result(5)  # the writes before it are done
+        self.assertEqual(len(self.crm.notes_added), 1)
+        self.assertIsNone(operations.get_row(self.conn, done["id"])["crm_error"])
+
+    def test_a_call_not_written_before_a_restart_is_written_when_the_server_starts(self):
+        done = self.close(self.serve("a1"), "interested")
+        self.crm.notes_added.clear()
+        self.conn.execute("UPDATE op_calls SET crm_error = ?, crm_note_id = NULL WHERE id = ?",
+                          (operations.PENDING_SYNC, done["id"]))
+        self.conn.commit()
+        operations.resume_sync()
+        operations._sync_pool.submit(lambda: None).result(5)
+        self.assertEqual(len(self.crm.notes_added), 1)
+        self.assertIsNone(operations.get_row(self.conn, done["id"])["crm_error"])
+
+    def test_an_agent_waiting_on_the_crm_does_not_hold_up_the_others(self):
+        due = iso(datetime.now() - timedelta(minutes=1))
+        self.conn.execute("INSERT INTO op_calls (opportunity_id, source, status, due_at, assign_to, created_at) "
+                          "VALUES ('o9', 'callback', 'scheduled', ?, 'a2', ?)", (due, due))
+        self.conn.commit()
+        crm.forget()  # a1 has to read the CRM
+        entered, gate = threading.Event(), threading.Event()
+        listing = self.crm.list_opportunities
+
+        def slow(*args):
+            entered.set()
+            gate.wait(5)
+            return listing(*args)
+        self.crm.list_opportunities = slow
+        served = {}
+        worker = threading.Thread(target=lambda: served.setdefault("a1", operations.claim_next("a1")))
+        worker.start()
+        self.assertTrue(entered.wait(5))
+        started = time.monotonic()
+        op, _ = operations.claim_next("a2")  # a2's due callback, while a1 waits on the CRM
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(op["opportunity_id"], "o9")
+        gate.set()
+        worker.join(5)
+        self.assertEqual(served["a1"][0]["opportunity_id"], "o1")
+
+    def test_agents_served_at_the_same_time_get_different_contacts(self):
+        crm.forget()
+        gate = threading.Event()
+        listing = self.crm.list_opportunities
+        self.crm.list_opportunities = lambda *args: (gate.wait(5), listing(*args))[1]
+        served = {}
+        workers = [threading.Thread(target=lambda u=u: served.setdefault(u, operations.claim_next(u)))
+                   for u in ("a1", "a2", "a3")]
+        for w in workers:
+            w.start()
+        time.sleep(0.2)  # all three are reading the CRM
+        gate.set()
+        for w in workers:
+            w.join(5)
+        self.assertEqual(sorted(op["opportunity_id"] for op, _ in served.values()), ["o1", "o3", "o4"])
+
+    def test_settings_are_read_again_when_the_file_changes(self):
+        from call_analyzer import config
+        config.ENV_PATH.write_text("CRM_QUEUE_BATCH=7", encoding="utf-8")
+        self.addCleanup(config.ENV_PATH.unlink, missing_ok=True)
+        self.assertEqual(crm.batch_size(), 7)
+        config.ENV_PATH.write_text("CRM_QUEUE_BATCH=12", encoding="utf-8")
+        self.assertEqual(crm.batch_size(), 12)
 
 
 class VaultTests(unittest.TestCase):

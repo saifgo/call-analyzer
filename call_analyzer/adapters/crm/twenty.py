@@ -2,12 +2,12 @@
 import json
 import os
 import re
+import threading
 import uuid
 
 import requests
-from dotenv import dotenv_values
 
-from ...config import ENV_PATH
+from ...config import saved_env
 from .base import CrmAdapter, CrmError
 
 DEFAULT_BASE_URL = "https://crm.tunisolutions.com"
@@ -18,9 +18,20 @@ DEFAULT_STAGES = [("NEW", "New"), ("TO_CALL", "To Call"), ("ATTEMPTED", "Attempt
                   ("INSTALLING", "Installing"), ("ACTIVE", "Active"), ("REJECTED", "Rejected")]
 
 
+_local = threading.local()
+
+
+def _http() -> requests.Session:
+    """This thread's HTTP session: it keeps the connection to the CRM open between requests, which saves a TLS
+    handshake (up to a second) on each one. One per thread, as a Session isn't meant to be shared between them."""
+    if getattr(_local, "session", None) is None:
+        _local.session = requests.Session()
+    return _local.session
+
+
 def _setting(key: str, default: str = "") -> str:
     """The value as saved in .env right now (so Settings edits apply without a restart), else the environment."""
-    return (dotenv_values(ENV_PATH).get(key) or os.environ.get(key) or default).strip()
+    return (saved_env().get(key) or os.environ.get(key) or default).strip()
 
 
 def _full_name(name: dict | None) -> str:
@@ -85,7 +96,7 @@ class TwentyCrm(CrmAdapter):
     def _get_json(self, path: str, params: dict) -> dict:
         base, key, verify = self._config()
         try:
-            res = requests.get(f"{base}/rest/{path}", params=params, headers={"Authorization": f"Bearer {key}"},
+            res = _http().get(f"{base}/rest/{path}", params=params, headers={"Authorization": f"Bearer {key}"},
                                timeout=TIMEOUT, verify=verify)
         except requests.RequestException as exc:
             raise CrmError(f"Couldn't reach the CRM at {base}: {exc.__class__.__name__}") from exc
@@ -107,7 +118,7 @@ class TwentyCrm(CrmAdapter):
         """Create or update a record; returns it."""
         base, key, verify = self._config()
         try:
-            res = requests.request(method, f"{base}/rest/{path}", json=body, timeout=TIMEOUT, verify=verify,
+            res = _http().request(method, f"{base}/rest/{path}", json=body, timeout=TIMEOUT, verify=verify,
                                    headers={"Authorization": f"Bearer {key}"})
         except requests.RequestException as exc:
             raise CrmError(f"Couldn't reach the CRM at {base}: {exc.__class__.__name__}") from exc
@@ -213,7 +224,7 @@ class TwentyCrm(CrmAdapter):
             return stages
         base, key, verify = self._config()
         try:
-            res = requests.get(f"{base}/rest/metadata/objects", params={"limit": 200}, timeout=TIMEOUT,
+            res = _http().get(f"{base}/rest/metadata/objects", params={"limit": 200}, timeout=TIMEOUT,
                                headers={"Authorization": f"Bearer {key}"}, verify=verify)
             objects = res.json().get("data") or [] if res.ok else []
             opportunity = next((o for o in objects if o.get("nameSingular") == "opportunity"), {})

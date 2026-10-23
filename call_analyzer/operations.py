@@ -25,6 +25,7 @@ import json
 import re
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from itertools import groupby
 
@@ -47,6 +48,14 @@ LOCAL_PREFIX = "inbound:"
 PRESENCE_GAP_SECONDS = 60
 
 _claim_lock = threading.Lock()
+
+# A finished call is written to the CRM in the background, one at a time and in order, so the agent moves on to the
+# next contact straight away instead of waiting for the CRM. Until it's written, the call's crm_error says so; one the
+# server stopped before writing is written again when it starts (resume_sync). False: right away (the tests).
+SYNC_IN_BACKGROUND = True
+PENDING_SYNC = "Not written to the CRM yet"
+_sync_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="crm-sync")
+_sync_lock = threading.Lock()  # a retry from the board doesn't run alongside the background write (no double note)
 
 
 class OperationError(Exception):
@@ -370,52 +379,74 @@ def queue_counts(conn, campaign: dict) -> dict:
 def claim_next(username: str) -> tuple[dict | None, str | None]:
     """Serve the agent their next contact: the one they already hold, else a missed call to call back (see
     inbound.claim), else the earliest due callback they may take, else the oldest New opportunity in the CRM nobody
-    has. Returns (op_call, None), or (None, why there's none)."""
-    from . import inbound
-    with _claim_lock:
-        conn = db.connect()
-        names = account_names(conn)
-        if row := current(conn, username):
-            return to_dict(row, names), None
-        if op := inbound.claim(conn, username):
-            return op, None
-        campaign = agent_campaign(conn, username)
-        now = _now()
-        skipped = _skipped(conn, username)
-        # Their own callbacks (whatever the campaign), the campaign's callbacks for anyone, and the incoming calls'
-        # callbacks for anyone (nobody works that campaign).
-        row = next((r for r in conn.execute("""
-            SELECT * FROM op_calls WHERE status = 'scheduled' AND due_at <= ?
-              AND (assign_to = ? OR (assign_to IS NULL AND (COALESCE(campaign_id, ?) = ? OR campaign_id = ?)))
-              AND opportunity_id NOT IN (SELECT opportunity_id FROM op_calls WHERE status IN ('assigned', 'in_call'))
-            ORDER BY due_at, id""", (now, username, campaigns.default_id(conn), campaign["id"],
-                                     campaigns.inbound_id(conn)))
-                    if r["opportunity_id"] not in skipped), None)
-        if row:
-            conn.execute("UPDATE op_calls SET status = 'assigned', agent = ?, assigned_at = ? WHERE id = ?",
-                         (username, now, row["id"]))
-            conn.commit()
-            return to_dict(get_row(conn, row["id"]), names), None
-        if not campaigns.is_open(campaign, datetime.now()):
-            return None, (f"{campaign['name']} is only called {campaigns.hours_label(campaign)}. "
-                          "Callbacks that come due are still served.")
-        if not crm.is_configured():
-            return None, crm.not_configured_message()
-        taken, retries = _taken(conn, campaign)
+    has. Returns (op_call, None), or (None, why there's none).
+
+    The CRM is read outside _claim_lock, so a slow CRM doesn't hold up the other agents, and from the cached lead
+    lists when there are some (refreshed in the background, see crm.leads(wait=False)): what's being called or was
+    handled is in our database, so a list a little out of date can't serve a contact twice."""
+    conn = db.connect()
+    try:
+        with _claim_lock:
+            served, reason, campaign = _claim_local(conn, username)
+        if served or reason or campaign is None:
+            return served, reason
         try:
-            leads = _campaign_leads(campaign, taken | skipped)["leads"]
+            leads = _campaign_leads(campaign, _taken(conn, campaign)[0] | _skipped(conn, username), wait=False)["leads"]
         except crm.CrmError as exc:
             return None, str(exc)
-        lead = next((lead for lead in _queue(leads, taken | skipped, retries) if _callable(lead)), None)
-        if not lead:
-            return None, None
-        cur = conn.execute("""INSERT INTO op_calls (opportunity_id, person_id, lead, source, status, agent, assigned_at,
-                                                    stage_before, campaign_id, created_at)
-                              VALUES (?, ?, ?, 'queue', 'assigned', ?, ?, ?, ?, ?)""",
-                           (lead["id"], (lead["contact"] or {}).get("id"), json.dumps(lead, ensure_ascii=False),
-                            username, now, lead.get("stage"), campaign["id"], now))
+        with _claim_lock:
+            # Again under the lock: another agent may have taken one of these contacts (or this agent another one)
+            # while the CRM was being read.
+            if row := current(conn, username):
+                return to_dict(row, account_names(conn)), None
+            taken, retries = _taken(conn, campaign)
+            skip = taken | _skipped(conn, username)
+            lead = next((lead for lead in _queue(leads, skip, retries) if _callable(lead)), None)
+            if not lead:
+                return None, None
+            now = _now()
+            cur = conn.execute("""INSERT INTO op_calls (opportunity_id, person_id, lead, source, status, agent,
+                                                        assigned_at, stage_before, campaign_id, created_at)
+                                  VALUES (?, ?, ?, 'queue', 'assigned', ?, ?, ?, ?, ?)""",
+                               (lead["id"], (lead["contact"] or {}).get("id"), json.dumps(lead, ensure_ascii=False),
+                                username, now, lead.get("stage"), campaign["id"], now))
+            conn.commit()
+            return to_dict(get_row(conn, cur.lastrowid), account_names(conn)), None
+    finally:
+        conn.close()
+
+
+def _claim_local(conn, username: str) -> tuple[dict | None, str | None, dict | None]:
+    """What claim_next serves without the CRM: the contact the agent holds, a missed call, a due callback. Returns
+    (op_call, None, None), (None, why there's none, None), or (None, None, the campaign) to serve from its queue."""
+    from . import inbound
+    if row := current(conn, username):
+        return to_dict(row, account_names(conn)), None, None
+    if op := inbound.claim(conn, username):
+        return op, None, None
+    campaign = agent_campaign(conn, username)
+    now = _now()
+    skipped = _skipped(conn, username)
+    # Their own callbacks (whatever the campaign), the campaign's callbacks for anyone, and the incoming calls'
+    # callbacks for anyone (nobody works that campaign).
+    row = next((r for r in conn.execute("""
+        SELECT * FROM op_calls WHERE status = 'scheduled' AND due_at <= ?
+          AND (assign_to = ? OR (assign_to IS NULL AND (COALESCE(campaign_id, ?) = ? OR campaign_id = ?)))
+          AND opportunity_id NOT IN (SELECT opportunity_id FROM op_calls WHERE status IN ('assigned', 'in_call'))
+        ORDER BY due_at, id""", (now, username, campaigns.default_id(conn), campaign["id"],
+                                 campaigns.inbound_id(conn)))
+                if r["opportunity_id"] not in skipped), None)
+    if row:
+        conn.execute("UPDATE op_calls SET status = 'assigned', agent = ?, assigned_at = ? WHERE id = ?",
+                     (username, now, row["id"]))
         conn.commit()
-        return to_dict(get_row(conn, cur.lastrowid), names), None
+        return to_dict(get_row(conn, row["id"]), account_names(conn)), None, None
+    if not campaigns.is_open(campaign, datetime.now()):
+        return None, (f"{campaign['name']} is only called {campaigns.hours_label(campaign)}. "
+                      "Callbacks that come due are still served."), None
+    if not crm.is_configured():
+        return None, crm.not_configured_message(), None
+    return None, None, campaign
 
 
 def lookup(phone: str) -> dict:
@@ -690,9 +721,19 @@ def finish(op_id: int, username: str, *, answers: dict, outcome: str, note: str,
                      (row["opportunity_id"], row["person_id"], json.dumps(lead, ensure_ascii=False), due,
                       username if callback_mine else None, username, op_id, callback_note.strip()[:1000] or None,
                       stage or row["stage_before"], campaign["id"], now))
+    pending = SYNC_IN_BACKGROUND and _needs_sync(row)
+    if pending:
+        conn.execute("UPDATE op_calls SET crm_error = ? WHERE id = ?", (PENDING_SYNC, op_id))
     conn.commit()
-    sync_crm(op_id)
-    return {**to_dict(get_row(conn, op_id), account_names(conn)), "attempts_exhausted": exhausted}
+    if pending:
+        _sync_pool.submit(_sync_logged, op_id)
+    else:
+        sync_crm(op_id)
+    done = to_dict(get_row(conn, op_id), account_names(conn))
+    conn.close()
+    if pending:
+        done["crm_error"] = None  # nothing went wrong: it's on its way
+    return {**done, "crm_pending": pending, "attempts_exhausted": exhausted}
 
 
 def cancel_callback(conn, op_id: int, username: str, is_admin: bool) -> None:
@@ -793,9 +834,37 @@ def note_markdown(conn, row, names: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _needs_sync(row) -> bool:
+    return not is_test(row) and bool(in_crm(row) or row["person_id"]) and crm.is_configured()
+
+
+def _sync_logged(op_id: int) -> None:
+    try:
+        sync_crm(op_id)
+    except Exception as exc:  # crm_error still says it wasn't written; the board offers to retry
+        print(f"[crm] writing call {op_id} to the CRM failed: {exc!r}", flush=True)
+
+
+def resume_sync() -> None:
+    """Write the finished calls the server stopped before writing to the CRM (see SYNC_IN_BACKGROUND)."""
+    conn = db.connect()
+    try:
+        ids = [r[0] for r in conn.execute("SELECT id FROM op_calls WHERE status = 'done' AND crm_error = ? ORDER BY id",
+                                          (PENDING_SYNC,))]
+    finally:
+        conn.close()
+    for op_id in ids:
+        _sync_pool.submit(_sync_logged, op_id)
+
+
 def sync_crm(op_id: int) -> None:
     """Move the opportunity to its new stage, copy answers to the contact's fields, and attach a note with everything.
     Each step that fails is noted in crm_error; running it again skips the note if it was already written."""
+    with _sync_lock:
+        _sync_crm(op_id)
+
+
+def _sync_crm(op_id: int) -> None:
     conn = db.connect()
     row = get_row(conn, op_id)
     if is_test(row) or not (in_crm(row) or row["person_id"]):
