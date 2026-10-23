@@ -124,7 +124,7 @@ export function OperationsBoard(): React.ReactElement {
         <Stat
           hint={q.no_phone ? t("board.noPhone", { count: q.no_phone }) : t("board.withPhone")}
           label={t("board.waitingInQueue")}
-          value={q.waiting === null ? "–" : numberFmt.format(q.waiting)}
+          value={q.waiting === null ? "–" : `${numberFmt.format(q.waiting)}${q.truncated ? "+" : ""}`}
         />
         <Stat hint={t("board.scheduledTotal", { count: q.scheduled })} label={t("board.callbacksDue")} value={q.due_callbacks} />
         <Stat
@@ -190,7 +190,7 @@ export function OperationsBoard(): React.ReactElement {
                         <TooltipPopup>{queue.error}</TooltipPopup>
                       </Tooltip>
                     ) : (
-                      numberFmt.format(queue.waiting ?? 0)
+                      `${numberFmt.format(queue.waiting ?? 0)}${queue.truncated ? "+" : ""}`
                     )}
                   </TableCell>
                   <TableCell className="text-end tabular-nums">{queue.due_callbacks}</TableCell>

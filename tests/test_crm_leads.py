@@ -5,6 +5,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 # The settings are read when call_analyzer is imported, so point it at a scratch folder first.
@@ -81,10 +82,25 @@ class LeadsTests(unittest.TestCase):
         self.twenty._get_page = lambda path, params: ([opportunity(4, "55111222")], {"hasNextPage": False})
         self.assertEqual([lead["id"] for lead in get_crm_leads(refresh=True)["leads"]], ["o4"])
 
+    def test_one_batch_at_a_time(self):
+        with mock.patch.dict(os.environ, {"CRM_QUEUE_BATCH": "2"}):
+            result = get_crm_leads()
+        self.assertEqual([lead["id"] for lead in result["leads"]], ["o1", "o2"])
+        self.assertEqual((result["truncated"], result["next"]), (True, "c1"))
+        self.assertEqual([params["limit"] for _, params in self.requests], [2])  # never more than the batch
+
+    def test_a_batch_of_0_reads_every_page(self):
+        with mock.patch.dict(os.environ, {"CRM_QUEUE_BATCH": "0"}):
+            result = get_crm_leads()
+        self.assertEqual([lead["id"] for lead in result["leads"]], ["o1", "o2", "o3"])
+        self.assertEqual((result["truncated"], result["next"]), (False, None))
+        self.assertEqual([params["limit"] for _, params in self.requests], [200, 200])
+
     def test_without_an_api_key_nothing_is_asked(self):
         self.twenty._get_page = lambda *a: self.fail("the CRM must not be queried")
         self.twenty._config = lambda: ("https://crm.example.com", "", True)
-        self.assertEqual(get_crm_leads(), {"configured": False, "stage": "NEW", "leads": [], "truncated": False})
+        self.assertEqual(get_crm_leads(), {"configured": False, "stage": "NEW", "leads": [], "truncated": False,
+                                           "next": None})
 
 
 if __name__ == "__main__":

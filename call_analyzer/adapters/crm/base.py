@@ -95,9 +95,12 @@ class CrmAdapter:
         opportunities."""
         raise NotImplementedError
 
-    def list_opportunities(self, stage: str, oldest_first: bool) -> tuple[list[Lead], bool]:
-        """The opportunities at `stage` with their contact, ordered by creation date, and whether the CRM holds more
-        than were returned. Read every page, up to a sensible limit (a few thousand)."""
+    def list_opportunities(self, stage: str, oldest_first: bool, limit: int | None,
+                           after: str | None = None) -> tuple[list[Lead], str | None]:
+        """Up to `limit` opportunities (None: all of them, page after page) at `stage` with their contact, ordered by
+        creation date, starting after the cursor `after` (None: from the first). Returns them and the cursor to read
+        the next ones from, or None when the CRM holds no more. The cursor is whatever the CRM pages with (a
+        string)."""
         raise NotImplementedError
 
     def get_opportunity(self, opportunity_id: str) -> Lead:

@@ -2034,6 +2034,7 @@ function DeskBar({
             <dt className="text-muted-foreground text-xs">{t("wall.inQueue")}</dt>
             <dd className="font-semibold tabular-nums">
               {q.waiting ?? "–"}
+              {q.waiting !== null && q.truncated && "+"}
               {q.due_callbacks > 0 && <span className="ms-1 font-normal text-warning-foreground">{t("desk.plusDue", { count: q.due_callbacks })}</span>}
             </dd>
           </div>

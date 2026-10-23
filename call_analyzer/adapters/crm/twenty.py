@@ -13,7 +13,6 @@ from .base import CrmAdapter, CrmError
 DEFAULT_BASE_URL = "https://crm.tunisolutions.com"
 TIMEOUT = 15
 LEADS_PAGE = 200  # the most Twenty's REST API returns at once
-MAX_LEADS = 2000
 DEFAULT_STAGES = [("NEW", "New"), ("TO_CALL", "To Call"), ("ATTEMPTED", "Attempted"), ("IN_TALK", "In Talk"),
                   ("WAITING_REPLY", "Waiting Reply"), ("ACCEPTED", "Accepted"), ("ACCOUNT_MADE", "Account Made"),
                   ("INSTALLING", "Installing"), ("ACTIVE", "Active"), ("REJECTED", "Rejected")]
@@ -184,20 +183,21 @@ class TwentyCrm(CrmAdapter):
                 by_person.get(rec.get("pointOfContactId"), []).append(self._opportunity(rec))
         return [self._person(p, by_person[p["id"]]) for p in people]
 
-    def list_opportunities(self, stage: str, oldest_first: bool) -> tuple[list[dict], bool]:
-        records, cursor, more = [], None, False
-        while len(records) < MAX_LEADS:
-            params = {"filter": f"stage[eq]:{stage}", "depth": 1, "limit": LEADS_PAGE,
+    def list_opportunities(self, stage: str, oldest_first: bool, limit: int | None,
+                           after: str | None = None) -> tuple[list[dict], str | None]:
+        records, cursor = [], after
+        while limit is None or len(records) < limit:
+            size = LEADS_PAGE if limit is None else min(LEADS_PAGE, limit - len(records))
+            params = {"filter": f"stage[eq]:{stage}", "depth": 1, "limit": size,
                       "order_by": f"createdAt[{'AscNullsLast' if oldest_first else 'DescNullsLast'}]"}
             if cursor:
                 params["starting_after"] = cursor
             page, info = self._get_page("opportunities", params)
             records += page
-            more = bool(info.get("hasNextPage") and info.get("endCursor"))
-            if not more:
+            cursor = info.get("endCursor") if info.get("hasNextPage") and page else None
+            if not cursor:
                 break
-            cursor = info["endCursor"]
-        return [self._lead(rec) for rec in records], more
+        return [self._lead(rec) for rec in records], cursor
 
     def get_opportunity(self, opportunity_id: str) -> dict:
         body = self._get_json(f"opportunities/{opportunity_id}", {"depth": 1})

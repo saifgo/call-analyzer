@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -49,6 +50,7 @@ class FakeCrm(CrmAdapter):
             self.by_stage.setdefault(item["stage"], []).append(item)
         self.updates, self.people, self.notes_added = [], [], []
         self.fail_notes = False
+        self.fetched = []  # (stage, limit, after) of each list_opportunities
 
     def install(self, test: unittest.TestCase):
         crm.use(self)
@@ -57,9 +59,13 @@ class FakeCrm(CrmAdapter):
     def is_configured(self):
         return True
 
-    def list_opportunities(self, stage, oldest_first):
+    def list_opportunities(self, stage, oldest_first, limit, after=None):
+        self.fetched.append((stage, limit, after))
         found = sorted(self.by_stage.get(stage, []), key=lambda x: x["created_at"], reverse=not oldest_first)
-        return found, False
+        start = int(after or 0)
+        if limit is None:
+            return found[start:], None
+        return found[start:start + limit], str(start + limit) if start + limit < len(found) else None
 
     def stages(self):
         return STAGES
@@ -146,6 +152,31 @@ class QueueTests(DeskTestCase):
         counts = operations.queue_counts(self.conn, campaigns.get(self.conn, None))
         self.assertEqual((counts["waiting"], counts["no_phone"]), (0, 1))
 
+    def test_the_queue_reads_the_crm_a_batch_at_a_time(self):
+        with mock.patch.dict(os.environ, {"CRM_QUEUE_BATCH": "2"}):
+            crm.forget_leads()
+            counts = operations.queue_counts(self.conn, campaigns.get(self.conn, None))
+            # It holds o1 and o2 (no phone); the CRM has more.
+            self.assertEqual((counts["waiting"], counts["no_phone"], counts["truncated"]), (1, 1, True))
+            self.assertEqual(self.crm.fetched, [("NEW", 2, None)])
+            served = []
+            while (op := operations.claim_next("a1")[0]) is not None:
+                served.append(op["opportunity_id"])
+                self.close(op, "not_interested")
+            # Contacts already handled still sit at New here: the queue reads past them, batch by batch.
+            self.assertEqual(served, ["o1", "o3", "o4", "o6", "o7", "o5"])
+            self.assertEqual({limit for _, limit, _ in self.crm.fetched}, {2})
+            counts = operations.queue_counts(self.conn, campaigns.get(self.conn, None))
+            self.assertEqual((counts["waiting"], counts["no_phone"], counts["truncated"]), (0, 1, False))
+
+    def test_a_batch_of_0_reads_every_contact_at_once(self):
+        with mock.patch.dict(os.environ, {"CRM_QUEUE_BATCH": "0"}):
+            crm.forget_leads()
+            counts = operations.queue_counts(self.conn, campaigns.get(self.conn, None))
+            self.assertEqual((counts["waiting"], counts["no_phone"], counts["truncated"]), (6, 1, False))
+            self.assertEqual(self.crm.fetched, [("NEW", None, None), ("ATTEMPTED", None, None)])
+            self.assertEqual(self.serve("a1")["opportunity_id"], "o1")
+
     def test_the_queue_count_does_not_wait_for_a_slow_crm(self):
         campaign = campaigns.get(self.conn, None)
         self.assertEqual(operations.queue_counts(self.conn, campaign)["waiting"], 6)
@@ -153,10 +184,10 @@ class QueueTests(DeskTestCase):
         release, fetched = threading.Event(), threading.Event()
         slow = self.crm.list_opportunities
 
-        def hang(stage, oldest_first):
+        def hang(*args):
             release.wait(10)
             try:
-                return slow(stage, oldest_first)
+                return slow(*args)
             finally:
                 fetched.set()
 

@@ -37,6 +37,8 @@ export const settingsHelp: Record<string, string> = {
   ALERT_MISSED_CALL_MINUTES: "Un appel entrant manqué que personne n'a rappelé autant de minutes après qu'il a sonné :",
   CRM_PROVIDER:
     "Le CRM d'où le poste d'appel tire ses prospects et où il écrit les résultats d'appel. Intégré : twenty. Un autre CRM se branche en ajoutant un adaptateur dans call_analyzer/adapters/crm/ (voir base.py).",
+  CRM_QUEUE_BATCH:
+    "Combien de contacts le poste d'appel charge du CRM à la fois. La file en contient au plus autant et charge le lot suivant une fois ceux-ci traités ; baissez-le si le CRM n'arrive pas à répondre pour des listes plus longues. 0 : pas de limite.",
   CRM_BASE_URL:
     "Les appels sont associés aux contacts du CRM ayant le même numéro (Appels > un appel > onglet CRM).",
   CRM_API_KEY:

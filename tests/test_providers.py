@@ -36,9 +36,9 @@ class OtherCrm(CrmAdapter):
         self.searches.append(key)
         return [{"id": "c1", "name": "Amira", "phones": ["+216 22602716"], "opportunities": []}]
 
-    def list_opportunities(self, stage, oldest_first):
+    def list_opportunities(self, stage, oldest_first, limit, after=None):
         return [{"id": "d1", "name": "Deal", "stage": stage, "created_at": None,
-                 "contact": {"id": "c1", "name": "Amira", "phones": ["22602716"]}}], False
+                 "contact": {"id": "c1", "name": "Amira", "phones": ["22602716"]}}], None
 
 
 class FakePhoneSystem(TelephonyAdapter):

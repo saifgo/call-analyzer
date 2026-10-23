@@ -497,6 +497,7 @@ export type OpQueue = {
   waiting: number | null;
   no_phone: number | null;
   error: string | null;
+  /** The CRM holds more than the batch loaded (CRM_QUEUE_BATCH): `waiting` is shown as "160+". */
   truncated: boolean;
 };
 

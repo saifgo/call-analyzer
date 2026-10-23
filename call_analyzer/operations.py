@@ -301,16 +301,32 @@ def _taken(conn, campaign: dict) -> tuple[set[str], dict[str, str]]:
     return busy | (handled - set(retries)), retries
 
 
-def _campaign_leads(campaign: dict, wait: bool = True) -> dict:
-    """The CRM opportunities at the campaign's stages: stage by stage in pipeline order (New before Attempted), oldest
-    first within each. `wait=False`: a list out of date is used as is (see crm.leads). Raises crm.CrmError."""
+def _campaign_leads(campaign: dict, skip: set[str], wait: bool = True) -> dict:
+    """The CRM opportunities the campaign's queue holds, leaving out those in `skip`: stage by stage in pipeline order
+    (New before Attempted), oldest first within each, at most a batch of them (crm.batch_size(); None: all). Read
+    from the CRM batch by batch, the next one only while the queue isn't full, so contacts it can't serve (e.g.
+    Attempted ones out of tries) don't hide the ones after them. `truncated`: the CRM holds more. `wait=False`:
+    batches out of date are used as they are (see crm.leads). Raises crm.CrmError."""
     order = {s["value"]: i for i, s in enumerate(crm.opportunity_stages())}
+    limit = crm.batch_size()
     leads, truncated = [], False
+
+    def full() -> bool:
+        return limit is not None and len(leads) >= limit
+
     for stage in sorted(campaign["stages"], key=lambda s: order.get(s, len(order))):
-        data = crm.leads(stage=stage, oldest_first=True, wait=wait)
-        leads += data["leads"]
-        truncated = truncated or data["truncated"]
-    return {"leads": leads, "truncated": truncated}
+        if full():
+            truncated = True
+            break
+        after = None
+        for _ in range(crm.MAX_BATCHES):
+            data = crm.leads(stage=stage, oldest_first=True, wait=wait, after=after)
+            leads += [lead for lead in data["leads"] if lead["id"] not in skip]
+            after = data["next"]
+            if not after or full():
+                break
+        truncated = truncated or bool(after)
+    return {"leads": leads[:limit], "truncated": truncated or (limit is not None and len(leads) > limit)}
 
 
 def _queue(leads: list[dict], taken: set[str], retries: dict[str, str]) -> list[dict]:
@@ -340,11 +356,12 @@ def queue_counts(conn, campaign: dict) -> dict:
         result["error"] = crm.not_configured_message()
         return result
     try:
-        data = _campaign_leads(campaign, wait=False)
+        taken, retries = _taken(conn, campaign)
+        data = _campaign_leads(campaign, taken, wait=False)
     except crm.CrmError as exc:
         result["error"] = str(exc)
         return result
-    fresh = _queue(data["leads"], *_taken(conn, campaign))
+    fresh = _queue(data["leads"], taken, retries)
     result.update(waiting=sum(map(_callable, fresh)), no_phone=sum(not _callable(lead) for lead in fresh),
                   truncated=data["truncated"])
     return result
@@ -384,11 +401,11 @@ def claim_next(username: str) -> tuple[dict | None, str | None]:
                           "Callbacks that come due are still served.")
         if not crm.is_configured():
             return None, crm.not_configured_message()
+        taken, retries = _taken(conn, campaign)
         try:
-            leads = _campaign_leads(campaign)["leads"]
+            leads = _campaign_leads(campaign, taken | skipped)["leads"]
         except crm.CrmError as exc:
             return None, str(exc)
-        taken, retries = _taken(conn, campaign)
         lead = next((lead for lead in _queue(leads, taken | skipped, retries) if _callable(lead)), None)
         if not lead:
             return None, None
