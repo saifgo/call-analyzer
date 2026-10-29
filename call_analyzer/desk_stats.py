@@ -172,7 +172,7 @@ def kpis(conn, since: str | None = None, until: str | None = None, username: str
          campaign_id: int | None = None) -> dict:
     """Per agent, and for the team: calls closed, reached, wins, the rates between them, talk and wrap-up time, time
     on the desk and calls per hour, callbacks booked, contacts given back, and the AI's average score of their
-    recorded calls, time paused (in all, per reason, and pauses over their limit), and the times they were prompted
+    recorded calls, time clocked in (`shift_seconds`), time paused (in all, per reason, and pauses over their limit), and the times they were prompted
     to call after staying idle (`idle_prompts`, each one listed, latest first; see idle.py). `days` has the team's
     calls, reached and wins per day."""
     since, until = _range(since, until)
@@ -186,7 +186,7 @@ def kpis(conn, since: str | None = None, until: str | None = None, username: str
         return {"calls": 0, "reached": 0, "success": 0, "talk_seconds": 0, "wrap_seconds": 0, "wrapped": 0,
                 "linked": 0, "score_sum": 0.0, "scored": 0, "outcomes": {}, "desk_seconds": 0, "callbacks_booked": 0,
                 "given_back": 0, "pause_seconds": 0, "pauses_over": 0, "pause_reasons": {}, "idle_prompts": 0,
-                "idle_seconds": 0}
+                "idle_seconds": 0, "shift_seconds": 0, "shifts": 0}
 
     agents: dict[str, dict] = {}
     days: dict[str, dict] = {}
@@ -227,6 +227,9 @@ def kpis(conn, since: str | None = None, until: str | None = None, username: str
     for user, t in floor.pause_totals(conn, since, until, username).items():
         a = agents.setdefault(user, blank())
         a["pause_seconds"], a["pauses_over"], a["pause_reasons"] = t["pause_seconds"], t["pauses_over"], t["by_reason"]
+    for user, t in floor.shift_totals(conn, since, until, username).items():
+        a = agents.setdefault(user, blank())
+        a["shift_seconds"], a["shifts"] = t["shift_seconds"], t["shifts"]
     prompts = idle.history(conn, since, until, username)
     for p in prompts:
         a = agents.setdefault(p["username"], blank())
@@ -248,12 +251,14 @@ def kpis(conn, since: str | None = None, until: str | None = None, username: str
                 "callbacks_booked": a["callbacks_booked"], "given_back": a["given_back"], "linked": a["linked"],
                 "pause_seconds": a["pause_seconds"], "pauses_over": a["pauses_over"],
                 "pause_reasons": a["pause_reasons"], "idle_prompts": a["idle_prompts"], "idle_seconds": a["idle_seconds"],
+                "shift_seconds": a["shift_seconds"], "shifts": a["shifts"],
                 "scored": a["scored"], "avg_score": round(a["score_sum"] / a["scored"], 2) if a["scored"] else None}
 
     team = blank()
     for a in agents.values():
         for key in ("calls", "reached", "success", "talk_seconds", "wrap_seconds", "wrapped", "linked", "score_sum",
-                    "scored", "desk_seconds", "callbacks_booked", "given_back", "pause_seconds", "pauses_over", "idle_prompts", "idle_seconds"):
+                    "scored", "desk_seconds", "callbacks_booked", "given_back", "pause_seconds", "pauses_over", "idle_prompts", "idle_seconds",
+                    "shift_seconds", "shifts"):
             team[key] += a[key]
         for label, seconds in a["pause_reasons"].items():
             team["pause_reasons"][label] = team["pause_reasons"].get(label, 0) + seconds

@@ -198,6 +198,17 @@ CREATE TABLE IF NOT EXISTS op_pauses (
     closed         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_op_pauses ON op_pauses(username, started_at);
+-- Agents' shifts (see floor.py): from when they clock in to when they clock out. A shift nobody clocked out of ends on
+-- its own (ended_by 'auto') after the workday, or at its last check-in when the desk was closed.
+CREATE TABLE IF NOT EXISTS op_shifts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    username    TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    ended_at    TEXT,              -- moved forward at each check-in while the shift lasts
+    closed      INTEGER NOT NULL DEFAULT 0,
+    ended_by    TEXT               -- agent, admin or auto
+);
+CREATE INDEX IF NOT EXISTS idx_op_shifts ON op_shifts(username, started_at);
 -- Agents taking calls who stayed idle long enough to be prompted to call (see idle.py): one row per idle stretch.
 CREATE TABLE IF NOT EXISTS op_idle_prompts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -273,6 +284,70 @@ CREATE TABLE IF NOT EXISTS op_inbound (
 );
 CREATE INDEX IF NOT EXISTS idx_op_inbound_key ON op_inbound(number_key, rang_at);
 CREATE INDEX IF NOT EXISTS idx_op_inbound_open ON op_inbound(resolved_at, result);
+-- The built-in CRM (adapters/crm/internal.py): contacts, their phone numbers, their opportunities (leads) moving
+-- along the stages, and notes. Ids are UUIDs, like an external CRM's, so the call desk treats them the same way.
+CREATE TABLE IF NOT EXISTS crm_people (
+    id               TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    email            TEXT,
+    job_title        TEXT,
+    city             TEXT,
+    company          TEXT,
+    fields           TEXT,              -- JSON {key: value} of the custom fields (crm_fields)
+    source           TEXT,              -- desk | import | api | inbound | twenty | manual
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    last_contact_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_crm_people_created ON crm_people(created_at);
+CREATE TABLE IF NOT EXISTS crm_phones (
+    person_id   TEXT NOT NULL,
+    position    INTEGER NOT NULL,      -- 0: the primary number
+    number      TEXT NOT NULL,         -- as shown, e.g. "+216 22602716"
+    number_key  TEXT NOT NULL,         -- phones.match_key (last 8 digits), else the digits
+    PRIMARY KEY (person_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_crm_phones_key ON crm_phones(number_key);
+CREATE TABLE IF NOT EXISTS crm_opportunities (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    person_id   TEXT,
+    stage       TEXT NOT NULL,
+    amount      REAL,
+    currency    TEXT,
+    close_date  TEXT,
+    owner       TEXT,                  -- the app account (users.username) that owns it
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crm_opp_stage ON crm_opportunities(stage, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_crm_opp_person ON crm_opportunities(person_id);
+CREATE TABLE IF NOT EXISTS crm_notes (
+    id              TEXT PRIMARY KEY,
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,     -- markdown: **bold**, one line per paragraph
+    opportunity_id  TEXT,
+    person_id       TEXT,
+    author          TEXT,              -- users.username, or a name when imported
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crm_notes_opp ON crm_notes(opportunity_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_crm_notes_person ON crm_notes(person_id, created_at);
+-- The pipeline, in order. Locked stages (New, Attempted) can be renamed but not removed: the call queue uses them.
+CREATE TABLE IF NOT EXISTS crm_stages (
+    value     TEXT PRIMARY KEY,
+    label     TEXT NOT NULL,
+    position  INTEGER NOT NULL,
+    locked    INTEGER NOT NULL DEFAULT 0
+);
+-- Custom contact fields admins define; campaign questions copy answers to them (crm: "person.<key>").
+CREATE TABLE IF NOT EXISTS crm_fields (
+    key       TEXT PRIMARY KEY,
+    label     TEXT NOT NULL,
+    type      TEXT NOT NULL,           -- text | number | boolean | choice
+    options   TEXT,                    -- JSON [[value, label], ...] for choice
+    position  INTEGER NOT NULL
+);
 """
 
 # Columns added after the first release; connect() adds them to older databases.
@@ -286,8 +361,9 @@ _ADDED_SOFTPHONE_COLUMNS = {"govoice_user": "TEXT", "account_password": "TEXT", 
 # phone: the number dialed; call_id: the GoVoice recording of the call (see operations.link_recordings).
 _ADDED_OP_COLUMNS = {"campaign_id": "INTEGER", "phone": "TEXT", "call_id": "TEXT"}
 # pause_id: the op_pauses row of the pause the agent is on (see floor.py); online_since: when their desk last came
-# online after being offline (see idle.py).
-_ADDED_OP_AGENT_COLUMNS = {"campaign_id": "INTEGER", "pause_id": "INTEGER", "online_since": "TEXT"}
+# online after being offline (see idle.py); shift_id: the op_shifts row of the shift they're clocked in to.
+_ADDED_OP_AGENT_COLUMNS = {"campaign_id": "INTEGER", "pause_id": "INTEGER", "online_since": "TEXT",
+                           "shift_id": "INTEGER"}
 # earned: an earned break (see breaks.py) rather than a pause for one of the reasons.
 _ADDED_OP_PAUSE_COLUMNS = {"earned": "INTEGER NOT NULL DEFAULT 0"}
 # kind: outbound (a queue of CRM contacts to call) or inbound (the one campaign for calls customers make to us).

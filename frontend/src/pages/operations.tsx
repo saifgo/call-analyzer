@@ -1,5 +1,6 @@
 import {
   BarChart3Icon,
+  BellRingIcon,
   BriefcaseIcon,
   CalendarClockIcon,
   CheckIcon,
@@ -13,6 +14,8 @@ import {
   HistoryIcon,
   LightbulbIcon,
   ListChecksIcon,
+  LogInIcon,
+  LogOutIcon,
   MonitorPlayIcon,
   MailIcon,
   MapPinIcon,
@@ -64,10 +67,10 @@ import { Toggle } from "@/components/ui/toggle";
 import { api, useApi } from "@/lib/api";
 import { useOpConfig } from "@/lib/campaign-text";
 import { Bidi, textDir } from "@/lib/bidi";
-import { fmtDate, fmtDateTime, fmtDuration, fmtRelative, humanize, parseDate, shortName } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtDuration, fmtRelative, fmtTime, humanize, parseDate, shortName } from "@/lib/format";
 import { DESK_REFRESH, useIncoming } from "@/lib/inbound";
 import { useMe } from "@/lib/me";
-import { outcomeVariant, pauseOver, STAGE_VARIANT, useNow } from "@/lib/operations";
+import { contactName, outcomeVariant, pauseOver, STAGE_VARIANT, useNow } from "@/lib/operations";
 import { href, navigate, type Route } from "@/lib/router";
 import { type CallEnd, useSoftphone } from "@/lib/softphone";
 import type {
@@ -1933,9 +1936,11 @@ function DeskBar({
   powerDial,
   onPowerDial,
   toggling,
+  onClockOut,
 }: {
   desk: OpDesk;
   config: OpConfig;
+  onClockOut: () => void;
   onReady: (ready: boolean) => void;
   onAskReason: () => void;
   onTakeBreak: () => void;
@@ -1951,18 +1956,19 @@ function DeskBar({
   const q = desk.queue;
   const active = config.campaigns.filter((c) => c.active && c.kind !== "inbound");
   const items = active.map((c) => ({ label: c.name, value: String(c.id) }));
-  const canSayWhy = !desk.ready && desk.pause_reasons.length > 0;
+  const clockedIn = !!desk.shift?.open;
+  const canSayWhy = clockedIn && !desk.ready && desk.pause_reasons.length > 0;
   return (
     <Card>
       <CardPanel className="flex flex-wrap items-center justify-between gap-4 p-4">
         <div className="flex flex-wrap items-center gap-3">
           <Label className="flex items-center gap-3 font-medium">
-            <Switch checked={desk.ready} disabled={toggling} onCheckedChange={onReady} />
+            <Switch checked={desk.ready} disabled={toggling || !clockedIn} onCheckedChange={onReady} />
             <span className="flex flex-col">
-              {desk.ready ? t("desk.takingCalls") : t("ops.state.paused")}
+              {desk.ready ? t("desk.takingCalls") : clockedIn ? t("ops.state.paused") : t("ops.state.clockedOut")}
               {(desk.ready || !desk.pause) && (
                 <span className="font-normal text-muted-foreground text-xs">
-                  {desk.ready ? t("desk.takingCallsHint") : t("desk.pausedHint")}
+                  {desk.ready ? t("desk.takingCallsHint") : clockedIn ? t("desk.pausedHint") : t("desk.clockInFirst")}
                 </span>
               )}
             </span>
@@ -1974,6 +1980,15 @@ function DeskBar({
             </Button>
           )}
           <EarnedBreakChip desk={desk} onTake={onTakeBreak} />
+          {clockedIn && desk.shift && (
+            <span className="flex items-center gap-1 text-muted-foreground text-xs">
+              {t("desk.clockedInAt", { time: fmtTime(desk.shift.started_at) })}
+              <Button disabled={desk.current?.status === "in_call"} onClick={onClockOut} size="xs" variant="ghost">
+                <LogOutIcon aria-hidden="true" />
+                {t("desk.clockOut")}
+              </Button>
+            </span>
+          )}
         </div>
         {active.length > 1 && (
           <Field className="w-auto min-w-48">
@@ -2027,6 +2042,13 @@ function DeskBar({
             <dd className="font-semibold tabular-nums">{fmtDuration(desk.today.talk_seconds)}</dd>
           </div>
           <div className="flex flex-col">
+            <dt className="text-muted-foreground text-xs">{t("desk.breaksToday")}</dt>
+            <dd className="font-semibold tabular-nums">
+              {fmtDuration(desk.today.pause_seconds)}
+              {desk.today.pauses > 0 && <span className="ms-1 font-normal text-muted-foreground text-xs">({desk.today.pauses})</span>}
+            </dd>
+          </div>
+          <div className="flex flex-col">
             <dt className="text-muted-foreground text-xs">{t("inbound.missedTitle")}</dt>
             <dd className={cn("font-semibold tabular-nums", desk.missed.length > 0 && "text-warning-foreground")}>{desk.missed.length}</dd>
           </div>
@@ -2068,6 +2090,7 @@ function Desk() {
   const [desk, setDesk] = React.useState<OpDesk>();
   const [reason, setReason] = React.useState<string | null>(null);
   const [toggling, setToggling] = React.useState(false);
+  const [clocking, setClocking] = React.useState(false);
   const [testOpen, setTestOpen] = React.useState(false);
   const [newOpen, setNewOpen] = React.useState(false);
   const [pauseAsk, setPauseAsk] = React.useState<PauseAsk | null>(null);
@@ -2138,6 +2161,23 @@ function Desk() {
       await load();
     } finally {
       setToggling(false);
+    }
+  };
+
+  const clock = async (action: "clock-in" | "clock-out") => {
+    // Clocking in is a click: the moment to ask for the reminders' desktop notifications.
+    if (action === "clock-in" && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+    setClocking(true);
+    try {
+      await api(`/api/operations/${action}`, { method: "POST" });
+      setReason(null);
+    } catch (err) {
+      toastManager.add({ description: (err as Error).message, title: t("desk.updateFailed"), type: "error" });
+    } finally {
+      setClocking(false);
+      await load();
     }
   };
 
@@ -2228,6 +2268,7 @@ function Desk() {
         desk={desk}
         onAskReason={() => setPauseAsk("reason")}
         onCampaign={setCampaign}
+        onClockOut={() => clock("clock-out")}
         onNewCall={() => setNewOpen(true)}
         onPowerDial={changePowerDial}
         onReady={setReady}
@@ -2252,6 +2293,7 @@ function Desk() {
       />
       <EarnedBreakDialog earned={offerBreak ? desk.earned_break : null} onLater={breakForLater} onTake={takeBreak} />
       <PauseOverAlert desk={desk} />
+      <CallbackReminders desk={desk} />
       <TestCallDialog onOpenChange={setTestOpen} onStarted={testStarted} open={testOpen} />
       <NewCallDialog config={config} onOpenChange={setNewOpen} onStarted={directStarted} open={newOpen} />
       {incoming?.op && desk.current && desk.current.id !== incoming.op.id && (
@@ -2271,7 +2313,9 @@ function Desk() {
           <EmptyHeader>
             <EmptyMedia variant="icon">{desk.ready && !reason ? <Spinner /> : <HeadsetIcon />}</EmptyMedia>
             <EmptyTitle>
-              {!desk.ready
+              {!desk.shift?.open
+                ? t("desk.clockInTitle")
+                : !desk.ready
                 ? desk.pause
                   ? t("desk.pausedFor", { reason: desk.pause.label.toLocaleLowerCase() })
                   : t("desk.youArePaused")
@@ -2282,7 +2326,13 @@ function Desk() {
                     : t("desk.gettingNext")}
             </EmptyTitle>
             <EmptyDescription>
-              {!desk.ready
+              {!desk.shift?.open
+                ? desk.shift
+                  ? t(desk.shift.ended_by === "auto" ? "desk.clockedOutAuto" : "desk.clockedOutAt", {
+                      time: fmtTime(desk.shift.ended_at),
+                    })
+                  : t("desk.clockInHint", { time: fmtTime(desk.clock_out_at) })
+                : !desk.ready
                 ? t("desk.startHint")
                 : reason
                   ? reason
@@ -2292,7 +2342,13 @@ function Desk() {
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent className="flex-row flex-wrap justify-center">
-            {!desk.ready && (
+            {!desk.shift?.open && (
+              <Button loading={clocking} onClick={() => clock("clock-in")}>
+                <LogInIcon aria-hidden="true" />
+                {t("desk.clockIn")}
+              </Button>
+            )}
+            {desk.shift?.open && !desk.ready && (
               <Button loading={toggling} onClick={() => setReady(true)}>
                 <HeadsetIcon aria-hidden="true" />
                 {t("desk.startTaking")}
@@ -2308,6 +2364,68 @@ function Desk() {
       <MissedCalls current={desk.current} missed={desk.missed} onChange={load} onTaken={directStarted} />
       <MyCallbacks callbacks={desk.callbacks} current={desk.current} onChange={load} onTaken={directStarted} />
     </>
+  );
+}
+
+// How long before a callback the agent is reminded of it.
+const REMIND_MINUTES = 10;
+
+/** Reminds the agent of their callbacks coming up (within REMIND_MINUTES) and due, on the desk and, in another tab or
+ * window, with a desktop notification (once per callback, when it's coming up and when it's due). */
+function CallbackReminders({ desk }: { desk: OpDesk }) {
+  const now = useNow(desk.callbacks.length > 0, 15_000);
+  const notified = React.useRef(new Set<string>());
+  const soon = desk.callbacks
+    .map((cb) => ({ at: parseDate(cb.due_at)?.getTime() ?? 0, cb }))
+    .filter(({ cb, at }) => cb.id !== desk.current?.id && at - now <= REMIND_MINUTES * 60_000)
+    .sort((a, b) => a.at - b.at);
+
+  React.useEffect(() => {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    for (const { cb, at } of soon) {
+      const due = at <= now;
+      const key = `${cb.id}:${cb.due_at}:${due ? "due" : "soon"}`;
+      if (notified.current.has(key)) continue;
+      notified.current.add(key);
+      if (document.visibilityState !== "hidden") continue;
+      const note = new Notification(due ? t("desk.reminderDueTitle") : t("desk.reminderSoonTitle"), {
+        body: t("desk.reminderBody", { name: contactName(cb), time: fmtTime(cb.due_at) }),
+        tag: `callback:${key}`,
+      });
+      note.onclick = () => window.focus();
+    }
+  });
+
+  // A callback served to them while they look elsewhere.
+  const served = desk.current?.source === "callback" ? desk.current : null;
+  React.useEffect(() => {
+    if (!served || document.visibilityState !== "hidden") return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const note = new Notification(t("desk.reminderServedTitle"), { body: contactName(served), tag: `callback-served:${served.id}` });
+    note.onclick = () => window.focus();
+  }, [served]);
+
+  if (!soon.length) return null;
+  const first = soon[0];
+  const due = first.at <= now;
+  // It won't be served to them: they aren't taking calls.
+  const waiting = !desk.ready || !desk.shift?.open;
+  return (
+    <Alert variant={due ? "warning" : "info"}>
+      <BellRingIcon aria-hidden="true" />
+      <AlertTitle>
+        {t(due ? "desk.reminderDue" : "desk.reminderSoon", {
+          name: contactName(first.cb),
+          time: fmtTime(first.cb.due_at),
+          when: fmtRelative(first.cb.due_at),
+        })}
+        {soon.length > 1 && ` ${t("desk.reminderMore", { count: soon.length - 1 })}`}
+      </AlertTitle>
+      <AlertDescription>
+        {waiting ? t("desk.reminderWaiting") : due ? t("desk.reminderNext") : t("desk.reminderHint")}
+        {first.cb.callback_note && <Bidi className="mt-1 text-foreground" text={first.cb.callback_note} />}
+      </AlertDescription>
+    </Alert>
   );
 }
 

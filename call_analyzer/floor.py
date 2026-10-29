@@ -10,10 +10,17 @@ desk, the team board and the wallboard show a pause that runs over it. Every pau
 reason's label and limit as they were, so the KPIs can add up pause time per reason. A pause lasts until the agent
 takes calls again or picks another reason; while the agent's desk is open its end is moved forward at each
 check-in, and a pause left open overnight ends at the last check-in of its day.
+
+Shifts: an agent clocks in to start their day and clocks out to end it (op_shifts). They take calls and pause only
+while clocked in, so the breaks they take are bounded by the shift: clocking out ends the pause they're on. A shift
+nobody clocked out of ends on its own AUTO_CLOCK_OUT_MINUTES after the workday ends (at the last check-in before that,
+when the desk was closed earlier), with the pause it was on, so a break left open after work doesn't keep counting.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 
 METRICS = ("calls", "reached", "wins", "desk_minutes")
+# A shift still open this long after the workday ends is clocked out on its own.
+AUTO_CLOCK_OUT_MINUTES = 60
 TEAM = "*"
 DEFAULT_WORKDAY = ("09:00", "17:00")
 # Created the first time the desk runs; admins edit them on Operations > Targets.
@@ -259,6 +266,94 @@ def pause_totals(conn, since: str, until: str, username: str | None = None) -> d
         t["pauses"] += 1
         t["pauses_over"] += bool(row["limit_minutes"]) and seconds > row["limit_minutes"] * 60
         t["by_reason"][row["label"]] = t["by_reason"].get(row["label"], 0) + seconds
+    return totals
+
+
+# --- Shifts ------------------------------------------------------------------------------------------
+
+def open_shift(conn, username: str):
+    return conn.execute("SELECT s.* FROM op_agents a JOIN op_shifts s ON s.id = a.shift_id "
+                        "WHERE a.username = ? AND s.closed = 0", (username,)).fetchone()
+
+
+def clock_in(conn, username: str, now: datetime | None = None) -> None:
+    """Start the agent's shift, unless they're clocked in already (the caller commits)."""
+    if open_shift(conn, username):
+        return
+    now = now or _now()
+    conn.execute("INSERT INTO op_agents (username, ready) VALUES (?, 0) ON CONFLICT(username) DO NOTHING", (username,))
+    cur = conn.execute("INSERT INTO op_shifts (username, started_at, ended_at) VALUES (?, ?, ?)",
+                       (username, now.isoformat(), now.isoformat()))
+    conn.execute("UPDATE op_agents SET shift_id = ? WHERE username = ?", (cur.lastrowid, username))
+
+
+def clock_out(conn, username: str, now: datetime | None = None, by: str = "agent") -> None:
+    """End the agent's shift and the pause they're on; they stop taking calls (the caller commits)."""
+    now = now or _now()
+    row = open_shift(conn, username)
+    end_pause(conn, username, now)
+    if row:
+        conn.execute("UPDATE op_shifts SET ended_at = ?, closed = 1, ended_by = ? WHERE id = ?",
+                     (max(now.isoformat(), row["started_at"]), by, row["id"]))
+    conn.execute("UPDATE op_agents SET shift_id = NULL, ready = 0, since = ? WHERE username = ?",
+                 (now.isoformat(), username))
+
+
+def clock_out_at(conn, now: datetime) -> datetime:
+    """When a shift still open at `now` is clocked out on its own: AUTO_CLOCK_OUT_MINUTES after today's workday."""
+    end = datetime.combine(now.date(), datetime.strptime(workday(conn)["end"], "%H:%M").time())
+    return end + timedelta(minutes=AUTO_CLOCK_OUT_MINUTES)
+
+
+def touch_shift(conn, username: str, now: datetime, busy: bool = False) -> None:
+    """The agent's desk checked in: their shift lasts until now. One from an earlier day ends at its last check-in,
+    and one past the workday's clock-out time (see clock_out_at) ends then, unless the agent is `busy` with a
+    contact; either way with the pause it was on. The caller commits."""
+    row = open_shift(conn, username)
+    if not row:
+        return
+    last = datetime.fromisoformat(row["ended_at"] or row["started_at"])
+    if row["started_at"][:10] != now.date().isoformat():
+        clock_out(conn, username, last, by="auto")
+        return
+    cutoff = clock_out_at(conn, now)
+    if not busy and now >= cutoff and row["started_at"] < cutoff.isoformat():
+        clock_out(conn, username, min(last, cutoff), by="auto")
+        return
+    conn.execute("UPDATE op_shifts SET ended_at = ? WHERE id = ?", (now.isoformat(), row["id"]))
+
+
+def shift_state(conn, username: str, now: datetime | None = None) -> dict | None:
+    """The agent's shift today: when they clocked in (and out, once they have), how long it lasted, and the time they
+    spent paused during it. The open one, else the latest of the day; None: they haven't clocked in today."""
+    now = now or _now()
+    row = open_shift(conn, username) or conn.execute(
+        "SELECT * FROM op_shifts WHERE username = ? AND started_at >= ? ORDER BY started_at DESC, id DESC LIMIT 1",
+        (username, now.date().isoformat())).fetchone()
+    if not row:
+        return None
+    end = now.isoformat() if not row["closed"] else row["ended_at"]
+    paused = 0
+    for p in conn.execute("SELECT started_at, ended_at, closed FROM op_pauses WHERE username = ? AND started_at >= ? "
+                          "AND started_at <= ?", (username, row["started_at"], end)):
+        paused += _seconds(p["started_at"], min(p["ended_at"] or end, end) if p["closed"] else end)
+    return {"id": row["id"], "open": not row["closed"], "started_at": row["started_at"],
+            "ended_at": row["ended_at"] if row["closed"] else None, "ended_by": row["ended_by"],
+            "seconds": _seconds(row["started_at"], end), "pause_seconds": paused}
+
+
+def shift_totals(conn, since: str, until: str, username: str | None = None) -> dict[str, dict]:
+    """Per agent between two days (until exclusive): seconds clocked in, and the number of shifts."""
+    sql = "SELECT username, started_at, ended_at FROM op_shifts WHERE started_at >= ? AND started_at < ?"
+    args = [since, until]
+    if username:
+        sql += " AND username = ?"
+        args.append(username)
+    totals: dict[str, dict] = {}
+    for row in conn.execute(sql, args):
+        t = totals.setdefault(row["username"], {"shift_seconds": 0, "shifts": 0})
+        t["shift_seconds"] += _seconds(row["started_at"], row["ended_at"])
+        t["shifts"] += 1
     return totals
 
 

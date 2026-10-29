@@ -19,6 +19,7 @@ const REFRESH_MS = 10_000;
 // An agent stuck in one state this long is flagged (waiting for a contact, closing a call, about to call).
 const SLOW_SECONDS: Partial<Record<OpAgentState, number>> = { ready: 5 * 60, serving: 3 * 60, wrap_up: 3 * 60 };
 const STRIPE: Record<OpAgentState, string> = {
+  clocked_out: "bg-muted-foreground/30",
   offline: "bg-muted-foreground/30",
   on_call: "bg-success",
   paused: "bg-muted-foreground",
@@ -27,7 +28,7 @@ const STRIPE: Record<OpAgentState, string> = {
   wrap_up: "bg-warning",
 };
 // Who comes first on the wall: those working, then paused, then gone.
-const ORDER: Record<OpAgentState, number> = { offline: 5, on_call: 0, paused: 4, ready: 2, serving: 1, wrap_up: 1 };
+const ORDER: Record<OpAgentState, number> = { clocked_out: 5, offline: 6, on_call: 0, paused: 4, ready: 2, serving: 1, wrap_up: 1 };
 
 const clockFmt = dateTimeFormat({ hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const dayFmt = dateTimeFormat({ day: "numeric", month: "long", weekday: "long" });

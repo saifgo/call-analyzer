@@ -157,7 +157,7 @@ AGENT_ALLOWED = [(method, re.compile(pattern)) for method, pattern in [
     ("GET", r"/api/reports/[^/]+/export\.pdf"),
     # The Operations call desk (the team board, giving contacts back and CRM retries stay admin-only).
     ("GET", r"/api/operations/(config|desk|lookup|kpis)"),  # kpis: only their own
-    ("POST", r"/api/operations/(ready|next|test|direct|leads|campaign|earned-break)"),
+    ("POST", r"/api/operations/(ready|next|test|direct|leads|campaign|earned-break|clock-in|clock-out)"),
     ("GET", r"/api/operations/\d+/context"),
     ("POST", r"/api/operations/\d+/(call|end|finish|give-back|link)"),
     # Incoming calls on their softphone, and calling back the missed ones.

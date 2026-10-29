@@ -15,14 +15,17 @@ ARG INSTALL_CONVERT=false
 # INSTALL_VOICE=true adds CPU torch + transformers for the voice tone model that listens to the recordings.
 ARG INSTALL_VOICE=false
 
-ENV PYTHONUNBUFFERED=1 \
+# The desk works in local time (callbacks, the workday, today's figures), and the browser reads the times it gets
+# as its own: the server's clock must be the agents'. Set TZ to change it.
+ENV TZ=Africa/Tunis \
+    PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# chromium + Noto fonts: PDF export with proper Arabic text. curl: installs the Claude Code CLI below.
+# chromium + Noto fonts: PDF export with proper Arabic text. curl: installs the Claude Code CLI below. tzdata: TZ.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl chromium fonts-noto-core \
+ && apt-get install -y --no-install-recommends ca-certificates curl chromium fonts-noto-core tzdata \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

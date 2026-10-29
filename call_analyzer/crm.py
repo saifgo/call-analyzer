@@ -1,19 +1,28 @@
 """The CRM, whichever one is connected: the call desk reads leads from it and writes call results back.
 
-The work is done by the adapter chosen with CRM_PROVIDER (adapters/crm/, Twenty by default); this module adds what
-is the same for every CRM: caching, phone matching and the shape of the results. See adapters/crm/base.py to
-connect another CRM.
+The work is done by the adapter chosen with CRM_PROVIDER (adapters/crm/): the built-in CRM (internal) unless set
+otherwise; this module adds what is the same for every CRM: caching (for CRMs reached over the network), phone
+matching and the shape of the results. See adapters/crm/base.py to connect another CRM.
 """
 import threading
 import time
 
 from .adapters import Registry
 from .adapters.crm.base import CrmAdapter, CrmError  # noqa: F401  (CrmError is part of this module's API)
+from . import db
 from .config import live
 from .phones import MATCH_DIGITS, match_key  # noqa: F401
 
-BUILTIN = {"twenty": ".crm.twenty:TwentyCrm"}
-registry: Registry[CrmAdapter] = Registry("CRM", "CRM_PROVIDER", "twenty", BUILTIN)
+BUILTIN = {"internal": ".crm.internal:InternalCrm", "twenty": ".crm.twenty:TwentyCrm"}
+
+
+def default_provider() -> str:
+    """The CRM used when CRM_PROVIDER isn't set: the built-in one, except for installs that were set up with Twenty
+    before there was a choice (CRM_API_KEY filled in), which keep using it."""
+    return "twenty" if live("CRM_API_KEY") else "internal"
+
+
+registry: Registry[CrmAdapter] = Registry("CRM", "CRM_PROVIDER", default_provider, BUILTIN)
 
 CACHE_SECONDS = 60
 STAGES_CACHE_SECONDS = 600
@@ -50,6 +59,17 @@ def forget() -> None:
             cache.clear()
 
 
+def is_local() -> bool:
+    """Whether the CRM is the built-in one (its data is in the app's database)."""
+    return adapter().local
+
+
+def member_id(username: str) -> str | None:
+    """The CRM user this app account is (who owns the leads it adds), or None."""
+    row = db.connect().execute("SELECT crm_member_id FROM users WHERE username = ?", (username,)).fetchone()
+    return adapter().member_id(username, row[0] if row else None)
+
+
 def is_configured() -> bool:
     return adapter().is_configured()
 
@@ -81,6 +101,8 @@ def lookup(number: str) -> dict:
     if not result["configured"] or not key:
         return result
     result["searched"] = True
+    if crm.local:
+        return {**result, "people": crm.find_people(key)}
     with _lock:
         cached = _cache.get((crm.name, key))
     if cached and time.time() - cached[0] < CACHE_SECONDS:
@@ -120,8 +142,10 @@ def leads(stage: str | None = None, refresh: bool = False, oldest_first: bool = 
     limit = batch_size()
     cache_key = (crm.name, stage, oldest_first, limit, after)
     with _lock:
-        cached = _leads_cache.get(cache_key)
-    if cached and not refresh and not cached[1] and time.time() - cached[0] < CACHE_SECONDS:
+        cached = None if crm.local else _leads_cache.get(cache_key)
+    if crm.local:
+        found, cursor = crm.list_opportunities(stage, oldest_first, limit, after)
+    elif cached and not refresh and not cached[1] and time.time() - cached[0] < CACHE_SECONDS:
         found, cursor = cached[2], cached[3]
     elif cached and not refresh and not wait and time.time() - cached[0] < KEEP_STALE_SECONDS:
         found, cursor = cached[2], cached[3]
@@ -182,6 +206,8 @@ def forget_leads():
 def opportunity_stages() -> list[dict]:
     """The opportunity stages as set up in the CRM ([{value, label}], in pipeline order)."""
     crm = adapter()
+    if crm.local:
+        return crm.stages()
     with _lock:
         cached = _stages_cache.get(crm.name)
     if cached and time.time() - cached[0] < STAGES_CACHE_SECONDS:
@@ -228,6 +254,8 @@ def notes(opportunity_id: str | None, person_id: str | None, limit: int = 20) ->
 def workspace_members() -> list[dict]:
     """The CRM's users ([{id, name, email}], by name), to link app accounts to. Raises CrmError."""
     crm = adapter()
+    if crm.local:
+        return crm.members()
     with _lock:
         cached = _members_cache.get(crm.name)
     if cached and time.time() - cached[0] < STAGES_CACHE_SECONDS:
