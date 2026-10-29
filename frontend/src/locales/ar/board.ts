@@ -53,4 +53,8 @@ export const board: Translation<typeof en> = {
   "board.testNotSent": "تجربة، لم تُرسل",
   "board.resent": "أُرسلت إلى نظام إدارة العملاء مجددًا",
   "board.saved": "محفوظة",
+  "board.clockedIn": "الحضور {time}",
+  "board.shiftDone": "مناوبة {start}–{end}",
+  "board.clockOut": "تسجيل انصراف {name}",
+  "board.clockedOut": "تم تسجيل الانصراف",
 };

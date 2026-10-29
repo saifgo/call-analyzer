@@ -53,4 +53,8 @@ export const board: Translation<typeof en> = {
   "board.testNotSent": "Test, non envoyé",
   "board.resent": "Renvoyé au CRM",
   "board.saved": "Enregistré",
+  "board.clockedIn": "arrivé à {time}",
+  "board.shiftDone": "service {start}–{end}",
+  "board.clockOut": "Pointer le départ de {name}",
+  "board.clockedOut": "Départ pointé",
 };

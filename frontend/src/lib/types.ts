@@ -556,8 +556,25 @@ export type OpIdlePrompt = {
 /** Closing `calls` calls earns a break of `minutes`; `done` counts since the last one taken (or today). */
 export type OpEarnedBreak = { calls: number; minutes: number; done: number; earned: boolean; taken_today: number };
 
+/** The agent's shift today (see floor.shift_state): the open one, else the latest of the day. */
+export type OpShift = {
+  id: number;
+  open: boolean;
+  started_at: string;
+  ended_at: string | null;
+  /** Who clocked them out: agent, admin, or auto (left open after the workday). */
+  ended_by: "agent" | "admin" | "auto" | null;
+  seconds: number;
+  /** Time paused during the shift. */
+  pause_seconds: number;
+};
+
 export type OpDesk = {
   ready: boolean;
+  /** null: not clocked in today. */
+  shift: OpShift | null;
+  /** When a shift left open today is clocked out on its own. */
+  clock_out_at: string;
   /** Set while the agent has been taking calls without calling anyone for too long. */
   idle_prompt: OpIdlePrompt | null;
   current: OpCall | null;
@@ -570,6 +587,7 @@ export type OpDesk = {
     talk_seconds: number;
     desk_seconds: number;
     pause_seconds: number;
+    pauses: number;
   };
   /** Today's targets: `pace` is how much of the workday is behind us (0 to 1). */
   goals: { pace: number; workday: OpWorkday; progress: OpProgress[] };
@@ -696,7 +714,7 @@ export type OpContext = {
   crm_people_error: string | null;
 };
 
-export type OpAgentState = "on_call" | "wrap_up" | "serving" | "ready" | "paused" | "offline";
+export type OpAgentState = "on_call" | "wrap_up" | "serving" | "ready" | "paused" | "clocked_out" | "offline";
 
 export type OpBoard = {
   agents: {
@@ -713,6 +731,7 @@ export type OpBoard = {
     done_today: number;
     today: { done: number; reached: number; success: number; desk_seconds: number; pause_seconds: number };
     pause: OpPause | null;
+    shift: OpShift | null;
     progress: OpProgress[];
     campaign: string | null;
   }[];
@@ -805,6 +824,9 @@ export type OpKpiRow = {
   /** Times prompted to call after staying idle, and the idle time in them. */
   idle_prompts: number;
   idle_seconds: number;
+  /** Time clocked in, and the number of shifts. */
+  shift_seconds: number;
+  shifts: number;
   linked: number;
   scored: number;
   avg_score: number | null;

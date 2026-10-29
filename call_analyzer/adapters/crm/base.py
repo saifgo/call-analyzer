@@ -75,6 +75,9 @@ class CrmAdapter:
     # Settings this adapter reads (from .env.example). Secret ones are masked on the Settings page.
     setting_keys: tuple[str, ...] = ()
     secret_keys: tuple[str, ...] = ()
+    # Whether its data is in the app's own database: then nothing is cached in front of it (crm.py), as reading it
+    # is as fast as a cache and never out of date.
+    local = False
     # The stage of opportunities nobody has worked on yet: the default call campaign calls these.
     lead_stage = "NEW"
     # The stage of opportunities we called but couldn't reach: they go at the end of the New leads queue.
@@ -87,6 +90,10 @@ class CrmAdapter:
     def not_configured_message(self) -> str:
         """Tells an admin what to fill in, e.g. "add CRM_API_KEY in Settings"."""
         return f"set up {self.label or 'the CRM'} in Settings"
+
+    def member_id(self, username: str, crm_member_id: str | None) -> str | None:
+        """The CRM user an app account is (who owns the leads it adds): the one linked on the Users page."""
+        return crm_member_id or None
 
     # --- Reading -------------------------------------------------------------------------------
 

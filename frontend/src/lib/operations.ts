@@ -37,6 +37,7 @@ export function useNow(active = true, everyMs = 1000): number {
 }
 
 const STATE_LABELS = labels<OpAgentState>({
+  clocked_out: "ops.state.clockedOut",
   offline: "ops.state.offline",
   on_call: "ops.state.onCall",
   paused: "ops.state.paused",
@@ -45,6 +46,7 @@ const STATE_LABELS = labels<OpAgentState>({
   wrap_up: "ops.state.wrapUp",
 });
 const STATE_VARIANTS: Record<OpAgentState, Variant | "outline"> = {
+  clocked_out: "outline",
   offline: "outline",
   on_call: "success",
   paused: "secondary",

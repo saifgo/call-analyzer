@@ -1,4 +1,4 @@
-import { CircleAlertIcon, RefreshCwIcon, Undo2Icon, XIcon } from "lucide-react";
+import { CircleAlertIcon, LogOutIcon, RefreshCwIcon, Undo2Icon, XIcon } from "lucide-react";
 import * as React from "react";
 import { DeskAlerts } from "@/components/desk-alerts";
 import { GoalBars, PauseBadge } from "@/components/goal-progress";
@@ -13,7 +13,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, useApi } from "@/lib/api";
 import { campaignText, useOpConfig } from "@/lib/campaign-text";
 import { Bidi } from "@/lib/bidi";
-import { fmtDateTime, fmtDuration, fmtRelative, humanize, numberFmt, parseDate } from "@/lib/format";
+import { fmtDateTime, fmtDuration, fmtRelative, fmtTime, humanize, numberFmt, parseDate } from "@/lib/format";
 import { pct } from "@/components/desk-charts";
 import { t } from "@/lib/i18n";
 import { contactName, fmtGoalValue, goalStatus, METRIC_LABELS, outcomeVariant, secondsFrom, STAGE_VARIANT, STATE, useNow } from "@/lib/operations";
@@ -103,7 +103,7 @@ export function OperationsBoard(): React.ReactElement {
 
   const outcomes = Object.fromEntries(config.outcomes.map((o) => [o.value, o]));
   const stages = Object.fromEntries(config.stages.map((s) => [s.value, s.label]));
-  const working = data.agents.filter((a) => a.state !== "offline" && a.state !== "paused");
+  const working = data.agents.filter((a) => a.state !== "offline" && a.state !== "paused" && a.state !== "clocked_out");
   const onCall = data.agents.filter((a) => a.state === "on_call").length;
   const doneToday = Object.values(data.outcomes_today).reduce((a, b) => a + b, 0);
   const q = data.queue;
@@ -213,7 +213,7 @@ export function OperationsBoard(): React.ReactElement {
               <TableHead>{t("board.status")}</TableHead>
               <TableHead>{t("ops.contact")}</TableHead>
               <TableHead className="text-end">{t("dates.today")}</TableHead>
-              <TableHead className="w-10">
+              <TableHead className="w-20">
                 <span className="sr-only">{t("board.actions")}</span>
               </TableHead>
             </TableRow>
@@ -232,6 +232,13 @@ export function OperationsBoard(): React.ReactElement {
                   <div className="flex flex-col">
                     <span className="font-medium">{a.name}</span>
                     {data.queues.length > 1 && a.campaign && <span className="text-muted-foreground text-xs">{campaignText(a.campaign)}</span>}
+                    {a.shift && (
+                      <span className="text-muted-foreground text-xs">
+                        {a.shift.open
+                          ? t("board.clockedIn", { time: fmtTime(a.shift.started_at) })
+                          : t("board.shiftDone", { end: fmtTime(a.shift.ended_at), start: fmtTime(a.shift.started_at) })}
+                      </span>
+                    )}
                   </div>
                 </TableCell>
                 <TableCell>
@@ -279,6 +286,24 @@ export function OperationsBoard(): React.ReactElement {
                   )}
                 </TableCell>
                 <TableCell>
+                  <div className="flex items-center justify-end gap-1">
+                  {a.shift?.open && a.current?.status !== "in_call" && (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            aria-label={t("board.clockOut", { name: a.name })}
+                            onClick={() => run(`/api/operations/agents/${encodeURIComponent(a.username)}/clock-out`, "POST", t("board.clockedOut"))}
+                            size="icon-sm"
+                            variant="ghost"
+                          />
+                        }
+                      >
+                        <LogOutIcon aria-hidden="true" className="rtl:-scale-x-100" />
+                      </TooltipTrigger>
+                      <TooltipPopup>{t("board.clockOut", { name: a.name })}</TooltipPopup>
+                    </Tooltip>
+                  )}
                   {a.current && (
                     <Tooltip>
                       <TooltipTrigger
@@ -296,6 +321,7 @@ export function OperationsBoard(): React.ReactElement {
                       <TooltipPopup>{t("board.giveBack")}</TooltipPopup>
                     </Tooltip>
                   )}
+                  </div>
                 </TableCell>
               </TableRow>
             ))}

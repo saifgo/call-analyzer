@@ -74,8 +74,8 @@ class RegistryTests(unittest.TestCase):
     def tearDown(self):
         crm.forget()
 
-    def test_twenty_and_govoice_are_the_defaults(self):
-        self.assertEqual((crm.adapter().name, telephony.adapter().name), ("twenty", "govoice"))
+    def test_the_built_in_crm_and_govoice_are_the_defaults(self):
+        self.assertEqual((crm.adapter().name, telephony.adapter().name), ("internal", "govoice"))
         self.assertEqual(crm.lead_stage(), "NEW")
 
     def test_a_registered_crm_is_used_once_chosen_in_settings(self):

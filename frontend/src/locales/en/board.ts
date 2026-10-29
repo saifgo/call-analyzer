@@ -51,4 +51,8 @@ export const board = {
   "board.testNotSent": "Test, not sent",
   "board.resent": "Sent to the CRM again",
   "board.saved": "Saved",
+  "board.clockedIn": "clocked in {time}",
+  "board.shiftDone": "worked {start}–{end}",
+  "board.clockOut": "Clock {name} out",
+  "board.clockedOut": "Clocked out",
 };

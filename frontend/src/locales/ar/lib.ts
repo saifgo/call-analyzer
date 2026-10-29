@@ -69,4 +69,5 @@ export const lib: Translation<typeof en> = {
   "workers.runsOn.agent": "الوكلاء البعيدون فقط",
   "workers.runsOn.auto": "الوكلاء عند اتصالهم، وإلا هذا الخادم",
   "workers.runsOn.host": "هذا الخادم",
+  "ops.state.clockedOut": "خارج الدوام",
 };

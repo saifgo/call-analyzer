@@ -103,7 +103,7 @@ class DeskTestCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.conn = db.connect()
         for table in ("op_calls", "op_agents", "op_campaigns", "op_presence", "calls", "softphones", "user_agents",
-                      "wa_messages", "op_targets", "op_pause_reasons", "op_pauses", "op_settings", "op_inbound"):
+                      "wa_messages", "op_targets", "op_pause_reasons", "op_pauses", "op_settings", "op_inbound", "op_shifts"):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.commit()
         self.crm = FakeCrm([lead(1), lead(2, phone=None), lead(3), lead(4), lead(5, stage="ATTEMPTED"), lead(6),
@@ -313,6 +313,31 @@ class CallbackTests(DeskTestCase):
         waiting = self.conn.execute("SELECT COUNT(*) FROM op_calls WHERE status = 'scheduled' AND opportunity_id = ?",
                                     (cb["opportunity_id"],)).fetchone()[0]
         self.assertEqual(waiting, 1)
+
+
+    def due_now(self):
+        self.conn.execute("UPDATE op_calls SET due_at = ? WHERE status = 'scheduled'",
+                          (iso(datetime.now() - timedelta(minutes=1)),))
+        self.conn.commit()
+
+    def test_the_agent_who_booked_a_callback_gets_it_even_on_another_campaign(self):
+        cb = self.book("a1")
+        other = self.campaign(new=True, name="Win-back", stages=["ATTEMPTED"])
+        operations.set_campaign(self.conn, "a1", other["id"])
+        self.due_now()
+        served = self.serve("a1")
+        self.assertEqual((served["id"], served["source"]), (cb["id"], "callback"))
+
+    def test_callbacks_of_a_campaign_that_stopped_go_to_anyone(self):
+        other = self.campaign(new=True, name="Win-back", stages=["ATTEMPTED"])
+        operations.set_campaign(self.conn, "a1", other["id"])
+        cb = self.book("a1")
+        self.assertEqual(cb["campaign_id"], other["id"])
+        self.conn.execute("UPDATE op_campaigns SET active = 0 WHERE id = ?", (other["id"],))
+        self.conn.commit()
+        self.due_now()
+        served = self.serve("a2")
+        self.assertEqual((served["id"], served["source"]), (cb["id"], "callback"))
 
 
 class FinishTests(DeskTestCase):
@@ -620,6 +645,76 @@ class PauseTests(DeskTestCase):
             operations.set_ready(self.conn, "a1", False, meeting["id"])
         with self.assertRaises(floor.FloorError):
             floor.save_reasons(self.conn, [{"label": "Break"}, {"label": "break"}])
+
+
+class ShiftTests(DeskTestCase):
+    def reason(self, label: str) -> dict:
+        return next(r for r in floor.reasons(self.conn) if r["label"] == label)
+
+    def agent(self, user: str):
+        return self.conn.execute("SELECT * FROM op_agents WHERE username = ?", (user,)).fetchone()
+
+    def test_taking_calls_clocks_in_and_clocking_out_ends_the_pause(self):
+        shift = floor.shift_state(self.conn, "a1")
+        self.assertTrue(shift["open"])
+        operations.set_ready(self.conn, "a1", False, self.reason("Break")["id"])
+        operations.clock_out(self.conn, "a1")
+        self.assertIsNone(floor.pause_state(self.conn, "a1"))
+        self.assertEqual(self.agent("a1")["ready"], 0)
+        shift = floor.shift_state(self.conn, "a1")
+        self.assertEqual((shift["open"], shift["ended_by"]), (False, "agent"))
+        # Clocked out: no pausing, and no contact is served.
+        with self.assertRaises(OperationError):
+            operations.set_ready(self.conn, "a1", False, self.reason("Lunch")["id"])
+        self.assertFalse(operations.heartbeat(self.conn, "a1"))
+
+    def test_clocking_out_gives_back_an_uncalled_contact_but_not_during_a_call(self):
+        op = self.serve("a1")
+        operations.clock_out(self.conn, "a1")
+        self.assertEqual(operations.get_row(self.conn, op["id"])["status"], "released")
+        operations.clock_in(self.conn, "a1")
+        operations.set_ready(self.conn, "a1", True)
+        operations.start_call(self.serve("a1")["id"], "a1")
+        with self.assertRaises(OperationError):
+            operations.clock_out(self.conn, "a1")
+
+    def test_a_shift_left_open_after_the_workday_ends_on_its_own_with_its_break(self):
+        floor.save_targets(self.conn, {"team": {}, "workday": {"start": "00:00", "end": "00:01"}})
+        cutoff = floor.clock_out_at(self.conn, datetime.now())
+        if datetime.now() < cutoff + timedelta(minutes=5):
+            self.skipTest("too close to midnight")
+        operations.set_ready(self.conn, "a1", False, self.reason("Break")["id"])
+        started = iso(datetime.now().replace(hour=0, minute=30, second=0))
+        self.conn.execute("UPDATE op_shifts SET started_at = ? WHERE username = 'a1'", (started,))
+        self.conn.execute("UPDATE op_pauses SET started_at = ? WHERE username = 'a1'", (started,))
+        self.conn.commit()
+        operations.heartbeat(self.conn, "a1")
+        self.assertIsNone(floor.pause_state(self.conn, "a1"))
+        shift = floor.shift_state(self.conn, "a1")
+        self.assertEqual((shift["open"], shift["ended_by"], shift["ended_at"]), (False, "auto", iso(cutoff)))
+        pause = self.conn.execute("SELECT ended_at, closed FROM op_pauses WHERE username = 'a1'").fetchone()
+        self.assertEqual(tuple(pause), (iso(cutoff), 1))
+        self.assertEqual(floor.shift_state(self.conn, "a1")["pause_seconds"], 31 * 60)  # 00:30 to 01:01
+
+    def test_a_shift_from_yesterday_ends_at_its_last_check_in(self):
+        yesterday = iso(datetime.now() - timedelta(days=1))
+        self.conn.execute("UPDATE op_shifts SET started_at = ?, ended_at = ? WHERE username = 'a1'",
+                          (yesterday, yesterday))
+        self.conn.commit()
+        self.assertFalse(operations.heartbeat(self.conn, "a1"))
+        row = self.conn.execute("SELECT closed, ended_at, ended_by FROM op_shifts WHERE username = 'a1'").fetchone()
+        self.assertEqual(tuple(row), (1, yesterday, "auto"))
+        self.assertIsNone(floor.shift_state(self.conn, "a1"))  # nothing today yet
+
+    def test_the_board_and_kpis_show_shifts(self):
+        operations.heartbeat(self.conn, "a1")
+        operations.clock_out(self.conn, "a2")
+        operations.heartbeat(self.conn, "a2")
+        board = {a["username"]: a for a in operations.board(self.conn)["agents"]}
+        self.assertEqual(board["a2"]["state"], "clocked_out")
+        self.assertTrue(board["a1"]["shift"]["open"])
+        kpis = {a["username"]: a for a in desk_stats.kpis(self.conn)["agents"]}
+        self.assertEqual(kpis["a2"]["shifts"], 1)
 
 
 class TargetTests(DeskTestCase):
