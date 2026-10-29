@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from test_operations import DeskTestCase, FakeCrm, iso, lead  # noqa: F401  (sets up the scratch data folder first)
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import alerts, campaigns, crm, inbound, operations
 from call_analyzer.campaigns import CampaignError
 from call_analyzer.operations import OperationError
@@ -291,9 +292,13 @@ class SpeedTests(unittest.TestCase):
     def test_desk_calls_are_found_by_number_through_an_index(self):
         # The desk and alerts polls look up every missed number this way: a full scan made them take a minute.
         from call_analyzer import db
-        plan = db.connect().execute("EXPLAIN QUERY PLAN SELECT id FROM op_calls WHERE number_key(phone) = ?",
-                                    ("12345678",)).fetchall()
-        self.assertIn("idx_op_phone_key", " ".join(row[3] for row in plan))
+        conn = db.connect()
+        conn.execute("SET enable_seqscan = off")  # the test table is tiny: a full scan would be cheaper
+        try:
+            plan = conn.execute("EXPLAIN SELECT id FROM op_calls WHERE number_key(phone) = ?", ("12345678",)).fetchall()
+        finally:
+            conn.execute("RESET enable_seqscan")
+        self.assertIn("idx_op_phone_key", " ".join(row[0] for row in plan))
 
 
 if __name__ == "__main__":

@@ -7,10 +7,9 @@ LINK_SLACK_MINUTES of the call. RECORDING_CLOCK_OFFSET_MINUTES corrects a GoVoic
 negative) of this server's, e.g. 60 when the server runs on UTC and GoVoice on Tunisian time.
 """
 import json
-import sqlite3
 from datetime import date, datetime, timedelta
 
-from . import campaigns, crm, floor, idle, operations
+from . import campaigns, crm, db, floor, idle, operations
 from .analyze import kind_of
 from .adapters.telephony.base import DATE_FORMAT
 from .config import live
@@ -83,8 +82,9 @@ def link_recordings(conn) -> int:
                 best = (gap, rec["id"])
         if best:
             try:
-                conn.execute("UPDATE op_calls SET call_id = ? WHERE id = ? AND call_id IS NULL", (best[1], row["id"]))
-            except sqlite3.IntegrityError:  # linked meanwhile by another request
+                with conn.savepoint():  # on failure, undo only this update
+                    conn.execute("UPDATE op_calls SET call_id = ? WHERE id = ? AND call_id IS NULL", (best[1], row["id"]))
+            except db.IntegrityError:  # linked meanwhile by another request
                 continue
             claimed.add(best[1])
             linked += 1

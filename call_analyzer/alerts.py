@@ -123,7 +123,7 @@ def _streaks(conn, names: dict[str, str], limits: dict, now: datetime) -> list[d
     start = now.strftime("%Y-%m-%dT00:00:00")
     calls: dict[str, list] = {}
     for r in conn.execute(f"SELECT agent, outcome, campaign_id, finished_at FROM op_calls WHERE status = 'done' "
-                          f"AND finished_at >= ? AND {REAL} ORDER BY finished_at DESC, id DESC", (start,)):
+                          f"AND finished_at >= ? AND {REAL} ORDER BY finished_at DESC NULLS LAST, id DESC", (start,)):
         calls.setdefault(r["agent"], []).append(r)
     found = []
     for user, rows in calls.items():

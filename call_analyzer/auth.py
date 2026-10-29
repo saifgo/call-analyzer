@@ -1,4 +1,4 @@
-"""User accounts and login sessions, stored in the same SQLite database as the calls."""
+"""User accounts and login sessions, stored in the same database as the calls."""
 import hashlib
 import hmac
 import re

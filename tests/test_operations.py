@@ -20,6 +20,7 @@ os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 for key in ("CRM_API_KEY", "CRM_BASE_URL", "SECRET_KEY", "RECORDING_CLOCK_OFFSET_MINUTES"):
     os.environ.pop(key, None)
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import campaigns, crm, db, desk_stats, floor, operations, vault  # noqa: E402
 from call_analyzer.adapters.crm.base import CrmAdapter  # noqa: E402
 from call_analyzer.campaigns import CampaignError  # noqa: E402
@@ -102,6 +103,7 @@ class DeskTestCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.conn = db.connect()
+        self.addCleanup(self.conn.close)
         for table in ("op_calls", "op_agents", "op_campaigns", "op_presence", "calls", "softphones", "user_agents",
                       "wa_messages", "op_targets", "op_pause_reasons", "op_pauses", "op_settings", "op_inbound", "op_shifts"):
             self.conn.execute(f"DELETE FROM {table}")

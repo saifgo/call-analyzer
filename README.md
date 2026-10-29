@@ -10,7 +10,8 @@ GoVoice list API ──► download mp3 ──► speech-to-text ──► Claud
    (sync)             (download)        (transcribe)            (analyze)                    (report)
 ```
 
-Everything is stored in `data/calls.db` (SQLite), so every step is resumable and only processes new calls.
+Everything is stored in a PostgreSQL database (`DATABASE_URL`), so every step is resumable and only processes new
+calls. Docker Compose runs one for you; see [Database](#database).
 
 **No paid APIs needed:**
 - **Speech-to-text** runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
@@ -26,7 +27,9 @@ ElevenLabs/OpenAI transcription and the Anthropic API remain available as option
 ```powershell
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt -r requirements-gpu.txt   # skip requirements-gpu.txt without an NVIDIA GPU
-copy .env.example .env     # then fill it in
+copy .env.example .env     # then fill it in, including DATABASE_URL
+# A PostgreSQL server, if you don't have one (then DATABASE_URL=postgresql://postgres:dev@localhost:5432/postgres):
+docker run -d --name call-analyzer-db -e POSTGRES_PASSWORD=dev -p 5432:5432 -v call-analyzer-db:/var/lib/postgresql/data postgres:17
 .venv\Scripts\python -m call_analyzer user add <name>   # your login for the web interface
 ```
 
@@ -316,7 +319,7 @@ environment variables.
 ### Coolify
 
 1. New resource → your Git repository → build pack **Docker Compose** (file: `docker-compose.yml`).
-2. **Environment variables**: at least `ADMIN_USERNAME`, `ADMIN_PASSWORD` (8+ characters), `PUBLIC_URL=https://your.domain`,
+2. **Environment variables**: at least `POSTGRES_PASSWORD` (letters and digits), `ADMIN_USERNAME`, `ADMIN_PASSWORD` (8+ characters), `PUBLIC_URL=https://your.domain`,
    `COOKIE_SECURE=true`, plus the GoVoice and Claude settings.
 3. **Domains**: set the `app` service's domain to `https://your.domain:8765` (Coolify routes it to port 8765 and
    handles HTTPS). You can delete the `ports:` lines from `docker-compose.yml` if port 8765 is taken on the server.
@@ -355,9 +358,9 @@ reachable through HTTPS.
 - `ANALYSIS_BACKEND=auto` tries Claude first and switches to Cursor when the Claude CLI is missing or
   the session limit is hit.
 
-**Data** lives in Docker volumes: `data` (database, audio, Whisper models, saved settings), `reports`, `context` (business.md).
-The first transcription downloads the Whisper model (~1.6 GB) into `data`. Back up with e.g.
-`docker compose cp app:/app/data ./backup-data`.
+**Data** lives in Docker volumes: `pgdata` (the database), `data` (audio, Whisper models, saved settings),
+`reports`, `context` (business.md). The first transcription downloads the Whisper model (~1.6 GB) into `data`.
+Set `POSTGRES_PASSWORD` (letters and digits) before the first start. See [Database](#database) for backups.
 
 **GPU** (NVIDIA, with the NVIDIA Container Toolkit installed):
 `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build`. Without a GPU, Whisper runs on the
@@ -367,6 +370,36 @@ CPU, which is much slower; on a small server consider `TRANSCRIBE_PROVIDER=eleve
 use, which needs torch: build with `INSTALL_CONVERT=true docker compose up -d --build` (adds ~1 GB). On Coolify,
 add the environment variable `INSTALL_CONVERT=true` as a build variable and redeploy. Converting
 `tunisian-large-v3` needs about 6–8 GB of free RAM.
+
+## Database
+
+The app keeps everything in PostgreSQL, at `DATABASE_URL`. `docker-compose.yml` runs PostgreSQL 17 next to the app
+(service `db`, volume `pgdata`, not reachable from outside); to use another server, set `DATABASE_URL`. The schema
+is in `call_analyzer/migrations/`: new files there are applied in order when the app starts.
+
+**Backups**: `pg_dump` gives a consistent copy while the app runs, e.g. every night:
+
+```bash
+docker compose exec -T db pg_dump -U call_analyzer -Fc call_analyzer > backup-$(date +%F).dump
+# restore into an empty database:
+docker compose exec -T db pg_restore -U call_analyzer -d call_analyzer --clean --if-exists < backup-2026-10-29.dump
+```
+
+On Coolify, turn on scheduled backups for the database. Keep `data/secret.key` with the backups: the softphone
+passwords in the database are encrypted with it.
+
+**Coming from SQLite** (`data/calls.db`, before PostgreSQL): the app refuses to start on an empty database while
+that file still has data. Copy it in once, with the app stopped: `python -m call_analyzer db-copy --from
+data/calls.db` (in Docker: `docker compose run --rm app python -m call_analyzer db-copy --from /app/data/calls.db`).
+It checks every value first, copies in one transaction and compares every table before committing; `--dry-run` only
+checks. The SQLite file is never changed. See `docs/postgres-migration.md` for the full switch-over.
+
+**Tests** use a scratch database, emptied at each run (`TEST_DATABASE_URL`, its name must end in `_test`):
+
+```bash
+docker run -d --name ca-pg-test -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:17
+python -m unittest discover tests
+```
 
 ## Voice tone
 

@@ -13,6 +13,7 @@ TMP = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 os.environ["DATA_DIR"] = str(Path(TMP.name) / "data")
 os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import db, idle  # noqa: E402
 
 NOW = datetime(2026, 10, 12, 15, 0, 0)
@@ -27,6 +28,7 @@ class IdleTests(unittest.TestCase):
         os.environ["DESK_IDLE_PROMPT_MINUTES"] = "5"
         self.addCleanup(os.environ.pop, "DESK_IDLE_PROMPT_MINUTES", None)
         self.conn = db.connect()
+        self.addCleanup(self.conn.close)
         self.addCleanup(self.conn.close)
         for table in ("op_calls", "op_agents", "op_idle_prompts"):
             self.conn.execute(f"DELETE FROM {table}")

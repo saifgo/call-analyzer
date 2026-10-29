@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import auth, crm, db, desk_stats, operations, telephony, workers
-from ..analyze import KIND_SQL, SCORE_SQL, kind_of
+from ..analyze import KIND_SQL, SCORE_SQL, json_sql, kind_of
 from ..config import ENV_PATH, ROOT, settings
 from . import operations_api, softphone_api, whatsapp_api, workers_api
 from .export import audio_data_uri, render_call_page, render_report_page
@@ -597,7 +597,7 @@ def _length_sql(length: str) -> tuple[str | None, list[int]]:
     return (f"({' OR '.join(parts)})" if parts else None), args
 
 
-OUTCOME_SQL = "COALESCE(json_extract(analysis, '$.outcome'), json_extract(analysis, '$.resolution_status'))"
+OUTCOME_SQL = f"COALESCE({json_sql('outcome')}, {json_sql('resolution_status')})"
 
 
 @app.get("/api/calls")
@@ -619,7 +619,7 @@ def list_calls(request: Request, agent: str = "", status: str = "", outcome: str
         clauses.append(f"{KIND_SQL} = ?")
         args.append(kind)
     if q:
-        clauses.append("(customer LIKE ? OR id = ? OR transcript LIKE ?)")
+        clauses.append("(customer ILIKE ? OR id = ? OR transcript ILIKE ?)")
         args += [f"%{q}%", q, f"%{q}%"]
     if since:
         clauses.append("date_call >= ?")
@@ -785,7 +785,7 @@ def list_feedback(request: Request, q: str = "", author: str = "", limit: int = 
         clauses.append("f.author = ?")
         args.append(author)
     if q:
-        clauses.append("(f.body LIKE ? OR c.customer LIKE ? OR c.id = ?)")
+        clauses.append("(f.body ILIKE ? OR c.customer ILIKE ? OR c.id = ?)")
         args += [f"%{q}%", f"%{q}%", q]
     where = " AND ".join(clauses)
     conn = db.connect()
@@ -857,18 +857,19 @@ def stats(request: Request, since: str = "", until: str = ""):
     def count(where: str) -> int:
         return conn.execute(f"SELECT COUNT(*) FROM calls WHERE {scope} AND {where}", scope_args).fetchone()[0]
 
+    score = f"{json_sql('overall_score')}::numeric"
     agents = [dict(r) for r in conn.execute(f"""
         SELECT agent, COUNT(*) calls, COUNT(analysis) analyzed,
-               ROUND(AVG(CASE WHEN {KIND_SQL} = 'sales' THEN json_extract(analysis, '$.overall_score') END), 1) avg_score,
-               SUM(json_extract(analysis, '$.outcome') IN ('sale', 'appointment_or_next_step')) wins,
-               COUNT(CASE WHEN {KIND_SQL} = 'sales' THEN json_extract(analysis, '$.overall_score') END) scored,
-               SUM({KIND_SQL} = 'service') service_calls,
-               ROUND(AVG(CASE WHEN {KIND_SQL} = 'service' THEN json_extract(analysis, '$.overall_score') END), 1) service_score,
+               ROUND(AVG(CASE WHEN {KIND_SQL} = 'sales' THEN {score} END), 1) avg_score,
+               COUNT(*) FILTER (WHERE {json_sql('outcome')} IN ('sale', 'appointment_or_next_step')) wins,
+               COUNT(CASE WHEN {KIND_SQL} = 'sales' THEN {score} END) scored,
+               COUNT(*) FILTER (WHERE {KIND_SQL} = 'service') service_calls,
+               ROUND(AVG(CASE WHEN {KIND_SQL} = 'service' THEN {score} END), 1) service_score,
                ROUND(SUM(duration) / 60.0) minutes
         FROM calls WHERE {scope} GROUP BY agent ORDER BY calls DESC""", scope_args)]
     outcomes = [dict(r) for r in conn.execute(f"""
-        SELECT json_extract(analysis, '$.outcome') outcome, COUNT(*) n FROM calls
-        WHERE {scope} AND json_extract(analysis, '$.outcome') IS NOT NULL GROUP BY 1 ORDER BY n DESC""", scope_args)]
+        SELECT {json_sql('outcome')} outcome, COUNT(*) n FROM calls
+        WHERE {scope} AND {json_sql('outcome')} IS NOT NULL GROUP BY 1 ORDER BY n DESC""", scope_args)]
     names = {}
     for username, display_name, agent in conn.execute("""
             SELECT u.username, u.display_name, ua.agent FROM user_agents ua JOIN users u USING (username)

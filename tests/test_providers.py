@@ -15,6 +15,7 @@ for key in ("CRM_PROVIDER", "TELEPHONY_PROVIDER", "CRM_API_KEY", "GOVOICE_COOKIE
             "SOFTPHONE_WS_URL", "SOFTPHONE_DOMAIN", "SOFTPHONE_USER_PREFIX"):
     os.environ.pop(key, None)
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import crm, db, softphone, telephony  # noqa: E402
 from call_analyzer.config import ENV_PATH  # noqa: E402
 from call_analyzer.adapters.crm.base import CrmAdapter  # noqa: E402

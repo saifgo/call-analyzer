@@ -4,6 +4,9 @@ python-dotenv>=1.0
 markdown>=3.5
 fastapi>=0.115
 uvicorn[standard]>=0.30
+# PostgreSQL, the database (db.py)
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
 # Encrypts the softphone passwords saved in the database (vault.py)
 cryptography>=42
 faster-whisper>=1.2

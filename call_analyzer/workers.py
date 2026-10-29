@@ -15,8 +15,6 @@ import json
 import secrets
 from datetime import datetime, timedelta
 
-from . import db
-
 KINDS = ("transcribe", "voice", "analyze")
 PROTOCOL = 1  # bump when the agent <-> server messages change incompatibly
 MIN_PROTOCOL = 1  # older agents are told to update
@@ -102,7 +100,7 @@ def get_worker(conn, worker_id: str) -> dict | None:
 
 
 def list_workers(conn) -> list[dict]:
-    return [_worker(r) for r in conn.execute("SELECT * FROM workers ORDER BY name COLLATE NOCASE")]
+    return [_worker(r) for r in conn.execute("SELECT * FROM workers ORDER BY lower(name), name")]
 
 
 def update_worker(conn, worker_id: str, *, name: str | None = None, enabled: bool | None = None):
@@ -159,11 +157,11 @@ def enqueue(conn, kind: str, call_ids: list[str], *, chain: bool = False, origin
     assert kind in KINDS
     ids = []
     for call_id in call_ids:
-        conn.execute("INSERT OR IGNORE INTO worker_tasks (kind, call_id, chain, origin_pid, created_at) "
-                     "VALUES (?, ?, ?, ?, ?)", (kind, call_id, int(chain), origin_pid, _ts()))
+        conn.execute("INSERT INTO worker_tasks (kind, call_id, chain, origin_pid, created_at) "
+                     "VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", (kind, call_id, int(chain), origin_pid, _ts()))
         task_id = conn.execute("SELECT id FROM worker_tasks WHERE kind=? AND call_id=? "
                                "AND status IN ('queued', 'running')", (kind, call_id)).fetchone()[0]
-        conn.execute("UPDATE worker_tasks SET origin_pid=?, chain=chain OR ? WHERE id=? AND status='queued'",
+        conn.execute("UPDATE worker_tasks SET origin_pid=?, chain=GREATEST(chain, ?) WHERE id=? AND status='queued'",
                      (origin_pid, int(chain), task_id))
         ids.append(task_id)
     conn.commit()
@@ -195,7 +193,8 @@ def requeue_expired(conn):
 
 
 def claim(conn, worker: dict, kinds: list[str]):
-    """Atomically hand the oldest waiting task of one of `kinds` to this agent (or None)."""
+    """Atomically hand the oldest waiting task of one of `kinds` to this agent (or None). Agents asking at the same
+    time get different tasks: each skips the ones another is taking (SKIP LOCKED)."""
     kinds = [k for k in kinds if k in KINDS]
     if not kinds:
         return None
@@ -204,8 +203,9 @@ def claim(conn, worker: dict, kinds: list[str]):
     rows = conn.execute(
         f"""UPDATE worker_tasks SET status='running', worker_id=?, worker_name=?, attempts=attempts+1,
                 started_at=?, lease_expires=?, progress=NULL, error=NULL
-            WHERE id = (SELECT id FROM worker_tasks WHERE status='queued' AND kind IN ({','.join('?' * len(kinds))})
-                        AND (not_before IS NULL OR not_before <= ?) ORDER BY id LIMIT 1)
+            WHERE status='queued' AND id = (
+                SELECT id FROM worker_tasks WHERE status='queued' AND kind IN ({','.join('?' * len(kinds))})
+                  AND (not_before IS NULL OR not_before <= ?) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
             RETURNING *""",
         (worker["id"], worker["name"], now, _in(LEASE_SECONDS), *kinds, now)).fetchall()
     conn.commit()
@@ -290,7 +290,7 @@ def _continue_to_analysis(conn, task):
 def release_task(conn, task_id: int):
     """Give a task back untouched (the agent stopped before starting it): it doesn't count as an attempt."""
     conn.execute("UPDATE worker_tasks SET status='queued', worker_id=NULL, worker_name=NULL, lease_expires=NULL, "
-                 "progress=NULL, attempts=MAX(attempts-1, 0), not_before=NULL WHERE id=? AND status='running'",
+                 "progress=NULL, attempts=GREATEST(attempts-1, 0), not_before=NULL WHERE id=? AND status='running'",
                  (task_id,))
     conn.commit()
 

@@ -32,7 +32,7 @@ ENV_PATH = Path(os.getenv("ENV_FILE") or ROOT / ".env")
 load_dotenv(ENV_PATH, override=True)
 
 
-# Where calls.db and the audio live. Docker mounts its data volume at /app/data, the default.
+# Where the audio, models and saved settings live. Docker mounts its data volume at /app/data, the default.
 DATA_DIR = Path(os.getenv("DATA_DIR") or ROOT / "data")
 
 
@@ -103,7 +103,7 @@ class Settings:
 
     data_dir: Path = DATA_DIR
     audio_dir: Path = DATA_DIR / "audio"
-    db_path: Path = DATA_DIR / "calls.db"
+    db_path: Path = DATA_DIR / "calls.db"  # the SQLite database from before PostgreSQL (see db_copy.py)
     reports_dir: Path = ROOT / "reports"
     business_context_path: Path = ROOT / "context" / "business.md"
 

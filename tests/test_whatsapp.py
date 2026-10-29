@@ -8,6 +8,7 @@ _tmp = tempfile.mkdtemp()
 os.environ["DATA_DIR"] = _tmp
 os.environ["ENV_FILE"] = str(Path(_tmp) / ".env")
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import whatsapp  # noqa: E402
 
 TEMPLATE = {"name": "price_list", "language": "fr", "status": "APPROVED", "category": "MARKETING",

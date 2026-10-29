@@ -64,7 +64,8 @@ def _seed(conn) -> None:
     if conn.execute("SELECT 1 FROM crm_stages LIMIT 1").fetchone():
         return
     for position, (value, label) in enumerate(DEFAULT_STAGES):
-        conn.execute("INSERT OR IGNORE INTO crm_stages (value, label, position, locked) VALUES (?, ?, ?, ?)",
+        conn.execute("INSERT INTO crm_stages (value, label, position, locked) VALUES (?, ?, ?, ?) "
+                     "ON CONFLICT DO NOTHING",
                      (value, label, position, int(value in LOCKED_STAGES)))
     from ... import campaigns  # here: campaigns imports crm, which loads this adapter
     seen = set(BUILTIN_FIELDS)
@@ -75,7 +76,8 @@ def _seed(conn) -> None:
         seen.add(key)
         kind = {"boolean": "boolean", "number": "number", "select": "choice"}.get(q.get("type"), "text")
         options = json.dumps(q.get("options") or []) if kind == "choice" else None
-        conn.execute("INSERT OR IGNORE INTO crm_fields (key, label, type, options, position) VALUES (?, ?, ?, ?, ?)",
+        conn.execute("INSERT INTO crm_fields (key, label, type, options, position) VALUES (?, ?, ?, ?, ?) "
+                     "ON CONFLICT DO NOTHING",
                      (key, q.get("label") or key, kind, options, len(seen)))
     conn.commit()
 

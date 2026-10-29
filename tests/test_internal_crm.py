@@ -14,6 +14,7 @@ os.environ.setdefault("ENV_FILE", str(Path(TMP.name) / ".env"))
 for key in ("CRM_API_KEY", "CRM_PROVIDER", "CRM_BASE_URL"):
     os.environ.pop(key, None)
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import auth, campaigns, crm, db, operations  # noqa: E402
 from call_analyzer.adapters.crm.internal import InternalCrm  # noqa: E402
 
@@ -23,6 +24,7 @@ CRM_TABLES = ("crm_people", "crm_phones", "crm_opportunities", "crm_notes", "crm
 class InternalCrmCase(unittest.TestCase):
     def setUp(self):
         self.conn = db.connect()
+        self.addCleanup(self.conn.close)
         for table in CRM_TABLES:
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.commit()

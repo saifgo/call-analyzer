@@ -44,7 +44,7 @@ def _idle(conn, username: str) -> dict | None:
     op = operations.current(conn, username)
     if op and op["status"] == "in_call":
         return None  # on a call, or closing one
-    last = _at(conn.execute("SELECT MAX(MAX(COALESCE(call_started_at, ''), COALESCE(call_ended_at, ''), "
+    last = _at(conn.execute("SELECT MAX(GREATEST(COALESCE(call_started_at, ''), COALESCE(call_ended_at, ''), "
                             "CASE WHEN status = 'done' THEN COALESCE(finished_at, '') ELSE '' END)) "
                             "FROM op_calls WHERE agent = ?", (username,)).fetchone()[0])
     since = max(filter(None, (_at(a["since"]), _at(a["online_since"]), last)), default=None)

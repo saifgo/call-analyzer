@@ -159,7 +159,7 @@ def _tick(conn, username: str, now: datetime) -> None:
         return
     if 0 < gap <= PRESENCE_GAP_SECONDS:
         conn.execute("INSERT INTO op_presence (username, day, ready_seconds) VALUES (?, ?, ?) "
-                     "ON CONFLICT(username, day) DO UPDATE SET ready_seconds = ready_seconds + excluded.ready_seconds",
+                     "ON CONFLICT(username, day) DO UPDATE SET ready_seconds = op_presence.ready_seconds + excluded.ready_seconds",
                      (username, now.date().isoformat(), round(gap)))
 
 
@@ -308,7 +308,7 @@ def _retries(conn, campaign: dict) -> dict[str, str]:
     rows = conn.execute("""SELECT opportunity_id, outcome, campaign_id, finished_at FROM op_calls
                            WHERE status = 'done' AND opportunity_id IN (
                                SELECT opportunity_id FROM op_calls WHERE status = 'done' AND COALESCE(campaign_id, ?) = ?)
-                           ORDER BY opportunity_id, finished_at DESC, id DESC""",
+                           ORDER BY opportunity_id, finished_at DESC NULLS LAST, id DESC""",
                         (campaigns.default_id(conn), campaign["id"])).fetchall()
     ready = {}
     for opp, calls in groupby(rows, key=lambda r: r["opportunity_id"]):
@@ -691,7 +691,7 @@ def attempts(conn, row) -> int:
     lookup = outcome_lookup(conn)
     count = 0
     for r in conn.execute("SELECT outcome, campaign_id FROM op_calls WHERE opportunity_id = ? AND status = 'done' "
-                          "AND id != ? ORDER BY finished_at DESC, id DESC", (row["opportunity_id"], row["id"])):
+                          "AND id != ? ORDER BY finished_at DESC NULLS LAST, id DESC", (row["opportunity_id"], row["id"])):
         if lookup(r["campaign_id"], r["outcome"]).get("reached"):
             break
         count += 1
@@ -939,7 +939,7 @@ def context(conn, row) -> dict:
     form from), the CRM's notes, and our recorded calls with their numbers."""
     names = account_names(conn)
     history = [to_dict(r, names) for r in conn.execute(
-        "SELECT * FROM op_calls WHERE opportunity_id = ? AND status = 'done' AND id != ? ORDER BY finished_at DESC",
+        "SELECT * FROM op_calls WHERE opportunity_id = ? AND status = 'done' AND id != ? ORDER BY finished_at DESC NULLS LAST",
         (row["opportunity_id"], row["id"]))]
     previous_answers = next((h["answers"] for h in history if h["answers"]), {})
     callback_from = None
@@ -1096,7 +1096,7 @@ def board(conn) -> dict:
     callbacks = [to_dict(r, names) for r in conn.execute(
         "SELECT * FROM op_calls WHERE status = 'scheduled' ORDER BY due_at LIMIT 100")]
     recent = [to_dict(r, names) for r in conn.execute(
-        "SELECT * FROM op_calls WHERE status = 'done' ORDER BY finished_at DESC LIMIT 50")]
+        "SELECT * FROM op_calls WHERE status = 'done' ORDER BY finished_at DESC NULLS LAST LIMIT 50")]
     outcomes = dict(conn.execute(f"SELECT outcome, COUNT(*) FROM op_calls WHERE status = 'done' AND finished_at >= ? "
                                  f"AND {real} GROUP BY outcome", (start,)).fetchall())
     queues = [queue_counts(conn, c)
