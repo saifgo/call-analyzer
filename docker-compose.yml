@@ -6,6 +6,7 @@ services:
         INSTALL_CONVERT: ${INSTALL_CONVERT:-false}
         INSTALL_VOICE: ${INSTALL_VOICE:-false}
     image: call-analyzer
+    pull_policy: build  # the image is built here, never on Docker Hub
     restart: unless-stopped
     init: true  # reaps the claude/chromium processes started by pipeline jobs and PDF export
     ports:
