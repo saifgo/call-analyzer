@@ -5,9 +5,9 @@ export const lib = {
   "govoice.stillNotConnected": "Still not connected",
   "govoice.logIn": "Log in to GoVoice",
   "govoice.loginHelp":
-    "Sign in to your GoVoice account in the tab that opens; Call Analyzer saves the session automatically.",
+    "Sign in to your GoVoice account in the tab that opens; Kalma saves the session automatically.",
   "govoice.loginHelpResume":
-    "Sign in to your GoVoice account in the tab that opens; Call Analyzer saves the session automatically and continues where you left off.",
+    "Sign in to your GoVoice account in the tab that opens; Kalma saves the session automatically and continues where you left off.",
   "govoice.waiting": "Waiting for you to sign in to GoVoice… Tab didn't open? {link}.",
   "govoice.openLoginPage": "Open the login page",
   "govoice.cookieHint": "You can also paste a cookie copied from your browser in Settings → {cookie}.",

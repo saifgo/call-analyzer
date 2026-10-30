@@ -400,7 +400,7 @@ export function AppShell({
               <SidebarMenuButton render={<a href={href("dashboard")} />} size="lg">
                 <img alt="" className="size-8 rounded-lg" src="/static/favicon.svg" />
                 <div className="grid flex-1 text-start text-sm leading-tight">
-                  <span className="truncate font-semibold text-sidebar-accent-foreground">Call Analyzer</span>
+                  <span className="truncate font-mono font-medium tracking-tighter text-sidebar-accent-foreground">kalma</span>
                   <span className="truncate text-xs">{t("shell.tagline")}</span>
                 </div>
               </SidebarMenuButton>

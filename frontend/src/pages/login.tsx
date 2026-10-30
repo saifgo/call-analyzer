@@ -49,7 +49,7 @@ export function LoginPage(): React.ReactElement {
     <main className="flex min-h-svh flex-col items-center justify-center gap-6 bg-muted/40 p-6">
       <div className="flex items-center gap-2.5">
         <img alt="" className="size-9 rounded-lg" src="/static/favicon.svg" />
-        <span className="font-heading font-semibold text-lg">Call Analyzer</span>
+        <span className="font-mono font-medium text-xl tracking-tighter">kalma</span>
       </div>
       <Card className="w-full max-w-sm">
         <CardHeader>
