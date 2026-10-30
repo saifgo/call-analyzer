@@ -8,9 +8,9 @@ export const lib: Translation<typeof en> = {
   "govoice.stillNotConnected": "Toujours pas connecté",
   "govoice.logIn": "Se connecter à GoVoice",
   "govoice.loginHelp":
-    "Connectez-vous à votre compte GoVoice dans l'onglet qui s'ouvre ; Call Analyzer enregistre la session automatiquement.",
+    "Connectez-vous à votre compte GoVoice dans l'onglet qui s'ouvre ; Kalma enregistre la session automatiquement.",
   "govoice.loginHelpResume":
-    "Connectez-vous à votre compte GoVoice dans l'onglet qui s'ouvre ; Call Analyzer enregistre la session automatiquement et reprend là où vous vous êtes arrêté.",
+    "Connectez-vous à votre compte GoVoice dans l'onglet qui s'ouvre ; Kalma enregistre la session automatiquement et reprend là où vous vous êtes arrêté.",
   "govoice.waiting": "En attente de votre connexion à GoVoice… L'onglet ne s'est pas ouvert ? {link}.",
   "govoice.openLoginPage": "Ouvrir la page de connexion",
   "govoice.cookieHint": "Vous pouvez aussi coller un cookie copié depuis votre navigateur dans Paramètres → {cookie}.",

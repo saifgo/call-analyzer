@@ -7,9 +7,9 @@ export const lib: Translation<typeof en> = {
   "govoice.connected": "تم الاتصال بـ GoVoice",
   "govoice.stillNotConnected": "لم يتم الاتصال بعد",
   "govoice.logIn": "تسجيل الدخول إلى GoVoice",
-  "govoice.loginHelp": "سجّل الدخول إلى حساب GoVoice في علامة التبويب التي تُفتح؛ يحفظ Call Analyzer الجلسة تلقائيًا.",
+  "govoice.loginHelp": "سجّل الدخول إلى حساب GoVoice في علامة التبويب التي تُفتح؛ يحفظ Kalma الجلسة تلقائيًا.",
   "govoice.loginHelpResume":
-    "سجّل الدخول إلى حساب GoVoice في علامة التبويب التي تُفتح؛ يحفظ Call Analyzer الجلسة تلقائيًا ويواصل من حيث توقفت.",
+    "سجّل الدخول إلى حساب GoVoice في علامة التبويب التي تُفتح؛ يحفظ Kalma الجلسة تلقائيًا ويواصل من حيث توقفت.",
   "govoice.waiting": "في انتظار تسجيل دخولك إلى GoVoice… لم تُفتح علامة التبويب؟ {link}.",
   "govoice.openLoginPage": "افتح صفحة تسجيل الدخول",
   "govoice.cookieHint": "يمكنك أيضًا لصق ملف تعريف ارتباط منسوخ من متصفحك في الإعدادات ← {cookie}.",

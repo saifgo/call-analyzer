@@ -120,7 +120,7 @@ export function WallboardPage(): React.ReactElement {
     const root = document.documentElement;
     const had = root.classList.contains("dark");
     root.classList.add("dark");
-    document.title = `${t("wall.title")} · Call Analyzer`;
+    document.title = `${t("wall.title")} · Kalma`;
     return () => {
       root.classList.toggle("dark", had);
     };
