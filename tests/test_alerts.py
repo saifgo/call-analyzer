@@ -13,6 +13,7 @@ TMP = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 os.environ["DATA_DIR"] = str(Path(TMP.name) / "data")
 os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import alerts, campaigns, db  # noqa: E402
 
 NOW = datetime(2026, 10, 12, 15, 0, 0)
@@ -28,6 +29,7 @@ class AlertTests(unittest.TestCase):
             self.addCleanup(os.environ.pop, key, None)
             os.environ.pop(key, None)
         self.conn = db.connect()
+        self.addCleanup(self.conn.close)
         self.addCleanup(self.conn.close)
         for table in ("op_calls", "op_agents", "op_campaigns"):
             self.conn.execute(f"DELETE FROM {table}")
@@ -122,8 +124,9 @@ class AlertTests(unittest.TestCase):
         self.assertFalse([a for a in alerts.current(self.conn, NOW) if a["kind"] == "contact_rate_drop"])
 
     def test_overdue_callbacks(self):
-        self.conn.execute("INSERT OR REPLACE INTO users (username, display_name, role, password_hash, created_at) "
-                          "VALUES ('alert_a1', 'Amira', 'agent', 'x', ?)", (ago(0),))
+        self.conn.execute("INSERT INTO users (username, display_name, role, password_hash, created_at) "
+                          "VALUES ('alert_a1', 'Amira', 'agent', 'x', ?) ON CONFLICT (username) DO UPDATE "
+                          "SET display_name = excluded.display_name, role = excluded.role", (ago(0),))
         self.conn.commit()
         self.addCleanup(lambda: (self.conn.execute("DELETE FROM users WHERE username = 'alert_a1'"),
                                  self.conn.commit()))

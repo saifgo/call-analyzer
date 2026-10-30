@@ -4,7 +4,7 @@ Agents and admins work the desk (/api/operations/desk, next, call...) and see th
 team board, everyone's KPIs and the outcome / AI score insights, edit campaigns, and can give a contact back to the
 queue or retry writing a call to the CRM (see AGENT_ALLOWED in server.py).
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -52,6 +52,8 @@ def get_desk(request: Request):
                 "current": operations.to_dict(row, names) if row else None,
                 "campaign_id": campaign["id"], "today": today, "goals": operations.goals(conn, user, today),
                 "pause": None if ready else floor.pause_state(conn, user), "pause_reasons": floor.reasons(conn),
+                "shift": floor.shift_state(conn, user), "clock_out_at": floor.clock_out_at(conn, datetime.now())
+                .isoformat(timespec="seconds"),
                 "earned_break": breaks.state(conn, user), "missed": missed,
                 "callbacks": operations.my_callbacks(conn, user), "queue": operations.queue_counts(conn, campaign)}
     finally:
@@ -162,6 +164,33 @@ def take_earned_break(request: Request):
     except FloorError as exc:
         conn.rollback()
         raise HTTPException(409, str(exc))
+    return {"ok": True}
+
+
+@router.post("/api/operations/clock-in")
+def clock_in(request: Request):
+    """The agent starts their shift."""
+    operations.clock_in(db.connect(), request.state.user)
+    return {"ok": True}
+
+
+@router.post("/api/operations/clock-out")
+def clock_out(request: Request):
+    """The agent ends their shift: they stop taking calls and the pause they're on ends."""
+    try:
+        operations.clock_out(db.connect(), request.state.user)
+    except OperationError as exc:
+        _fail(exc)
+    return {"ok": True}
+
+
+@router.post("/api/operations/agents/{username}/clock-out")
+def clock_out_agent(username: str):
+    """An admin clocks an agent out (from the team board), e.g. one who left without doing it."""
+    try:
+        operations.clock_out(db.connect(), username, by="admin")
+    except OperationError as exc:
+        _fail(exc)
     return {"ok": True}
 
 

@@ -116,4 +116,5 @@ export const desk: Translation<typeof en> = {
   "insights.ratedCallsHint": "افتح واحدة للاستماع وقراءة ملاحظات الذكاء الاصطناعي.",
   "insights.closed": "أُنهيت",
   "insights.summary": "الملخص",
+  "kpis.clockedIn": "مدة الدوام",
 };

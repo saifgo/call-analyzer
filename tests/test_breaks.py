@@ -13,6 +13,7 @@ TMP = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 os.environ["DATA_DIR"] = str(Path(TMP.name) / "data")
 os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import breaks, db, floor  # noqa: E402
 from call_analyzer.floor import FloorError  # noqa: E402
 
@@ -25,6 +26,7 @@ class EarnedBreakTests(unittest.TestCase):
             os.environ[key] = value
             self.addCleanup(os.environ.pop, key, None)
         self.conn = db.connect()
+        self.addCleanup(self.conn.close)
         self.addCleanup(self.conn.close)
         for table in ("op_calls", "op_agents", "op_pauses"):
             self.conn.execute(f"DELETE FROM {table}")

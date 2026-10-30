@@ -5,7 +5,6 @@
 import json
 import os
 import socket
-import sqlite3
 import tempfile
 import threading
 import time
@@ -26,6 +25,7 @@ ENV_FILE.write_text("ADMIN_USERNAME=admin\nADMIN_PASSWORD=correct-horse\nWHISPER
 import requests  # noqa: E402
 import uvicorn  # noqa: E402
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import agent as agent_mod  # noqa: E402
 from call_analyzer import auth, db, dispatch, workers  # noqa: E402
 from call_analyzer.analyze import CallAnalysis, Scores  # noqa: E402
@@ -128,6 +128,7 @@ class AgentTests(unittest.TestCase):
 
     def setUp(self):
         self.conn = db.connect()
+        self.addCleanup(self.conn.close)
         self.conn.execute("DELETE FROM worker_tasks")
         self.conn.execute("DELETE FROM workers")
         self.conn.execute("DELETE FROM calls")
@@ -157,7 +158,7 @@ class AgentTests(unittest.TestCase):
     def listing(self) -> dict:
         return self.admin.get(self.base + "/api/workers").json()
 
-    def add_call(self, call_id="1", transcript=None) -> sqlite3.Row:
+    def add_call(self, call_id="1", transcript=None) -> db.Row:
         audio = Path(settings.audio_dir)
         audio.mkdir(parents=True, exist_ok=True)
         (audio / f"{call_id}.mp3").write_bytes(b"fake mp3 bytes")

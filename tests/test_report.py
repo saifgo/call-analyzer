@@ -13,12 +13,14 @@ TMP = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 os.environ["DATA_DIR"] = str(Path(TMP.name) / "data")
 os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import analyze, db  # noqa: E402
 
 
 class ReportFeedbackTests(unittest.TestCase):
     def setUp(self):
         self.conn = db.connect()
+        self.addCleanup(self.conn.close)
         for table in ("feedback", "users", "calls"):
             self.conn.execute(f"DELETE FROM {table}")
         for call_id in ("1", "2"):

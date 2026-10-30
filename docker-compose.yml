@@ -6,6 +6,7 @@ services:
         INSTALL_CONVERT: ${INSTALL_CONVERT:-false}
         INSTALL_VOICE: ${INSTALL_VOICE:-false}
     image: call-analyzer
+    pull_policy: build  # the image is built here, never on Docker Hub
     restart: unless-stopped
     init: true  # reaps the claude/chromium processes started by pipeline jobs and PDF export
     ports:
@@ -18,13 +19,38 @@ services:
     environment:
       ENV_FILE: /app/data/.env
       HF_HOME: /app/data/huggingface  # the voice tone model is kept in the data volume, not downloaded after every rebuild
+      # The database. Default: the db service below. Set DATABASE_URL to use another PostgreSQL server instead.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://call_analyzer:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/call_analyzer}
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
-      - data:/app/data            # calls.db, audio, Whisper models, settings saved from the UI
+      - data:/app/data            # audio, Whisper models, settings saved from the UI (and calls.db from before PostgreSQL)
       - reports:/app/reports
       - context:/app/context      # business.md
       - claude:/home/app/.claude  # Claude Code login, if you log in inside the container instead of using a token
 
+  # The database. Not published on a port: only the app reaches it. Back it up with pg_dump (see README).
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: call_analyzer
+      POSTGRES_USER: call_analyzer
+      # Letters and digits only: it goes into DATABASE_URL as it is.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      TZ: ${TZ:-Africa/Tunis}
+      PGTZ: ${TZ:-Africa/Tunis}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U call_analyzer -d call_analyzer"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
 volumes:
+  pgdata:
   data:
   reports:
   context:

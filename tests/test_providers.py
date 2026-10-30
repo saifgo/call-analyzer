@@ -15,6 +15,7 @@ for key in ("CRM_PROVIDER", "TELEPHONY_PROVIDER", "CRM_API_KEY", "GOVOICE_COOKIE
             "SOFTPHONE_WS_URL", "SOFTPHONE_DOMAIN", "SOFTPHONE_USER_PREFIX"):
     os.environ.pop(key, None)
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import crm, db, softphone, telephony  # noqa: E402
 from call_analyzer.config import ENV_PATH  # noqa: E402
 from call_analyzer.adapters.crm.base import CrmAdapter  # noqa: E402
@@ -74,8 +75,8 @@ class RegistryTests(unittest.TestCase):
     def tearDown(self):
         crm.forget()
 
-    def test_twenty_and_govoice_are_the_defaults(self):
-        self.assertEqual((crm.adapter().name, telephony.adapter().name), ("twenty", "govoice"))
+    def test_the_built_in_crm_and_govoice_are_the_defaults(self):
+        self.assertEqual((crm.adapter().name, telephony.adapter().name), ("internal", "govoice"))
         self.assertEqual(crm.lead_stage(), "NEW")
 
     def test_a_registered_crm_is_used_once_chosen_in_settings(self):

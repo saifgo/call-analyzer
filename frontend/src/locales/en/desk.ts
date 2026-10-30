@@ -112,4 +112,5 @@ export const desk = {
   "insights.ratedCallsHint": "Open one to listen and read the AI's feedback.",
   "insights.closed": "Closed",
   "insights.summary": "Summary",
+  "kpis.clockedIn": "Clocked in",
 };

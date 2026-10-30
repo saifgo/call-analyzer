@@ -441,6 +441,24 @@ def cmd_user(args):
     print("User created." if args.action == "add" else "Password changed; the user was signed out everywhere.")
 
 
+def cmd_db_copy(args):
+    from .db_copy import CopyError, copy
+    target = args.to or db.database_url()
+    print(f"Copying {args.source} into {target.rsplit('@', 1)[-1]}" + (" (dry run)" if args.dry_run else ""))
+    try:
+        reports = copy(args.source, target, replace=args.replace, dry_run=args.dry_run)
+    except CopyError as exc:
+        sys.exit(f"Copy failed: {exc}")
+    width = max(len(r.name) for r in reports)
+    for r in reports:
+        status = f"{r.rows:>8} rows" + ("" if args.dry_run else f"  copied {r.copied:>8}  match")
+        print(f"  {r.name:<{width}}  {status}")
+        for note in r.notes:
+            print(f"  {'':<{width}}  note: {note}")
+    if not args.dry_run:
+        print(f"Done: {sum(r.copied for r in reports)} rows copied, every table matches.")
+
+
 def cmd_run(args):
     args.chain = True
     cmd_sync(args)
@@ -509,6 +527,12 @@ def main():
     user.add_argument("--agents", help="Agent extensions linked to the account, comma separated, e.g. 102,103")
     user.add_argument("--name", help="Display name, e.g. the agent's full name")
     user.set_defaults(fn=cmd_user)
+    cp = sub.add_parser("db-copy", help="Copy a SQLite calls.db into the PostgreSQL database (DATABASE_URL) and verify it")
+    cp.add_argument("--from", dest="source", required=True, help="The SQLite file, e.g. data/calls.db")
+    cp.add_argument("--to", help="PostgreSQL URL (default: DATABASE_URL)")
+    cp.add_argument("--replace", action="store_true", help="Overwrite a PostgreSQL database that already has data")
+    cp.add_argument("--dry-run", action="store_true", help="Only check every value fits; write nothing")
+    cp.set_defaults(fn=cmd_db_copy)
     show = sub.add_parser("show", help="Show transcript + feedback for one call")
     show.add_argument("id")
     show.set_defaults(fn=cmd_show)

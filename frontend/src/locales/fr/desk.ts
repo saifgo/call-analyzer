@@ -115,4 +115,5 @@ export const desk: Translation<typeof en> = {
   "insights.ratedCallsHint": "Ouvrez-en un pour l'écouter et lire le retour de l'IA.",
   "insights.closed": "Clôturé",
   "insights.summary": "Résumé",
+  "kpis.clockedIn": "En service",
 };

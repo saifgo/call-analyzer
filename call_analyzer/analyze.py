@@ -567,12 +567,17 @@ def kind_of(analysis: dict) -> str:
     return analysis.get("call_kind") or ("sales" if analysis.get("is_sales_conversation") else "other")
 
 
+def json_sql(key: str, column: str = "analysis") -> str:
+    """SQL for a top-level field of a JSON text column, as text (NULL when it's missing)."""
+    return f"({column}::json ->> '{key}')"
+
+
 # kind_of in SQL, over the calls.analysis column.
-KIND_SQL = ("COALESCE(json_extract(analysis, '$.call_kind'), "
-            "CASE WHEN json_extract(analysis, '$.is_sales_conversation') THEN 'sales' ELSE 'other' END)")
+KIND_SQL = (f"COALESCE({json_sql('call_kind')}, "
+            f"CASE WHEN {json_sql('is_sales_conversation')}::boolean THEN 'sales' ELSE 'other' END)")
 # The AI score of a call, NULL for "other" calls: voicemails and the like are not rated, even when they were analyzed
 # (and given a score) before they stopped being rated.
-SCORE_SQL = f"CASE WHEN {KIND_SQL} != 'other' THEN json_extract(analysis, '$.overall_score') END"
+SCORE_SQL = f"CASE WHEN {KIND_SQL} != 'other' THEN {json_sql('overall_score')}::numeric END"
 
 
 def analyze_call(call, cfg=None, business: str | None = None) -> tuple[CallAnalysis | ServiceAnalysis | OtherAnalysis, str]:

@@ -15,6 +15,7 @@ TMP = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 os.environ["DATA_DIR"] = str(Path(TMP.name) / "data")
 os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import analyze, db, voice  # noqa: E402
 from call_analyzer.config import settings  # noqa: E402
 
@@ -71,6 +72,7 @@ class AcousticsTests(unittest.TestCase):
 class StoredVoiceTests(unittest.TestCase):
     def setUp(self):
         self.conn = db.connect()
+        self.addCleanup(self.conn.close)
         self.conn.execute("DELETE FROM calls")
         self.audio = Path(TMP.name) / "a.mp3"
         self.audio.write_bytes(b"x")

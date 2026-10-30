@@ -70,4 +70,5 @@ export const lib: Translation<typeof en> = {
   "workers.runsOn.agent": "Agents distants uniquement",
   "workers.runsOn.auto": "Agents quand ils sont en ligne, sinon ce serveur",
   "workers.runsOn.host": "Ce serveur",
+  "ops.state.clockedOut": "Fin de service",
 };

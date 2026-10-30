@@ -12,6 +12,7 @@ TMP = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 os.environ["DATA_DIR"] = str(Path(TMP.name) / "data")
 os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import db  # noqa: E402
 from call_analyzer.config import ENV_PATH  # noqa: E402
 

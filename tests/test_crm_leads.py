@@ -13,6 +13,7 @@ TMP = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 os.environ["DATA_DIR"] = str(Path(TMP.name) / "data")
 os.environ["ENV_FILE"] = str(Path(TMP.name) / ".env")
 
+import pgtest  # noqa: E402,F401  (before call_analyzer: the test database)
 from call_analyzer import crm, db  # noqa: E402
 from call_analyzer.adapters.crm.twenty import TwentyCrm  # noqa: E402
 from call_analyzer.web.server import get_crm_leads  # noqa: E402

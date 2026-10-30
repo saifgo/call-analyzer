@@ -118,6 +118,7 @@ function AgentTable({ rows, team }: { rows: OpKpiRow[]; team: OpKpiRow }) {
             <TableHead className="text-end">{t("ops.metric.wins")}</TableHead>
             <TableHead className="text-end">{t("kpis.callsPerHour")}</TableHead>
             <TableHead className="text-end">{t("kpis.winsPerHour")}</TableHead>
+            <TableHead className="text-end">{t("kpis.clockedIn")}</TableHead>
             <TableHead className="text-end">{t("ops.metric.deskMinutes")}</TableHead>
             <TableHead className="text-end">{t("ops.state.paused")}</TableHead>
             <TableHead className="text-end">{t("kpis.idle")}</TableHead>
@@ -132,7 +133,7 @@ function AgentTable({ rows, team }: { rows: OpKpiRow[]; team: OpKpiRow }) {
         <TableBody>
           {rows.length === 0 && (
             <TableRow>
-              <TableCell className="text-muted-foreground" colSpan={15}>
+              <TableCell className="text-muted-foreground" colSpan={16}>
                 {t("kpis.noCalls")}
               </TableCell>
             </TableRow>
@@ -150,6 +151,7 @@ function AgentTable({ rows, team }: { rows: OpKpiRow[]; team: OpKpiRow }) {
                 </TableCell>
                 <TableCell className="text-end tabular-nums">{a.calls_per_hour ?? "–"}</TableCell>
                 <TableCell className="text-end tabular-nums">{a.success_per_hour ?? "–"}</TableCell>
+                <TableCell className="text-end tabular-nums">{a.shift_seconds ? fmtHours(a.shift_seconds) : "–"}</TableCell>
                 <TableCell className="text-end tabular-nums">{fmtHours(a.desk_seconds)}</TableCell>
                 <TableCell className="text-end tabular-nums">
                   <Tooltip>

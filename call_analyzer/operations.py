@@ -159,7 +159,7 @@ def _tick(conn, username: str, now: datetime) -> None:
         return
     if 0 < gap <= PRESENCE_GAP_SECONDS:
         conn.execute("INSERT INTO op_presence (username, day, ready_seconds) VALUES (?, ?, ?) "
-                     "ON CONFLICT(username, day) DO UPDATE SET ready_seconds = ready_seconds + excluded.ready_seconds",
+                     "ON CONFLICT(username, day) DO UPDATE SET ready_seconds = op_presence.ready_seconds + excluded.ready_seconds",
                      (username, now.date().isoformat(), round(gap)))
 
 
@@ -173,6 +173,7 @@ def heartbeat(conn, username: str) -> bool:
                  "CASE WHEN COALESCE(op_agents.last_seen, '') < ? THEN excluded.online_since "
                  "ELSE op_agents.online_since END", (username, now.isoformat(), now.isoformat(), away))
     floor.touch_pause(conn, username, now)
+    floor.touch_shift(conn, username, now, busy=current(conn, username) is not None)
     conn.commit()
     return bool(conn.execute("SELECT ready FROM op_agents WHERE username = ?", (username,)).fetchone()[0])
 
@@ -198,8 +199,11 @@ def set_campaign(conn, username: str, campaign_id: int) -> dict:
 
 def set_ready(conn, username: str, ready: bool, reason_id: int | None = None) -> None:
     """Start or stop taking calls. Pausing with a reason starts a pause for it (see floor.py); pausing without one
-    (e.g. for a test call) keeps the pause the agent is on, if any. Taking calls ends it."""
+    (e.g. for a test call) keeps the pause the agent is on, if any. Taking calls ends it, and clocks the agent in if
+    they weren't; pausing for a reason needs them clocked in."""
     moment = datetime.now().replace(microsecond=0)
+    if not ready and reason_id is not None and not floor.open_shift(conn, username):
+        raise OperationError("Clock in first", 409)
     _tick(conn, username, moment)
     now = moment.isoformat()
     if not ready and reason_id is None:
@@ -211,6 +215,7 @@ def set_ready(conn, username: str, ready: bool, reason_id: int | None = None) ->
                  "last_seen = excluded.last_seen", (username, int(ready), now, moment.isoformat()))
     try:
         if ready:
+            floor.clock_in(conn, username, moment)
             floor.end_pause(conn, username, moment)
         elif reason_id is not None:
             floor.start_pause(conn, username, reason_id, moment)
@@ -218,6 +223,26 @@ def set_ready(conn, username: str, ready: bool, reason_id: int | None = None) ->
         conn.rollback()
         raise OperationError(str(exc), 404) from None
     conn.commit()
+
+
+def clock_in(conn, username: str) -> None:
+    """The agent starts their shift (paused: they start taking calls when they're ready)."""
+    floor.clock_in(conn, username, datetime.now().replace(microsecond=0))
+    conn.commit()
+
+
+def clock_out(conn, username: str, by: str = "agent") -> None:
+    """The agent ends their shift: they stop taking calls, the pause they're on ends, and a contact they were served
+    but haven't called goes back to the queue. Not during a call."""
+    with _claim_lock:
+        if row := current(conn, username):
+            if row["call_started_at"]:
+                raise OperationError("Close your call before clocking out", 409)
+            release(conn, row["id"])
+        moment = datetime.now().replace(microsecond=0)
+        _tick(conn, username, moment)
+        floor.clock_out(conn, username, moment, by=by)
+        conn.commit()
 
 
 def release(conn, op_id: int) -> None:
@@ -283,7 +308,7 @@ def _retries(conn, campaign: dict) -> dict[str, str]:
     rows = conn.execute("""SELECT opportunity_id, outcome, campaign_id, finished_at FROM op_calls
                            WHERE status = 'done' AND opportunity_id IN (
                                SELECT opportunity_id FROM op_calls WHERE status = 'done' AND COALESCE(campaign_id, ?) = ?)
-                           ORDER BY opportunity_id, finished_at DESC, id DESC""",
+                           ORDER BY opportunity_id, finished_at DESC NULLS LAST, id DESC""",
                         (campaigns.default_id(conn), campaign["id"])).fetchall()
     ready = {}
     for opp, calls in groupby(rows, key=lambda r: r["opportunity_id"]):
@@ -427,14 +452,18 @@ def _claim_local(conn, username: str) -> tuple[dict | None, str | None, dict | N
     campaign = agent_campaign(conn, username)
     now = _now()
     skipped = _skipped(conn, username)
-    # Their own callbacks (whatever the campaign), the campaign's callbacks for anyone, and the incoming calls'
-    # callbacks for anyone (nobody works that campaign).
+    # Their own callbacks (kept for them or booked by them, whatever the campaign), the campaign's callbacks for
+    # anyone, and for anyone too the incoming calls' callbacks (nobody works that campaign) and those of a campaign
+    # that isn't running anymore (nobody works it either).
+    default = campaigns.default_id(conn)
     row = next((r for r in conn.execute("""
         SELECT * FROM op_calls WHERE status = 'scheduled' AND due_at <= ?
-          AND (assign_to = ? OR (assign_to IS NULL AND (COALESCE(campaign_id, ?) = ? OR campaign_id = ?)))
+          AND (assign_to = ? OR (assign_to IS NULL AND (
+                scheduled_by = ? OR COALESCE(campaign_id, ?) = ? OR campaign_id = ?
+                OR COALESCE(campaign_id, ?) NOT IN (SELECT id FROM op_campaigns WHERE active = 1))))
           AND opportunity_id NOT IN (SELECT opportunity_id FROM op_calls WHERE status IN ('assigned', 'in_call'))
-        ORDER BY due_at, id""", (now, username, campaigns.default_id(conn), campaign["id"],
-                                 campaigns.inbound_id(conn)))
+        ORDER BY due_at, id""", (now, username, username, default, campaign["id"], campaigns.inbound_id(conn),
+                                 default))
                 if r["opportunity_id"] not in skipped), None)
     if row:
         conn.execute("UPDATE op_calls SET status = 'assigned', agent = ?, assigned_at = ? WHERE id = ?",
@@ -479,8 +508,7 @@ def create_lead(username: str, *, phone: str = "", name: str = "", city: str = "
                 raise OperationError("This number is already in the CRM: search it again to call that contact", 409)
             person_id = crm.create_person(name, " ".join(phone.split())[:40], " ".join(city.split())[:200],
                                           email.strip()[:200])["id"]
-        owner = db.connect().execute("SELECT crm_member_id FROM users WHERE username = ?", (username,)).fetchone()
-        return crm.create_opportunity(f"{name} Call Desk Lead", person_id, owner_id=owner[0] if owner else None)["id"]
+        return crm.create_opportunity(f"{name} Call Desk Lead", person_id, owner_id=crm.member_id(username))["id"]
     except crm.CrmError as exc:
         raise OperationError(str(exc), 502)
 
@@ -663,7 +691,7 @@ def attempts(conn, row) -> int:
     lookup = outcome_lookup(conn)
     count = 0
     for r in conn.execute("SELECT outcome, campaign_id FROM op_calls WHERE opportunity_id = ? AND status = 'done' "
-                          "AND id != ? ORDER BY finished_at DESC, id DESC", (row["opportunity_id"], row["id"])):
+                          "AND id != ? ORDER BY finished_at DESC NULLS LAST, id DESC", (row["opportunity_id"], row["id"])):
         if lookup(r["campaign_id"], r["outcome"]).get("reached"):
             break
         count += 1
@@ -911,7 +939,7 @@ def context(conn, row) -> dict:
     form from), the CRM's notes, and our recorded calls with their numbers."""
     names = account_names(conn)
     history = [to_dict(r, names) for r in conn.execute(
-        "SELECT * FROM op_calls WHERE opportunity_id = ? AND status = 'done' AND id != ? ORDER BY finished_at DESC",
+        "SELECT * FROM op_calls WHERE opportunity_id = ? AND status = 'done' AND id != ? ORDER BY finished_at DESC NULLS LAST",
         (row["opportunity_id"], row["id"]))]
     previous_answers = next((h["answers"] for h in history if h["answers"]), {})
     callback_from = None
@@ -986,7 +1014,8 @@ def today(conn, username: str) -> dict:
     paused = floor.pause_totals(conn, day, tomorrow, username).get(username, {})
     return {"done": len(rows), "reached": sum(bool(o.get("reached")) for o in found),
             "success": sum(bool(o.get("success")) for o in found), "talk_seconds": talk,
-            "desk_seconds": desk[0] if desk else 0, "pause_seconds": paused.get("pause_seconds", 0)}
+            "desk_seconds": desk[0] if desk else 0, "pause_seconds": paused.get("pause_seconds", 0),
+            "pauses": paused.get("pauses", 0)}
 
 
 def goals(conn, username: str, done: dict) -> dict:
@@ -1035,11 +1064,12 @@ def board(conn) -> dict:
     for a in conn.execute("SELECT * FROM op_agents ORDER BY username"):
         online = (a["last_seen"] or "") >= online_after
         op = holding.get(a["username"])
+        clocked_in = bool(a["shift_id"])
         state = ("on_call" if op and op["status"] == "in_call" and not op["call_ended_at"] else
                  "wrap_up" if op and op["call_ended_at"] else
                  "serving" if op else
                  "offline" if not online else
-                 "ready" if a["ready"] else "paused")
+                 "ready" if a["ready"] else "paused" if clocked_in else "clocked_out")
         user = a["username"]
         today_done = {**done_today.get(user, {"done": 0, "reached": 0, "success": 0}),
                       "desk_seconds": desk_today.get(user, 0),
@@ -1060,12 +1090,13 @@ def board(conn) -> dict:
                        "state_since": state_since, "last_seen": a["last_seen"], "current": op,
                        "done_today": today_done["done"], "today": today_done,
                        "pause": floor.pause_state(conn, user, now.replace(microsecond=0)) if not a["ready"] else None,
+                       "shift": floor.shift_state(conn, user, now.replace(microsecond=0)),
                        "progress": floor.progress(today_done, goal, day_pace),
                        "campaign": campaign_names.get(a["campaign_id"] or default)})
     callbacks = [to_dict(r, names) for r in conn.execute(
         "SELECT * FROM op_calls WHERE status = 'scheduled' ORDER BY due_at LIMIT 100")]
     recent = [to_dict(r, names) for r in conn.execute(
-        "SELECT * FROM op_calls WHERE status = 'done' ORDER BY finished_at DESC LIMIT 50")]
+        "SELECT * FROM op_calls WHERE status = 'done' ORDER BY finished_at DESC NULLS LAST LIMIT 50")]
     outcomes = dict(conn.execute(f"SELECT outcome, COUNT(*) FROM op_calls WHERE status = 'done' AND finished_at >= ? "
                                  f"AND {real} GROUP BY outcome", (start,)).fetchall())
     queues = [queue_counts(conn, c)

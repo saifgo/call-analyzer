@@ -67,4 +67,5 @@ export const lib = {
   "workers.runsOn.agent": "Remote agents only",
   "workers.runsOn.auto": "Agents when online, else this server",
   "workers.runsOn.host": "This server",
+  "ops.state.clockedOut": "Clocked out",
 };

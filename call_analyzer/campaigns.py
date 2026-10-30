@@ -384,7 +384,8 @@ def ensure_default(conn) -> None:
                   json.dumps(validate_outcomes(DEFAULT_OUTCOMES), ensure_ascii=False),
                   now, now))
     conn.execute("UPDATE op_calls SET campaign_id = ? WHERE campaign_id IS NULL", (cur.lastrowid,))
-    conn.execute("INSERT OR REPLACE INTO op_settings (key, value) VALUES (?, '1')", (_ATTEMPTED_MIGRATION,))
+    conn.execute("INSERT INTO op_settings (key, value) VALUES (?, '1') ON CONFLICT (key) DO UPDATE SET value = '1'",
+                 (_ATTEMPTED_MIGRATION,))
     conn.commit()
 
 
@@ -399,7 +400,8 @@ def _add_attempted(conn) -> None:
             description = NEW_LEADS_DESCRIPTION if row["description"] == _OLD_NEW_LEADS_DESCRIPTION else row["description"]
             conn.execute("UPDATE op_campaigns SET stages = ?, description = ? WHERE id = ?",
                          (json.dumps([lead, attempted]), description, row["id"]))
-    conn.execute("INSERT OR REPLACE INTO op_settings (key, value) VALUES (?, '1')", (_ATTEMPTED_MIGRATION,))
+    conn.execute("INSERT INTO op_settings (key, value) VALUES (?, '1') ON CONFLICT (key) DO UPDATE SET value = '1'",
+                 (_ATTEMPTED_MIGRATION,))
     conn.commit()
 
 

@@ -18,12 +18,13 @@ T = TypeVar("T")
 
 
 class Registry(Generic[T]):
-    """The adapters of one kind by name, and the one chosen in Settings (`setting`, else `default`).
+    """The adapters of one kind by name, and the one chosen in Settings (`setting`, else `default`, which may be a
+    function deciding it from the other settings).
 
     Built-in adapters are given as "module:Class" so only the chosen one is imported. Others can be added with
     register(), e.g. from a plugin: telephony.registry.register("3cx", ThreeCxTelephony)."""
 
-    def __init__(self, kind: str, setting: str, default: str, builtin: dict[str, str]):
+    def __init__(self, kind: str, setting: str, default: str | Callable[[], str], builtin: dict[str, str]):
         self.kind, self.setting, self.default = kind, setting, default
         self._factories: dict[str, str | Callable[[], T]] = dict(builtin)
         self._instances: dict[str, T] = {}
@@ -39,7 +40,8 @@ class Registry(Generic[T]):
         return sorted(self._factories)
 
     def active_name(self) -> str:
-        return live(self.setting, self.default).lower()
+        default = self.default() if callable(self.default) else self.default
+        return (live(self.setting) or default).lower()
 
     def get(self, name: str | None = None) -> T:
         """The adapter called `name`, or the one chosen in Settings. Adapters read their own settings live, so one
