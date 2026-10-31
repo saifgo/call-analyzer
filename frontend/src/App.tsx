@@ -14,6 +14,8 @@ import { WorkersProvider } from "@/lib/workers";
 import { AgentsPage } from "@/pages/agents";
 import { BusinessPage } from "@/pages/business";
 import { CallsPage } from "@/pages/calls";
+import { ContactsPage } from "@/pages/contacts";
+import { CrmSetupPage } from "@/pages/crm-setup";
 import { DashboardPage } from "@/pages/dashboard";
 import { FeedbackPage } from "@/pages/feedback";
 import { LeadsPage } from "@/pages/leads";
@@ -24,7 +26,7 @@ import { ReportsPage } from "@/pages/reports";
 import { SettingsPage } from "@/pages/settings";
 import { UsersPage } from "@/pages/users";
 import { WallboardPage } from "@/pages/wallboard";
-import { useT } from "@/lib/i18n";
+import { t, useT } from "@/lib/i18n";
 
 /** Pages agent accounts can open; the others fall back to the dashboard (the server refuses them anyway). */
 const AGENT_PAGES = new Set(["dashboard", "operations", "calls", "feedback", "reports"]);
@@ -46,6 +48,13 @@ function Pages() {
       break;
     case "leads":
       page = <LeadsPage route={route} />;
+      break;
+    case "contacts":
+      page = <ContactsPage route={route} />;
+      crumb = route.param ? t("crm.contact") : null;
+      break;
+    case "crm-setup":
+      page = <CrmSetupPage />;
       break;
     case "pipeline":
       page = <PipelinePage />;

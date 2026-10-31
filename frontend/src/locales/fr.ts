@@ -5,6 +5,7 @@ import { calls } from "./fr/calls";
 import { campaigns } from "./fr/campaigns";
 import { common } from "./fr/common";
 import { components } from "./fr/components";
+import { crm } from "./fr/crm";
 import { desk } from "./fr/desk";
 import { leads } from "./fr/leads";
 import { inbound } from "./fr/inbound";
@@ -19,4 +20,4 @@ import { users } from "./fr/users";
 import { values } from "./fr/values";
 import { wall } from "./fr/wall";
 
-export const fr = { ...agents, ...board, ...callDesk, ...calls, ...campaigns, ...common, ...components, ...desk, ...inbound, ...leads, ...lib, ...overview, ...pages, ...phone, ...settings, ...shell, ...ui, ...users, ...values, ...wall };
+export const fr = { ...agents, ...board, ...callDesk, ...calls, ...campaigns, ...common, ...components, ...crm, ...desk, ...inbound, ...leads, ...lib, ...overview, ...pages, ...phone, ...settings, ...shell, ...ui, ...users, ...values, ...wall };

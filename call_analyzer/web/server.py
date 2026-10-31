@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from .. import auth, crm, db, desk_stats, operations, telephony, workers
 from ..analyze import KIND_SQL, SCORE_SQL, json_sql, kind_of
 from ..config import ENV_PATH, ROOT, settings
-from . import operations_api, softphone_api, whatsapp_api, workers_api
+from . import crm_api, operations_api, softphone_api, whatsapp_api, workers_api
 from .export import audio_data_uri, render_call_page, render_report_page
 
 # Built from frontend/ (npm run build); see frontend/README.md.
@@ -109,6 +109,7 @@ except RuntimeError as _exc:  # an unknown provider: start anyway, so Settings c
     print(f"Phone system: {_exc}")
 app.include_router(workers_api.router)
 app.include_router(operations_api.router)
+app.include_router(crm_api.router)
 app.include_router(softphone_api.router)
 app.include_router(whatsapp_api.router)
 

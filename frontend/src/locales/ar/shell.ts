@@ -12,6 +12,8 @@ export const shell: Translation<typeof en> = {
   "nav.feedback": "الملاحظات البشرية",
   "nav.reports": "التقارير",
   "nav.leads": "عملاء للاتصال",
+  "nav.contacts": "جهات الاتصال",
+  "nav.crmSetup": "إعداد نظام العملاء",
   "nav.pipeline": "خط المعالجة",
   "nav.agents": "الوكلاء البعيدون",
   "nav.business": "سياق النشاط",

@@ -1,6 +1,7 @@
 import {
   BriefcaseBusinessIcon,
   ChevronsUpDownIcon,
+  ContactRoundIcon,
   FileTextIcon,
   HeadsetIcon,
   KeyRoundIcon,
@@ -14,6 +15,7 @@ import {
   PhoneIcon,
   PhoneOutgoingIcon,
   Settings2Icon,
+  SlidersHorizontalIcon,
   SunIcon,
   SquareIcon,
   UsersIcon,
@@ -94,7 +96,11 @@ const NAV: { adminOnly?: boolean; items: { icon: typeof PhoneIcon; label: TKey; 
   },
   {
     adminOnly: true,
-    items: [{ icon: PhoneOutgoingIcon, label: "nav.leads", page: "leads" }],
+    items: [
+      { icon: ContactRoundIcon, label: "nav.contacts", page: "contacts" },
+      { icon: PhoneOutgoingIcon, label: "nav.leads", page: "leads" },
+      { icon: SlidersHorizontalIcon, label: "nav.crmSetup", page: "crm-setup" },
+    ],
     label: "nav.group.crm",
   },
   {

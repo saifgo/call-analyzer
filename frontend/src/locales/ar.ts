@@ -5,6 +5,7 @@ import { calls } from "./ar/calls";
 import { campaigns } from "./ar/campaigns";
 import { common } from "./ar/common";
 import { components } from "./ar/components";
+import { crm } from "./ar/crm";
 import { desk } from "./ar/desk";
 import { leads } from "./ar/leads";
 import { inbound } from "./ar/inbound";
@@ -19,4 +20,4 @@ import { users } from "./ar/users";
 import { values } from "./ar/values";
 import { wall } from "./ar/wall";
 
-export const ar = { ...agents, ...board, ...callDesk, ...calls, ...campaigns, ...common, ...components, ...desk, ...inbound, ...leads, ...lib, ...overview, ...pages, ...phone, ...settings, ...shell, ...ui, ...users, ...values, ...wall };
+export const ar = { ...agents, ...board, ...callDesk, ...calls, ...campaigns, ...common, ...components, ...crm, ...desk, ...inbound, ...leads, ...lib, ...overview, ...pages, ...phone, ...settings, ...shell, ...ui, ...users, ...values, ...wall };

@@ -259,6 +259,50 @@ export type CrmLead = CrmOpportunity & {
 
 export type CrmLeads = { configured: boolean; stage: string; leads: CrmLead[]; truncated: boolean };
 
+/** Built-in CRM: an opportunity as the Contacts page edits it (`owner_id` is the owning account's username). */
+export type CrmContactOpportunity = CrmOpportunity & { owner_id: string | null };
+export type CrmFieldValue = string | number | boolean;
+export type CrmNote = {
+  id: string;
+  title: string;
+  text: string;
+  created_at: string;
+  author: string | null;
+  opportunity_id: string | null;
+};
+export type CrmContact = Omit<CrmPerson, "opportunities"> & {
+  fields: Record<string, CrmFieldValue>;
+  source: string | null;
+  opportunities: CrmContactOpportunity[];
+};
+export type CrmContactDetail = CrmContact & { notes: CrmNote[] };
+export type CrmContacts = { people: CrmContact[]; total: number };
+
+export type CrmFieldType = "text" | "number" | "boolean" | "choice";
+export type CrmStage = { value: string; label: string; locked: boolean; count: number; campaigns: string[] };
+export type CrmField = {
+  key: string;
+  label: string;
+  type: CrmFieldType;
+  /** Choice fields: [value, label] pairs. */
+  options: [string, string][] | null;
+  campaigns: string[];
+};
+/** GET /api/crm/setup. `local` is false when another CRM (e.g. Twenty) is in use: these screens are off then. */
+export type CrmSetup = { local: boolean; label: string; stages: CrmStage[]; fields: CrmField[]; members: CrmMember[] };
+/** GET /api/crm/import: the import from Twenty running, or the last one since the app started. `counts` keys:
+ * people_/opportunities_/notes_ + added | updated | unchanged, notes_skipped, stages, fields, values_skipped. */
+export type CrmImport = {
+  configured: boolean;
+  base_url: string;
+  running: boolean;
+  step: "setup" | "people" | "opportunities" | "notes" | null;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  counts: Record<string, number>;
+};
+
 /** A note a person wrote about a call. `score` is their own 1-10 score, to compare with the AI's. */
 export type HumanFeedback = {
   id: number;

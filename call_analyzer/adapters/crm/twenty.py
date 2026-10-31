@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 
 import requests
@@ -13,6 +14,7 @@ from .base import CrmAdapter, CrmError
 DEFAULT_BASE_URL = "https://crm.tunisolutions.com"
 TIMEOUT = 15
 LEADS_PAGE = 200  # the most Twenty's REST API returns at once
+RATE_LIMIT_TRIES = 6
 DEFAULT_STAGES = [("NEW", "New"), ("TO_CALL", "To Call"), ("ATTEMPTED", "Attempted"), ("IN_TALK", "In Talk"),
                   ("WAITING_REPLY", "Waiting Reply"), ("ACCEPTED", "Accepted"), ("ACCOUNT_MADE", "Account Made"),
                   ("INSTALLING", "Installing"), ("ACTIVE", "Active"), ("REJECTED", "Rejected")]
@@ -79,6 +81,9 @@ class TwentyCrm(CrmAdapter):
     secret_keys = ("CRM_API_KEY",)
     lead_stage = "NEW"
     attempted_stage = "ATTEMPTED"
+    # Wait and retry when Twenty answers 429 (too many requests), instead of failing straight away: for long reads
+    # like the import into the built-in CRM, not for the call desk, which can't be kept waiting.
+    wait_when_limited = False
 
     # --- HTTP ----------------------------------------------------------------------------------
 
@@ -95,11 +100,21 @@ class TwentyCrm(CrmAdapter):
 
     def _get_json(self, path: str, params: dict) -> dict:
         base, key, verify = self._config()
-        try:
-            res = _http().get(f"{base}/rest/{path}", params=params, headers={"Authorization": f"Bearer {key}"},
-                               timeout=TIMEOUT, verify=verify)
-        except requests.RequestException as exc:
-            raise CrmError(f"Couldn't reach the CRM at {base}: {exc.__class__.__name__}") from exc
+        for attempt in range(RATE_LIMIT_TRIES):
+            try:
+                res = _http().get(f"{base}/rest/{path}", params=params, headers={"Authorization": f"Bearer {key}"},
+                                   timeout=TIMEOUT, verify=verify)
+            except requests.RequestException as exc:
+                raise CrmError(f"Couldn't reach the CRM at {base}: {exc.__class__.__name__}") from exc
+            if res.status_code != 429 or not self.wait_when_limited or attempt == RATE_LIMIT_TRIES - 1:
+                break
+            try:
+                wait = float(res.headers.get("Retry-After") or 10)
+            except ValueError:
+                wait = 10
+            time.sleep(min(max(wait, 1), 60))
+        if res.status_code == 429:
+            raise CrmError("The CRM is limiting how many requests it answers: try again in a minute.")
         if res.status_code in (401, 403):
             raise CrmError("The CRM rejected the API key. Check CRM_API_KEY in Settings.")
         if not res.ok:

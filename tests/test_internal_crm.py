@@ -107,6 +107,106 @@ class AdapterTests(InternalCrmCase):
         self.assertEqual(crm.opportunity(opp)["owner"], "Sami")
 
 
+class ScreenTests(InternalCrmCase):
+    """What the Contacts and CRM setup pages do (web/crm_api.py)."""
+
+    def setUp(self):
+        super().setUp()
+        for table in ("op_calls", "op_campaigns"):
+            self.conn.execute(f"DELETE FROM {table}")
+        self.conn.commit()
+
+    def test_contacts_are_searched_by_name_city_or_number_and_by_stage(self):
+        ali, _ = self.contact("Ali Ben Salah", "22 602 716")
+        mona, _ = self.contact("Mona", "98 111 222", stage="IN_TALK")
+        self.assertEqual(self.crm.search_people()["total"], 2)
+        self.assertEqual([p["id"] for p in self.crm.search_people("ben sal")["people"]], [ali])
+        self.assertEqual([p["id"] for p in self.crm.search_people("98111")["people"]], [mona])
+        self.assertEqual([p["id"] for p in self.crm.search_people(stage="IN_TALK")["people"]], [mona])
+        self.assertEqual(self.crm.search_people("tunis", limit=1)["total"], 2)
+
+    def test_a_contact_is_created_with_its_custom_fields_and_numbers(self):
+        person = self.crm.create_contact({"name": "Sami", "company": "Kiosk", "havepos": "yes"},
+                                         ["22 602 716", "+216 98 111 222"])["id"]
+        found = self.crm.get_person(person)
+        self.assertEqual((found["company"], found["fields"], found["phones"], found["source"]),
+                         ("Kiosk", {"havepos": True}, ["+216 22602716", "+216 98111222"], "manual"))
+        with self.assertRaises(crm.CrmError):
+            self.crm.create_contact({"name": "Bad", "havepos": "maybe"}, [])
+        self.assertEqual(self.crm.search_people("bad")["total"], 0)  # nothing half-saved
+
+    def test_deleting_a_contact_takes_its_opportunities_and_notes(self):
+        person, opp = self.contact()
+        crm.add_note("Call", "text", opp, person)
+        self.crm.delete_person(person)
+        for table in ("crm_people", "crm_phones", "crm_opportunities", "crm_notes"):
+            self.assertEqual(self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
+
+    def test_what_the_desk_is_working_on_cant_be_deleted(self):
+        person, opp = self.contact()
+        self.conn.execute("INSERT INTO op_calls (opportunity_id, person_id, source, status, created_at) "
+                          "VALUES (?, ?, 'callback', 'scheduled', '2026-10-30T10:00:00')", (opp, person))
+        self.conn.commit()
+        for delete, arg in ((self.crm.delete_person, person), (self.crm.delete_opportunity, opp)):
+            with self.assertRaises(crm.CrmError):
+                delete(arg)
+
+    def test_deleting_an_opportunity_keeps_the_notes_about_the_contact(self):
+        person, opp = self.contact()
+        kept = crm.add_note("Call", "about both", opp, person)
+        crm.add_note("Lead", "about the lead only", opp, None)
+        self.crm.delete_opportunity(opp)
+        self.assertEqual([n["id"] for n in self.crm.get_person(person)["notes"]], [kept])
+
+    def test_stages_are_renamed_reordered_added_and_removed(self):
+        stages = self.crm.stages()
+        new = [{"value": "NEW", "label": "Fresh"}, {"value": None, "label": "Demo booked"},
+               *({"value": s["value"], "label": s["label"]} for s in stages[1:] if s["value"] != "INSTALLING")]
+        saved = self.crm.save_stages(new)
+        self.assertEqual(saved[0], {"value": "NEW", "label": "Fresh", "locked": True})
+        self.assertEqual(saved[1]["value"], "DEMO_BOOKED")
+        self.assertNotIn("INSTALLING", [s["value"] for s in saved])
+
+    def test_a_stage_in_use_or_locked_isnt_removed(self):
+        self.contact(stage="IN_TALK")
+        keep = [{"value": s["value"], "label": s["label"]} for s in self.crm.stages()]
+        for gone in ("ATTEMPTED", "IN_TALK"):
+            with self.assertRaises(crm.CrmError):
+                self.crm.save_stages([s for s in keep if s["value"] != gone])
+        self.conn.execute("""INSERT INTO op_campaigns (name, stages, questions, outcomes, created_at, updated_at)
+                             VALUES ('Reactivation', '["ACTIVE"]', '[{"crm": "person.havepos"}]', '[]', '', '')""")
+        self.conn.commit()
+        with self.assertRaises(crm.CrmError) as caught:
+            self.crm.save_stages([s for s in keep if s["value"] != "ACTIVE"])
+        self.assertIn("Reactivation", str(caught.exception))
+        with self.assertRaises(crm.CrmError):
+            self.crm.save_fields([])
+
+    def test_fields_get_keys_and_choices(self):
+        saved = self.crm.save_fields([{"key": "havepos", "label": "Has a POS", "type": "boolean"},
+                                      {"label": "Shop type", "type": "choice", "options": ["Kiosk", "Café"]}])
+        self.assertEqual(saved[1]["key"], "shop_type")
+        self.assertEqual(saved[1]["options"], [["kiosk", "Kiosk"], ["caf", "Café"]])
+        person, _ = self.contact()
+        self.crm.update_person(person, {"shop_type": "kiosk"})
+        with self.assertRaises(crm.CrmError):
+            self.crm.update_person(person, {"shop_type": "bakery"})
+        with self.assertRaises(crm.CrmError):
+            self.crm.save_fields([{"label": "Choice", "type": "choice", "options": []}])
+
+    def test_the_screens_refuse_another_crm(self):
+        from fastapi import HTTPException
+        from call_analyzer.web import crm_api
+
+        class Other:
+            label = "Twenty"
+        crm.use(Other())  # type: ignore[arg-type]
+        self.assertEqual(crm_api.get_setup()["local"], False)
+        with self.assertRaises(HTTPException) as caught:
+            crm_api.list_contacts()
+        self.assertEqual(caught.exception.status_code, 409)
+
+
 class ProviderTests(unittest.TestCase):
     def test_the_built_in_crm_is_the_default_unless_twenty_was_set_up(self):
         with mock.patch.dict(os.environ, {}, clear=False):

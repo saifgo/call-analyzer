@@ -9,6 +9,8 @@ export const shell = {
   "nav.feedback": "Human feedback",
   "nav.reports": "Reports",
   "nav.leads": "Leads to call",
+  "nav.contacts": "Contacts",
+  "nav.crmSetup": "CRM setup",
   "nav.pipeline": "Pipeline",
   "nav.agents": "Remote agents",
   "nav.business": "Business context",
